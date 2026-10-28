@@ -27,8 +27,8 @@ class AssignmentLibrary:
         self.seed_record = directory / "seeded.json"
         self.lock = RLock()
         entries = self.all() if self.index.exists() else []
-        known = set(json.loads(self.seed_record.read_text())) if self.seed_record.exists() else set()
-        manifest = json.loads((ROOT / "assets/assignments.json").read_text())
+        known = set(json.loads(self.seed_record.read_text(encoding="utf-8"))) if self.seed_record.exists() else set()
+        manifest = json.loads((ROOT / "assets/assignments.json").read_text(encoding="utf-8"))
         for sample in manifest:
             if sample["id"] not in known and not any(e["id"] == sample["id"] for e in entries):
                 data = (ROOT / "assets/assignments" / sample["asset"]).read_bytes()
@@ -37,7 +37,7 @@ class AssignmentLibrary:
                 (directory / (entry["id"] + ".docx")).write_bytes(data)
                 entries.append(entry)
         self._save(entries)
-        self.seed_record.write_text(json.dumps(sorted(known | {s["id"] for s in manifest})))
+        self.seed_record.write_text(json.dumps(sorted(known | {s["id"] for s in manifest})), encoding="utf-8")
 
     def _save(self, entries):
         temp = self.index.with_suffix(".tmp")

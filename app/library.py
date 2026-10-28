@@ -18,11 +18,11 @@ class Library:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.index = directory / "library.json"
         self.lock = RLock()
-        manifest = json.loads((ROOT / "assets/library.json").read_text())
+        manifest = json.loads((ROOT / "assets/library.json").read_text(encoding="utf-8"))
         seed_record = directory / "seeded.json"
         entries = self.all() if self.index.exists() else []
         if seed_record.exists():
-            known = set(json.loads(seed_record.read_text()))
+            known = set(json.loads(seed_record.read_text(encoding="utf-8")))
         else:
             # Upgrade from the first release: old built-ins may have been
             # deliberately deleted; never silently restore them.
@@ -40,7 +40,7 @@ class Library:
                 if entry["id"] == sample["id"]:
                     entry.setdefault("subcategory", sample.get("subcategory", ""))
         self._save(entries)
-        seed_record.write_text(json.dumps(sorted(known | {s["id"] for s in manifest})))
+        seed_record.write_text(json.dumps(sorted(known | {s["id"] for s in manifest})), encoding="utf-8")
 
     def _save(self, entries):
         temp = self.index.with_suffix(".tmp")

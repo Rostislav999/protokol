@@ -116,10 +116,10 @@ def ensure_dependencies(*, check_only: bool = False) -> Path:
         return python
     # Reuse an environment prepared by scripts/setup.sh as well as one prepared
     # by this launcher. Only new/changed or broken installations need the network.
-    previous = stamp.read_text().strip() if stamp.exists() else ""
+    previous = stamp.read_text(encoding="ascii").strip() if stamp.exists() else ""
     if current and previous in ("", digest):
         if previous != digest:
-            stamp.write_text(digest)
+            stamp.write_text(digest, encoding="ascii")
         return python
     if not python.is_file():
         print("Создание локального окружения Python…")
@@ -137,7 +137,7 @@ def ensure_dependencies(*, check_only: bool = False) -> Path:
     subprocess.run(command, cwd=ROOT, check=True)
     if not installed_dependencies(python):
         raise LaunchError("Зависимости не удалось проверить после установки. Сохраните текст ошибки и обратитесь за помощью.")
-    stamp.write_text(digest)
+    stamp.write_text(digest, encoding="ascii")
     return python
 
 
