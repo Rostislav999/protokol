@@ -60,6 +60,76 @@ def test_missing_tesseract_has_actionable_error(monkeypatch):
         launch.find_tesseract({}, windows=True)
 
 
+@pytest.mark.parametrize("stdout,stderr", [
+    ("tesseract 5.5.0\n leptonica-1.84.1\n", ""),
+    ("tesseract v5.5.0.20241111\n leptonica-1.85.0\n", ""),
+    ("Tesseract V5.3.3.20231005\r\n", ""),
+    ("", "tesseract v5.4.0.20240606\n"),
+])
+def test_tesseract_version_accepts_linux_and_windows_builds(monkeypatch, stdout, stderr):
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(launch.subprocess, "run", run)
+    executable = Path("C:/Program Files/Tesseract-OCR/tesseract.exe")
+    environ = {"PATH": "existing environment"}
+    launch.verify_tesseract(executable, environ)
+    assert calls[0][0] == [str(executable), "--version"]
+    assert calls[0][1]["env"] is environ
+    assert calls[0][1]["timeout"] == 15
+
+
+def test_tesseract_old_version_message_identifies_actual_version_and_path(monkeypatch):
+    executable = Path("C:/Program Files/Tesseract-OCR/tesseract.exe")
+    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout="tesseract v4.1.1\n", stderr=""))
+    with pytest.raises(launch.LaunchError) as raised:
+        launch.verify_tesseract(executable, {})
+    message = str(raised.value)
+    assert "4.1.1" in message
+    assert str(executable) in message
+    assert "5" in message
+
+
+def test_unknown_tesseract_version_is_distinct_from_an_old_version(monkeypatch):
+    executable = Path("C:/OCR/tesseract.exe")
+    result = SimpleNamespace(returncode=0, stdout="unknown vendor build\n", stderr="")
+    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **k: result)
+    with pytest.raises(launch.LaunchError) as unknown:
+        launch.verify_tesseract(executable, {})
+    result.stdout = "tesseract v4.1.1\n"
+    with pytest.raises(launch.LaunchError) as old:
+        launch.verify_tesseract(executable, {})
+    assert str(unknown.value) != str(old.value)
+    assert "unknown vendor build" in str(unknown.value)
+    assert str(executable) in str(unknown.value)
+
+
+def test_failed_tesseract_command_reports_actual_failure_not_a_version_claim(monkeypatch):
+    executable = Path("C:/OCR/tesseract.exe")
+    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=1, stdout="", stderr="required DLL is missing\n"))
+    with pytest.raises(launch.LaunchError) as raised:
+        launch.verify_tesseract(executable, {})
+    assert "required DLL is missing" in str(raised.value)
+    assert str(executable) in str(raised.value)
+
+
+def test_tesseract_diagnostic_is_bounded_and_output_decoding_is_tolerant(monkeypatch):
+    calls = []
+    def run(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=1, stdout="", stderr="failure " + "x" * 50000)
+    monkeypatch.setattr(launch.subprocess, "run", run)
+    with pytest.raises(launch.LaunchError) as raised:
+        launch.verify_tesseract(Path("C:/OCR/tesseract.exe"), {})
+    assert len(str(raised.value)) < 5000
+    assert "failure" in str(raised.value)
+    assert calls[0]["encoding"] == "utf-8"
+    assert calls[0]["errors"] == "replace"
+
+
 @pytest.mark.parametrize("value", ["0", "80", "65536", "abc"])
 def test_invalid_port_is_rejected(value):
     with pytest.raises(launch.LaunchError):

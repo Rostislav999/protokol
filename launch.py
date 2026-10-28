@@ -58,12 +58,23 @@ def find_tesseract(environ=None, *, windows: bool | None = None) -> Path:
 def verify_tesseract(executable: Path, environ: dict) -> None:
     try:
         result = subprocess.run([str(executable), "--version"], capture_output=True, text=True,
-                                timeout=15, env=environ)
+                                encoding="utf-8", errors="replace", timeout=15, env=environ)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise LaunchError("Не удалось запустить Tesseract. Проверьте его установку и повторите запуск.") from exc
-    match = re.search(r"tesseract\s+(\d+)", result.stdout + result.stderr, re.I)
-    if result.returncode or not match or int(match.group(1)) < 5:
-        raise LaunchError("Для распознавания требуется Tesseract OCR версии 5 или новее.")
+        raise LaunchError(f"Не удалось запустить Tesseract: {executable}.\nПричина: {exc}") from exc
+    output = (result.stdout + "\n" + result.stderr).strip()
+    first_line = next((line.strip()[:400] for line in output.splitlines() if line.strip()), "Tesseract не вывел сообщений.")
+    if result.returncode:
+        raise LaunchError(f"Tesseract найден, но завершился с ошибкой (код {result.returncode}).\n"
+                          f"Файл: {executable}\nСообщение: {first_line}")
+    # Windows distributions often print "tesseract v5.x", while Linux prints
+    # "tesseract 5.x". Both describe the same supported major version.
+    match = re.search(r"\btesseract(?:\.exe)?\s+(?:version\s+)?v?(\d+)(?:\.\d+)*", output, re.I)
+    if not match:
+        raise LaunchError(f"Tesseract найден, но формат его версии не распознан.\n"
+                          f"Файл: {executable}\nОтвет: {first_line}")
+    if int(match.group(1)) < 5:
+        raise LaunchError(f"Обнаружена старая версия Tesseract: {first_line}. Требуется версия 5 или новее.\n"
+                          f"Файл: {executable}")
 
 
 def venv_python(root: Path = ROOT) -> Path:
