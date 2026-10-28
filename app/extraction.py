@@ -21,7 +21,7 @@ MAX_PAGES = 20
 MAX_PIXELS = 40_000_000
 ITEM_FIELDS = (
     "product_name", "protocol_number", "catalog_number", "manufacturer",
-    "manufacture_date", "batch_size",
+    "manufacture_date", "batch_size", "standard",
 )
 COMMON_FIELDS = ("customer", "sampling_description", "supplier", "contract")
 
@@ -36,19 +36,8 @@ def _ocr_languages() -> tuple[str, list[str]]:
         os.environ["TESSDATA_PREFIX"] = str(local_data)
     if not shutil.which("tesseract"):
         raise ValueError("Tesseract не встановлено. Встановіть Tesseract OCR та мовні пакети ukr, rus, eng.")
-    result = subprocess.run(
-        ["tesseract", "--list-langs"], capture_output=True, text=True, timeout=15,
-    )
-    if result.returncode:
-        raise ValueError("Не вдалося перевірити мовні пакети Tesseract.")
-    languages = set(result.stdout.splitlines()[1:])
-    selected = [lang for lang in ("ukr", "rus", "eng") if lang in languages]
-    if not selected:
-        raise ValueError("Немає мовних пакетів OCR. Встановіть ukr, rus та eng.")
-    warnings = []
-    if "ukr" not in selected:
-        warnings.append("Українська мова OCR не встановлена: якість розпізнавання буде низькою. Встановіть пакет ukr.")
-    return "+".join(selected), warnings
+    from scripts.tesseract_runtime import available_languages
+    return available_languages()
 
 
 def _ocr_image(image, language: str, psm: int = 3) -> str:
@@ -59,20 +48,8 @@ def _ocr_image(image, language: str, psm: int = 3) -> str:
     if image.mode not in ("L", "RGB"):
         image = image.convert("RGB")
     image = ImageOps.autocontrast(image.convert("L"))
-    with tempfile.TemporaryDirectory(prefix="protokol-ocr-") as directory:
-        path = Path(directory) / "page.png"
-        image.save(path, "PNG")
-        try:
-            result = subprocess.run(
-                ["tesseract", str(path), "stdout", "-l", language, "--psm", str(psm),
-                 "-c", "preserve_interword_spaces=1"],
-                capture_output=True, text=True, timeout=90,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("Перевищено час OCR сторінки (90 секунд). Спробуйте чіткіший скан.") from exc
-        if result.returncode:
-            raise ValueError("Tesseract не зміг розпізнати сторінку. Перевірте файл і мовні пакети.")
-        return result.stdout.strip()
+    from scripts.tesseract_runtime import ocr_image
+    return ocr_image(image, language, psm)
 
 
 def _ocr_table(image, language: str, previous_header=None):
@@ -176,7 +153,7 @@ def _ocr_table(image, language: str, previous_header=None):
         rows.append(item)
     if not rows:
         return None
-    columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії"]
+    columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії", "Нормативний документ"]
     lines = [" | ".join(columns)]
     for index, item in enumerate(rows, 1):
         lines.append(" | ".join([str(index)] + [item[field].replace("|", " ") for field in ITEM_FIELDS]))
@@ -310,6 +287,7 @@ _LABELS = {
     "manufacturer": [r"виробник(?:\s+(?:та|і)\s+адреса)?", r"виготовлювач", r"производитель"],
     "manufacture_date": [r"дата\s+виготовлення(?:\s*[/,]\s*термін\s+придатності)?", r"виготовлено", r"дата\s+виробництва", r"дата\s+изготовления", r"вжити\s+до"],
     "batch_size": [r"розмір\s+партії(?:,?\s+від\s+якої\s+відібрано\s+зразок)?", r"(?:маса|обсяг|кількість)\s+партії", r"партія", r"размер\s+партии"],
+    "standard": [r"нормативний\s+документ", r"(?:позначення\s+)?нд", r"випробування\s+на\s+відповідність(?:\s+нд)?", r"(?:підлягає\s+)?дослідженню\s+на\s+відповідність"],
 }
 _LABEL_PATTERNS = [(key, re.compile(r"^\s*(?:" + "|".join(patterns) + r")\s*[:：]\s*(.*)$", re.I)) for key, patterns in _LABELS.items()]
 _PRODUCT_HINT = re.compile(r"свин|ялов|говяд|суп|борщ|каша|квасол|фасол|кільк|кильк|салак|тунец|тунц|тріск|треск|джем|повидл|сіль|соль|цукор|сахар|сухар|паштет|снідан|завтрак|молоко|масло|олія|крупа|консерв", re.I)
@@ -328,7 +306,14 @@ def _split_identification(value: str) -> tuple[str, str]:
 
 def _table_columns(line: str) -> list[str] | None:
     if "|" in line:
-        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+        value = line.strip()
+        if value.startswith("|"):
+            # Markdown-style outer borders are decoration. An ordinary final
+            # delimiter, however, represents an empty last data cell.
+            value = value[1:]
+            if value.endswith("|"):
+                value = value[:-1]
+        return [cell.strip() for cell in value.split("|")]
     if "\t" in line:
         return [cell.strip() for cell in line.split("\t")]
     if ";" in line:
@@ -340,6 +325,8 @@ def _table_columns(line: str) -> list[str] | None:
 
 def _header_field(value: str) -> str | None:
     v = _normalize(value).lower().strip(".:")
+    if re.search(r"нормативн.*документ|випробування.*відпов|дослідж.*(?:відпов|вілпов)|^нд$", v):
+        return "standard"
     if re.search(r"найменування|назва.*(?:продук|зраз)|наименование", v):
         return "product_name"
     if re.search(r"виробник|виготовлювач|производител", v):
@@ -499,11 +486,11 @@ def parse_act(text: str) -> dict:
             continue
         # Preserve wrapped lines only for verbose known fields. Never append a
         # signature or a new numbered section to the preceding value.
-        if previous_field in ("manufacturer", "sampling_description", "customer", "supplier", "contract", "product_name"):
+        if previous_field in ("manufacturer", "sampling_description", "customer", "supplier", "contract", "product_name", "standard"):
             if re.match(r"^(?:\d+[.)]|акт\b|дата\b|підпис|коміс|відібрав|вищезазначена|результат|додаток|м\.п\.)", line, re.I):
                 previous_field = None
                 continue
-            if ":" not in line or previous_field in ("manufacturer", "sampling_description"):
+            if ":" not in line or previous_field in ("manufacturer", "sampling_description", "standard"):
                 target = common if previous_field in COMMON_FIELDS else current
                 if target is not None:
                     target[previous_field] = _normalize(target[previous_field] + " " + line)

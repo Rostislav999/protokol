@@ -13,14 +13,17 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 import webbrowser
 
 from scripts.prepare_ocr import DEFAULT_DIRECTORY, prepare_models
+from scripts.tesseract_runtime import verify_runtime
 
 ROOT = Path(__file__).resolve().parent
 LOCK = ROOT / "requirements.lock"
@@ -149,6 +152,45 @@ def port_number(value: str) -> int:
     return port
 
 
+def configure_data_directory(environ: dict, *, root: Path = ROOT, windows: bool | None = None) -> Path:
+    """Keep Windows numbering and libraries when a new ZIP is unpacked."""
+    if environ.get("PROTOKOL_DATA_DIR"):
+        return Path(environ["PROTOKOL_DATA_DIR"])
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return root / "data"
+    base = Path(environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+    destination = base / "Protokol/data"
+    legacy = root / "data"
+    if not destination.exists() and legacy.is_dir():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="data-migration-", dir=destination.parent) as temporary:
+            staged = Path(temporary) / "data"
+            shutil.copytree(legacy, staged, ignore=shutil.ignore_patterns("*-journal", "*-wal", "*-shm"))
+            database = legacy / "numbering.sqlite3"
+            if database.is_file():
+                # SQLite backup also works if the previous instance is open.
+                source = sqlite3.connect(database)
+                target = sqlite3.connect(staged / "numbering.sqlite3")
+                try:
+                    source.backup(target)
+                finally:
+                    target.close()
+                    source.close()
+            try:
+                staged.rename(destination)
+            except FileExistsError:
+                if not destination.is_dir():
+                    raise
+        print("Попередню бібліотеку й нумерацію скопійовано в постійний каталог Windows.")
+    else:
+        destination.mkdir(parents=True, exist_ok=True)
+    environ["PROTOKOL_DATA_DIR"] = str(destination)
+    print(f"Каталог бібліотеки та нумерації: {destination}")
+    return destination
+
+
 def app_is_ready(url: str) -> bool:
     # Loopback stays local even when corporate Internet proxies are configured.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -229,18 +271,18 @@ def main(argv=None) -> int:
         verify_tesseract(executable, environ)
         python = ensure_dependencies(check_only=args.check)
         prepare_models(download=not args.check)
-        languages = subprocess.run([str(executable), "--list-langs"], env=environ,
-                                   capture_output=True, text=True, timeout=15, check=True)
-        if not {"ukr", "rus", "eng"} <= set(languages.stdout.splitlines()[1:]):
-            raise LaunchError("Tesseract не видит подготовленные языковые модели ukr, rus, eng.")
+        _, warnings = verify_runtime(executable=str(executable), models_directory=DEFAULT_DIRECTORY, environ=environ)
+        for warning in warnings:
+            print(warning)
         if args.check:
             print("Проверка завершена: Python, зависимости, Tesseract и языковые модели готовы.")
             return 0
+        configure_data_directory(environ)
         return serve(python, environ, no_browser=args.no_browser)
     except KeyboardInterrupt:
         print("\nПрограмма остановлена.")
         return 0
-    except (LaunchError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (LaunchError, ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"\nНе удалось запустить программу: {exc}", file=sys.stderr)
         print("Подробная инструкция находится в README.md рядом с START_WINDOWS.bat.", file=sys.stderr)
         return 1

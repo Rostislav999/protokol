@@ -166,11 +166,47 @@ def test_check_mode_never_serves_installs_or_opens_browser(monkeypatch):
         checks.append("models")
     monkeypatch.setattr(launch, "ensure_dependencies", dependencies)
     monkeypatch.setattr(launch, "prepare_models", models)
-    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="langs\nukr\nrus\neng\n"))
+    monkeypatch.setattr(launch, "verify_runtime", lambda **k: ("ukr+rus+eng", []))
     monkeypatch.setattr(launch, "serve", lambda *a, **k: pytest.fail("Server started"))
     monkeypatch.setattr(launch.webbrowser, "open", lambda *a, **k: pytest.fail("Browser opened"))
     assert launch.main(["--check"]) == 0
     assert checks == ["dependencies", "models"]
+
+
+def test_windows_data_location_survives_new_archive_and_preserves_legacy(tmp_path):
+    old = tmp_path / "archive-old"
+    (old / "data").mkdir(parents=True)
+    (old / "data/library.json").write_text("custom library")
+    environ = {"LOCALAPPDATA": str(tmp_path / "App Data")}
+    destination = launch.configure_data_directory(environ, root=old, windows=True)
+    assert destination == tmp_path / "App Data/Protokol/data"
+    assert (destination / "library.json").read_text() == "custom library"
+    new = tmp_path / "archive-new"
+    (new / "data").mkdir(parents=True)
+    (new / "data/library.json").write_text("must not overwrite")
+    next_env = {"LOCALAPPDATA": str(tmp_path / "App Data")}
+    assert launch.configure_data_directory(next_env, root=new, windows=True) == destination
+    assert (destination / "library.json").read_text() == "custom library"
+
+
+def test_explicit_data_directory_is_never_replaced(tmp_path):
+    custom = tmp_path / "explicit"
+    environ = {"LOCALAPPDATA": str(tmp_path / "App Data"), "PROTOKOL_DATA_DIR": str(custom)}
+    assert launch.configure_data_directory(environ, windows=True) == custom
+    assert not custom.exists()
+    assert not (tmp_path / "App Data").exists()
+
+
+def test_windows_data_migration_keeps_sqlite_counter(tmp_path):
+    import sqlite3
+    old = tmp_path / "old"
+    (old / "data").mkdir(parents=True)
+    with sqlite3.connect(old / "data/numbering.sqlite3") as connection:
+        connection.execute("CREATE TABLE test_counter (value INTEGER)")
+        connection.execute("INSERT INTO test_counter VALUES (1400)")
+    destination = launch.configure_data_directory({"LOCALAPPDATA": str(tmp_path / "App Data")}, root=old, windows=True)
+    with sqlite3.connect(destination / "numbering.sqlite3") as connection:
+        assert connection.execute("SELECT value FROM test_counter").fetchone()[0] == 1400
 
 
 def test_dependency_check_respects_inactive_platform_markers(tmp_path, monkeypatch):

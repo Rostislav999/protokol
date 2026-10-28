@@ -18,6 +18,7 @@
   ];
   const itemFields = [
     ['product_name', 'Найменування зразка', true, 'Повна назва продукту з акта', 'full'],
+    ['standard', 'НД дослідження (для завдань)', false, 'Наприклад, ДСТУ 4450:2005', 'full'],
     ['protocol_number', 'Номер протоколу / зразка', true, 'Наприклад, 87-015-3000-1305-2', ''],
     ['protocol_date', 'Дата протоколу', true, 'Наприклад, 28.10.2026', ''],
     ['catalog_number', 'Номер за Каталогом', false, 'Якщо зазначений в акті', ''],
@@ -61,7 +62,8 @@
   function switchView(name) {
     $('#acts-view').hidden = name !== 'acts';
     $('#library-view').hidden = name !== 'library';
-    $('#breadcrumb-current').textContent = name === 'library' ? 'Бібліотека шаблонів' : 'Акти відбору';
+    if ($('#assignments-view')) $('#assignments-view').hidden = name !== 'assignments';
+    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', acts: 'Акти відбору'})[name] || 'Робочий простір';
     $$('.nav-button').forEach(button => {
       const active = button.dataset.view === name;
       button.classList.toggle('active', active);
@@ -69,9 +71,15 @@
       else button.removeAttribute('aria-current');
     });
     if (name === 'library' && !state.libraryLoaded) loadTemplates();
+    document.dispatchEvent(new CustomEvent('protokol:view', {detail: {name}}));
     window.scrollTo({top: 0, behavior: 'instant'});
   }
   $$('[data-view]').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
+  document.addEventListener('protokol:navigate', event => switchView(event.detail.name));
+  $('#prepare-assignments').addEventListener('click', () => {
+    if (!state.items.length) { toast('Спочатку додайте позиції акта.', true); return; }
+    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: JSON.parse(JSON.stringify(state.items)), text: state.text, source: state.source}}));
+  });
 
   async function loadTemplates() {
     $('#library-loading').hidden = false;
@@ -248,7 +256,7 @@
   }
 
   function blankItem() {
-    return {id: uid(), product_name: '', protocol_number: '', protocol_date: '', catalog_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: []};
+    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: []};
   }
 
   function applyExtraction(data, source) {

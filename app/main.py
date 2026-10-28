@@ -21,6 +21,7 @@ from .documents import FIELD_LABELS, TemplateError, render_protocol
 from .extraction import extract_text, parse_act
 from .library import Library, ROOT
 from .matching import infer_subcategory, rank_templates
+from .assignments_api import assignments_router
 
 MAX_UPLOAD = 25 * 1024 * 1024
 local_tessdata = ROOT / ".local/tessdata"
@@ -47,6 +48,7 @@ class Item(BaseModel):
     manufacture_date: str = ""
     batch_size: str = ""
     template_id: str | None = None
+    standard: str = ""
 
 
 class Generation(BaseModel):
@@ -224,6 +226,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return Response(output.getvalue(), media_type="application/zip",
                         headers={"Content-Disposition": 'attachment; filename="protocols.zip"'})
 
+    app.include_router(assignments_router(data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app
