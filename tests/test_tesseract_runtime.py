@@ -184,3 +184,29 @@ def test_failed_language_load_with_zero_exit_status_still_fails(models, monkeypa
                         result(stdout="PROTOKOL 123", stderr="Failed loading language 'ukr'", code=0))
     with pytest.raises(ValueError, match="Failed loading language 'ukr'"):
         runtime.ocr_image(Image.new("RGB", (400, 100), "white"), "ukr+rus+eng", models_directory=models)
+
+
+def test_cli_checks_supplied_executable_and_models_and_prints_warnings(models, monkeypatch, capsys):
+    calls = []
+
+    def verify(**kwargs):
+        calls.append(kwargs)
+        return "ukr+rus+eng", ["Test OCR warning"]
+
+    monkeypatch.setattr(runtime, "verify_runtime", verify)
+    assert runtime.main(["--executable", "C:/Program Files/Tesseract-OCR/tesseract.exe",
+                         "--directory", str(models)]) == 0
+    assert calls == [{"executable": "C:/Program Files/Tesseract-OCR/tesseract.exe", "models_directory": models}]
+    assert "Test OCR warning" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [ValueError("Failed loading language 'ukr'"), ModuleNotFoundError("No module named 'PIL'")])
+def test_cli_failure_reports_diagnostic_without_traceback(monkeypatch, capsys, error):
+    def fail(**kwargs):
+        raise error
+
+    monkeypatch.setattr(runtime, "verify_runtime", fail)
+    assert runtime.main([]) == 1
+    message = capsys.readouterr().err
+    assert str(error) in message
+    assert "Traceback" not in message

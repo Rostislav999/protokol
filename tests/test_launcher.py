@@ -166,11 +166,41 @@ def test_check_mode_never_serves_installs_or_opens_browser(monkeypatch):
         checks.append("models")
     monkeypatch.setattr(launch, "ensure_dependencies", dependencies)
     monkeypatch.setattr(launch, "prepare_models", models)
-    monkeypatch.setattr(launch, "verify_runtime", lambda **k: ("ukr+rus+eng", []))
+    monkeypatch.setattr(launch, "verify_ocr_runtime", lambda *a: checks.append("ocr"))
     monkeypatch.setattr(launch, "serve", lambda *a, **k: pytest.fail("Server started"))
     monkeypatch.setattr(launch.webbrowser, "open", lambda *a, **k: pytest.fail("Browser opened"))
     assert launch.main(["--check"]) == 0
-    assert checks == ["dependencies", "models"]
+    assert checks == ["dependencies", "models", "ocr"]
+
+
+def test_ocr_check_uses_prepared_python_and_preserves_environment(tmp_path, monkeypatch):
+    python = tmp_path / "Програма з пробілами/.venv/Scripts/python.exe"
+    executable = Path("C:/Program Files/Tesseract-OCR/tesseract.exe")
+    environ = {"PATH": "existing path", "TESSDATA_PREFIX": "Моделі", "HTTP_PROXY": "http://proxy:8080"}
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(launch.subprocess, "run", run)
+    launch.verify_ocr_runtime(python, executable, environ)
+    command, options = calls[0]
+    assert command == [str(python), "-m", "scripts.tesseract_runtime", "--executable", str(executable),
+                       "--directory", str(launch.DEFAULT_DIRECTORY)]
+    assert options["cwd"] == launch.ROOT
+    assert options["env"] is environ
+    assert options["timeout"] == 210
+
+
+def test_failed_ocr_check_prevents_server_start(monkeypatch):
+    monkeypatch.setattr(launch, "find_tesseract", lambda: Path("tesseract"))
+    monkeypatch.setattr(launch, "verify_tesseract", lambda *a: None)
+    monkeypatch.setattr(launch, "ensure_dependencies", lambda **k: Path(".venv/python"))
+    monkeypatch.setattr(launch, "prepare_models", lambda **k: None)
+    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(launch, "serve", lambda *a, **k: pytest.fail("Server started without working OCR"))
+    assert launch.main(["--no-browser"]) == 1
 
 
 def test_windows_data_location_survives_new_archive_and_preserves_legacy(tmp_path):

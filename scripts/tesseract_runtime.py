@@ -1,10 +1,12 @@
 """Run Tesseract with relative file names, including on Windows Unicode paths."""
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 from .prepare_ocr import DEFAULT_DIRECTORY
@@ -100,3 +102,23 @@ def verify_runtime(*, executable="tesseract", models_directory: Path | None = No
         raise ValueError("Не вистачає моделей OCR: " + ", ".join(sorted(missing)))
     _smoke(language, executable=executable, models_directory=models_directory, environ=environ)
     return language, warnings
+
+
+def main(argv=None) -> int:
+    """Check real OCR inside the application's prepared Python environment."""
+    parser = argparse.ArgumentParser(description="Проверка распознавания Tesseract.")
+    parser.add_argument("--executable", default="tesseract")
+    parser.add_argument("--directory", type=Path, default=DEFAULT_DIRECTORY)
+    args = parser.parse_args(argv)
+    try:
+        _, warnings = verify_runtime(executable=args.executable, models_directory=args.directory)
+    except (ValueError, OSError, ImportError) as exc:
+        print(f"Не удалось проверить распознавание: {exc}", file=sys.stderr)
+        return 1
+    for warning in warnings:
+        print(warning)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

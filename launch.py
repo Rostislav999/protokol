@@ -23,7 +23,6 @@ import urllib.request
 import webbrowser
 
 from scripts.prepare_ocr import DEFAULT_DIRECTORY, prepare_models
-from scripts.tesseract_runtime import verify_runtime
 
 ROOT = Path(__file__).resolve().parent
 LOCK = ROOT / "requirements.lock"
@@ -140,6 +139,17 @@ def ensure_dependencies(*, check_only: bool = False) -> Path:
         raise LaunchError("Зависимости не удалось проверить после установки. Сохраните текст ошибки и обратитесь за помощью.")
     stamp.write_text(digest)
     return python
+
+
+def verify_ocr_runtime(python: Path, executable: Path, environ: dict) -> None:
+    """Run the image-based check where Pillow was installed, not in bootstrap Python."""
+    result = subprocess.run(
+        [str(python), "-m", "scripts.tesseract_runtime", "--executable", str(executable),
+         "--directory", str(DEFAULT_DIRECTORY)],
+        cwd=ROOT, env=environ, timeout=210,
+    )
+    if result.returncode:
+        raise LaunchError("Проверка распознавания не пройдена. Посмотрите сообщение об ошибке выше.")
 
 
 def port_number(value: str) -> int:
@@ -271,9 +281,7 @@ def main(argv=None) -> int:
         verify_tesseract(executable, environ)
         python = ensure_dependencies(check_only=args.check)
         prepare_models(download=not args.check)
-        _, warnings = verify_runtime(executable=str(executable), models_directory=DEFAULT_DIRECTORY, environ=environ)
-        for warning in warnings:
-            print(warning)
+        verify_ocr_runtime(python, executable, environ)
         if args.check:
             print("Проверка завершена: Python, зависимости, Tesseract и языковые модели готовы.")
             return 0
