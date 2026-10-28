@@ -1,0 +1,232 @@
+"""Browser app; documents and OCR stay on the machine running this server."""
+from __future__ import annotations
+
+import io
+import json
+import os
+from pathlib import Path
+from typing import Literal
+import re
+import shutil
+from uuid import uuid4
+from zipfile import ZipFile, ZIP_DEFLATED
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
+
+from .documents import FIELD_LABELS, TemplateError, render_protocol
+from .extraction import extract_text, parse_act
+from .library import Library, ROOT
+from .matching import infer_subcategory, rank_templates
+
+MAX_UPLOAD = 25 * 1024 * 1024
+local_tessdata = ROOT / ".local/tessdata"
+if (local_tessdata / "ukr.traineddata").exists():
+    os.environ.setdefault("TESSDATA_PREFIX", str(local_tessdata))
+
+
+class Common(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_max_length=12000)
+    customer: str = ""
+    sampling_description: str = ""
+    supplier: str = ""
+    contract: str = ""
+
+
+class Item(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_max_length=12000)
+    id: str = ""
+    product_name: str = ""
+    protocol_number: str = ""
+    protocol_date: str = ""
+    catalog_number: str = ""
+    manufacturer: str = ""
+    manufacture_date: str = ""
+    batch_size: str = ""
+    template_id: str | None = None
+
+
+class Generation(BaseModel):
+    common: Common
+    items: list[Item] = Field(min_length=1, max_length=100)
+    confirmed: bool = False
+
+
+class TextInput(BaseModel):
+    text: str = Field(max_length=250000)
+
+
+class MatchInput(BaseModel):
+    product_name: str = Field(max_length=12000)
+
+
+class TemplateUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
+    category: str = Field(default="Інше", max_length=100)
+    subcategory: Literal["", "legumes", "cereals", "potatoes", "other"] = ""
+
+
+def validate_aliases(aliases):
+    if not isinstance(aliases, list) or len(aliases) > 100 or any(
+        not isinstance(v, str) or len(v) > 300 for v in aliases
+    ):
+        raise HTTPException(422, "Ключові назви мають бути списком коротких рядків.")
+    return list(dict.fromkeys(v.strip() for v in aliases if v.strip()))
+
+
+async def read_upload(file: UploadFile) -> bytes:
+    try:
+        data = await file.read(MAX_UPLOAD + 1)
+    finally:
+        await file.close()
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "Файл завеликий. Максимальний розмір — 25 МБ.")
+    if not data:
+        raise HTTPException(422, "Завантажено порожній файл.")
+    return data
+
+
+def create_app(data_dir: Path | None = None) -> FastAPI:
+    app = FastAPI(title="Протокол", version="1.0.0")
+    library = Library((data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))) / "templates")
+    app.state.library = library
+
+    def public_template(entry: dict) -> dict:
+        return {**entry, "inferred_subcategory": infer_subcategory(entry.get("product_name") or entry["name"])}
+
+    def enriched(text: str) -> dict:
+        result = parse_act(text)
+        for item in result["items"]:
+            item["id"] = uuid4().hex
+            item.setdefault("protocol_date", "")
+            item["template_id"] = None  # Never silently confirm a suggestion.
+            item["matches"] = rank_templates(item["product_name"], library.all())[:5]
+        return {"text": text, **result}
+
+    @app.get("/api/health")
+    def health():
+        return {"status": "ok", "templates": len(library.all()),
+                "ocr_installed": bool(shutil.which("tesseract")), "local_processing": True}
+
+    @app.get("/api/templates")
+    def templates():
+        return {"templates": [public_template(entry) for entry in library.all()], "field_labels": FIELD_LABELS}
+
+    @app.post("/api/templates")
+    async def add_template(file: UploadFile = File(...), name: str = Form(""),
+                           aliases: str = Form("[]"), category: str = Form("Інше"), subcategory: str = Form("")):
+        if not (file.filename or "").lower().endswith(".docx"):
+            raise HTTPException(422, "Шаблон має бути у форматі .docx.")
+        if len(name) > 300 or len(category) > 100:
+            raise HTTPException(422, "Назва або категорія надто довга.")
+        if subcategory not in ("", "legumes", "cereals", "potatoes", "other"):
+            raise HTTPException(422, "Невідома група другої страви.")
+        try:
+            alias_list = validate_aliases(json.loads(aliases))
+            data = await read_upload(file)
+            return public_template(library.add(data, file.filename, name, alias_list, category, subcategory))
+        except (ValueError, TemplateError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.patch("/api/templates/{template_id}")
+    def update_template(template_id: str, values: TemplateUpdate):
+        try:
+            fields = values.model_dump()
+            fields["aliases"] = validate_aliases(fields["aliases"])
+            if not fields["name"].strip():
+                raise HTTPException(422, "Вкажіть назву шаблону.")
+            return public_template(library.update(template_id, fields))
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.delete("/api/templates/{template_id}")
+    def delete_template(template_id: str):
+        try:
+            library.delete(template_id)
+            return {"deleted": True}
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/templates/{template_id}/download")
+    def download_template(template_id: str):
+        try:
+            entry = library.get(template_id)
+            return FileResponse(library.directory / (entry["id"] + ".docx"),
+                                filename=entry["filename"],
+                                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/extract")
+    async def extract(file: UploadFile = File(...)):
+        filename = file.filename or "scan"
+        data = await read_upload(file)
+        try:
+            result = await run_in_threadpool(extract_text, data, filename)
+            parsed = enriched(result["text"])
+            parsed["warnings"] = list(dict.fromkeys(result.get("warnings", []) + parsed.get("warnings", [])))
+            return {**result, **parsed}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/parse")
+    def parse(values: TextInput):
+        return enriched(values.text)
+
+    @app.post("/api/match")
+    def match(values: MatchInput):
+        return {"matches": rank_templates(values.product_name, library.all())[:5]}
+
+    @app.post("/api/generate")
+    def generate(values: Generation):
+        if not values.confirmed:
+            raise HTTPException(422, "Підтвердьте перевірку розпізнаних даних та вибір шаблонів.")
+        if not values.common.customer.strip() or not values.common.sampling_description.strip():
+            raise HTTPException(422, "Заповніть замовника та адресу й обставини відбору.")
+        numbers = []
+        for i, item in enumerate(values.items, 1):
+            item.protocol_number = re.sub(r"^(?:№\s*)+", "", item.protocol_number.strip()).strip()
+            if any(not (getattr(item, key) or "").strip() for key in
+                   ("product_name", "protocol_number", "protocol_date", "template_id")):
+                raise HTTPException(422, f"Позиція {i}: заповніть назву, номер і дату протоколу та оберіть шаблон.")
+            numbers.append(item.protocol_number.strip())
+        if len(numbers) != len(set(numbers)):
+            raise HTTPException(422, "Номери протоколів мають бути унікальними для кожної позиції.")
+        output = io.BytesIO()
+        summary = []
+        with ZipFile(output, "w", ZIP_DEFLATED) as bundle:
+            for i, item in enumerate(values.items, 1):
+                try:
+                    template = library.get(item.template_id)
+                    fields = {**values.common.model_dump(), **item.model_dump()}
+                    unsupported = [label for key, label in FIELD_LABELS.items()
+                                   if fields.get(key, "").strip() and key not in template["available_fields"]]
+                    if unsupported:
+                        raise TemplateError("У шаблоні немає полів для цих даних: " + ", ".join(unsupported)
+                                            + ". Додайте відповідні метки до Word-шаблону.")
+                    content = render_protocol(library.read(item.template_id), fields)
+                except (KeyError, TemplateError) as exc:
+                    raise HTTPException(422, f"Позиція {i}: {exc}") from exc
+                safe_name = re.sub(r'[^\w\- .]', '_', f"{item.protocol_number} {item.product_name}", flags=re.U)[:130].strip('. ')
+                filename = f"{i:02d} {safe_name}.docx"
+                bundle.writestr(filename, content)
+                missing = [label for key, label in FIELD_LABELS.items() if not fields.get(key, "").strip()]
+                summary.append(f"{filename}\nШаблон: {template['name']}\nНе заповнено: {', '.join(missing) or 'немає'}\n")
+            bundle.writestr("ПЕРЕВІРИТИ.txt", "Це підготовлені проєкти протоколів.\n"
+                            "Змінено лише дані до фрази «Вищезазначена інформація надана замовником.».\n"
+                            "Усе нижче збережено з шаблону, включно зі старими результатами, датами та підписами.\n"
+                            "Перевірте їх окремо перед використанням документа.\n"
+                            "Порожні поля позначено [НЕ ЗАПОВНЕНО]; старі дані з прикладу не перенесено.\n\n" + "\n".join(summary))
+        return Response(output.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="protocols.zip"'})
+
+    app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
+    app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
+    return app
+
+
+app = create_app()

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102b37">
+  <title>Протокол — підготовка протоколів випробувань</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+ <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6m-5 0v7L4.8 19a1.3 1.3 0 0 0 1.1 2h12.2a1.3 1.3 0 0 0 1.1-2L14 10V3M8 15h8"/></symbol>
+ <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6M8 13h8m-8 4h6"/></symbol>
+ <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+ <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+ <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+ <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+ <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+ <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4"/></symbol>
+ <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+ <symbol id="i-edit" viewBox="0 0 24 24"><path d="m16 3 5 5-12 12-6 1 1-6ZM13 6l5 5"/></symbol>
+ <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+ <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Zm-4 9 3 3 5-6"/></symbol>
+ <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></symbol>
+ <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+</svg>
+
+<aside class="sidebar">
+ <a href="/" class="brand" aria-label="Протокол — головна"><span class="brand-mark"><svg class="icon"><use href="#i-flask"/></svg></span><span>Протокол<small>ЛАБОРАТОРНИЙ ПОМІЧНИК</small></span></a>
+ <span class="nav-caption">РОБОЧИЙ ПРОСТІР</span>
+ <nav aria-label="Основна навігація">
+  <button class="nav-button active" data-view="acts" aria-current="page"><svg class="icon"><use href="#i-file"/></svg>Акти відбору</button>
+  <button class="nav-button" data-view="library"><svg class="icon"><use href="#i-grid"/></svg>Бібліотека шаблонів<span id="nav-template-count" class="nav-count">—</span></button>
+ </nav>
+ <div class="sidebar-note"><svg class="icon"><use href="#i-shield"/></svg><strong>Ваші документи — у вас</strong><p>Розпізнавання та підготовка Word-файлів на сервері програми, без зовнішніх AI-сервісів.</p></div>
+ <div class="sidebar-footer"><span class="online-dot"></span>Простір підготовки документів</div>
+</aside>
+
+<main>
+ <header class="topbar"><div class="breadcrumb">Робочий простір <span>/</span> <strong id="breadcrumb-current">Акти відбору</strong></div><span class="local-badge"><span class="online-dot"></span>Локальне розпізнавання</span></header>
+ <div class="main-content">
+  <section id="acts-view" aria-labelledby="acts-title">
+   <div class="page-heading"><div><p class="eyebrow">ВІД АКТА ДО ГОТОВОГО ДОКУМЕНТА</p><h1 id="acts-title">Підготовка протоколів</h1><p class="subtitle">Завантажте акт відбору. Перевірте дані. Отримайте окремий Word-файл для кожного зразка.</p></div><button id="new-act" class="button secondary" hidden><svg class="icon"><use href="#i-plus"/></svg>Новий акт</button></div>
+   <ol class="steps" aria-label="Етапи підготовки">
+    <li id="step-upload" class="current"><span class="step-number">1</span><div><strong>Завантаження акта</strong><small>Скан, фото або документ</small></div></li>
+    <li id="step-review"><span class="step-number">2</span><div><strong>Перевірка даних</strong><small>Позиції та відповідні шаблони</small></div></li>
+    <li id="step-download"><span class="step-number">3</span><div><strong>Готові протоколи</strong><small>Архів із файлами .docx</small></div></li>
+   </ol>
+
+   <div id="upload-section" class="upload-layout">
+    <section class="panel upload-panel">
+     <div class="panel-heading"><h2>Новий акт відбору</h2><span class="subtle-tag">КРОК 01</span></div>
+     <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Завантажити акт відбору">
+      <div class="upload-illustration"><span class="illustration-sheet"><svg class="icon"><use href="#i-file"/></svg></span><span class="illustration-plus"><svg class="icon"><use href="#i-plus"/></svg></span></div>
+      <h3>Перетягніть акт сюди</h3><p>або виберіть файл на своєму пристрої</p><span class="button primary"><svg class="icon"><use href="#i-upload"/></svg>Вибрати файл</span><small>PDF, JPG, PNG, TIFF, DOCX або TXT · до 25 МБ</small>
+     </div>
+     <input id="act-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.docx,.txt" hidden>
+     <div class="upload-tip"><svg class="icon"><use href="#i-info"/></svg><span>Для кращого розпізнавання використовуйте чіткий скан без обрізаних рядків. Дані можна виправити перед створенням протоколів.</span></div>
+     <button id="start-manual" class="text-button manual-button">Або ввести дані акта вручну <span>↗</span></button>
+    </section>
+    <aside class="workflow-aside"><div class="panel preservation-card"><span class="mini-icon"><svg class="icon"><use href="#i-file"/></svg></span><h3>Ваш шаблон.<br>Точні дані з акта.</h3><p>Для кожної позиції обирається відповідний шаблон: свинина, кілька, готова перша страва та інші продукти.</p><div class="preservation-rule"><span class="rule-dot"></span><div><strong>Оновлюється тільки вступна частина</strong><p>До фрази «Вищезазначена інформація надана замовником.»</p></div></div><div class="preservation-rule"><span class="rule-dot"></span><div><strong>Увесь документ зберігається</strong><p>Текст і таблиці нижче цієї фрази залишаються без змін.</p></div></div></div><button class="library-shortcut" data-view="library"><span><strong><span id="aside-template-count">—</span> шаблонів у бібліотеці</strong><small>Додавайте власні Word-шаблони</small></span><svg class="icon"><use href="#i-arrow"/></svg></button></aside>
+   </div>
+
+   <section id="processing-section" class="panel processing" hidden aria-live="polite"><div class="spinner"></div><h2>Розпізнаємо акт</h2><p id="processing-label">Читаємо документ і шукаємо позиції…</p><small>Розпізнавання багатосторінкових сканів може тривати кілька хвилин.</small></section>
+
+   <section id="review-section" hidden>
+    <div id="source-banner" class="source-banner"></div>
+    <div id="extraction-warnings" class="notice warning" hidden></div>
+    <details class="panel source-details"><summary>Розпізнаний текст акта <span>Переглянути або виправити</span></summary><div class="details-body"><label for="raw-text">Текст, з якого визначено позиції</label><textarea id="raw-text" rows="10" spellcheck="false"></textarea><div class="source-actions"><small>Повторний розбір замінить заповнені нижче поля. Перевірте результат.</small><button id="reparse" class="button secondary">Повторно розібрати текст</button></div></div></details>
+    <section class="panel common-panel"><div class="panel-heading"><div><h2>Загальні дані акта</h2><p>Будуть перенесені в кожен протокол.</p></div><span class="subtle-tag">ОБОВ’ЯЗКОВІ ПОЛЯ *</span></div><div id="common-fields" class="form-grid"></div></section>
+    <div class="section-heading"><div><h2>Позиції в акті <span id="item-count" class="count-pill">0</span></h2><p>Перевірте кожен зразок і підтвердьте його шаблон.</p></div><button id="add-item" class="button secondary"><svg class="icon"><use href="#i-plus"/></svg>Додати позицію</button></div>
+    <div id="items-list"></div>
+    <div id="empty-items" class="panel empty-state" hidden><svg class="icon"><use href="#i-file"/></svg><h3>Позиції поки не визначено</h3><p>Виправте розпізнаний текст або додайте позиції вручну.</p></div>
+    <div class="notice soft"><svg class="icon"><use href="#i-info"/></svg><div>Програма готує документ за обраним шаблоном. Результати випробувань нижче контрольної фрази не оновлюються і можуть містити дані зразка шаблону. Порожні необов’язкові поля у вступній частині будуть позначені «[НЕ ЗАПОВНЕНО]».</div></div>
+    <section class="panel generation-panel"><div><label class="confirmation"><input id="review-confirmed" type="checkbox"><span>Я перевірив(-ла) розпізнані дані та відповідність шаблону кожному зразку.</span></label><p id="generation-help" class="generation-help">Заповніть обов’язкові поля та підтвердьте перевірку.</p></div><button id="generate" class="button primary" disabled><svg class="icon"><use href="#i-download"/></svg>Створити протоколи</button></section>
+    <div id="download-success" class="notice success" hidden role="status"></div>
+   </section>
+  </section>
+
+  <section id="library-view" hidden aria-labelledby="library-title">
+   <div class="page-heading"><div><p class="eyebrow">ВАШІ СТАНДАРТИ ОФОРМЛЕННЯ</p><h1 id="library-title">Бібліотека шаблонів</h1><p class="subtitle">Word-шаблони для різних продуктів. Назви й ключові слова допомагають підібрати відповідний документ.</p></div><button id="open-template-upload" class="button primary"><svg class="icon"><use href="#i-plus"/></svg>Додати шаблон</button></div>
+   <div class="library-overview"><div class="panel library-stat"><span class="mini-icon"><svg class="icon"><use href="#i-grid"/></svg></span><div><strong id="library-template-count">—</strong><p>шаблонів протоколів</p></div></div><div class="panel library-explanation"><svg class="icon"><use href="#i-shield"/></svg><div><strong>Оригінальне оформлення залишається</strong><p>Змінюється лише вступна частина. Решта Word-документа зберігається разом із таблицями та зображеннями.</p></div></div></div>
+   <section class="panel library-panel"><div class="library-toolbar"><label class="search-box"><svg class="icon"><use href="#i-search"/></svg><input id="template-search" type="search" placeholder="Знайти за назвою або ключовим словом" aria-label="Пошук шаблонів"></label><label class="category-filter"><span class="sr-only">Категорія</span><select id="category-filter"><option value="">Усі категорії</option></select></label><label class="category-filter"><span class="sr-only">Група другої страви</span><select id="subcategory-filter"><option value="">Усі групи других страв</option><option value="legumes">Бобові</option><option value="cereals">Круп’яні</option><option value="potatoes">Картопляні</option><option value="other">Інші другі страви</option></select></label></div><div id="library-loading" class="empty-state"><div class="spinner small"></div><p>Завантажуємо бібліотеку…</p></div><div id="template-list" class="template-list"></div><div id="library-empty" class="empty-state" hidden><svg class="icon"><use href="#i-grid"/></svg><h3>Шаблонів не знайдено</h3><p>Спробуйте інший пошук або додайте свій Word-шаблон.</p></div></section>
+   <div class="notice soft"><svg class="icon"><use href="#i-info"/></svg><div>Для точного підбору додайте синоніми назви: наприклад, «свинина тушкована», «тушкована свинина». Для супу зі свининою використовуйте окремий шаблон першої страви. У готових других стравах розрізняйте бобові, круп’яні та картопляні: квасоля й каша потребують відповідних шаблонів.</div></div>
+  </section>
+ </div>
+ <footer class="main-footer">Протокол <span>·</span> Підготовка документів для лабораторних випробувань</footer>
+</main>
+
+<dialog id="template-dialog" class="modal"><form id="template-form"><div class="modal-heading"><div><p class="eyebrow">БІБЛІОТЕКА</p><h2 id="template-dialog-title">Додати шаблон</h2></div><button type="button" class="icon-button" id="close-template-dialog" aria-label="Закрити"><svg class="icon"><use href="#i-close"/></svg></button></div><div class="modal-body"><label id="template-file-label" class="field"><span>Word-файл шаблону *</span><input type="file" id="template-file" accept=".docx"><small>Формат .docx, до 25 МБ.</small></label><label class="field"><span>Назва шаблону</span><input id="template-name" maxlength="250" placeholder="Наприклад, Свинина тушкована"><small>Якщо не вказати, назву буде визначено з документа.</small></label><label class="field"><span>Категорія</span><input id="template-category" maxlength="100" placeholder="Наприклад, М’ясні консерви" list="category-options"><datalist id="category-options"></datalist></label><label class="field"><span>Група другої страви</span><select id="template-subcategory"><option value="">Автоматично</option><option value="legumes">Бобові</option><option value="cereals">Круп’яні</option><option value="potatoes">Картопляні</option><option value="other">Інші</option></select><small>Для готових других страв. «Автоматично» визначає групу за найменуванням; для інших категорій група не застосовується.</small></label><label class="field"><span>Ключові слова та синоніми</span><textarea id="template-aliases" rows="3" placeholder="свинина тушкована, тушкована свинина"></textarea><small>Розділяйте комами або пишіть кожен варіант з нового рядка.</small></label><div class="notice soft compact">У шаблоні має бути фраза «Вищезазначена інформація надана замовником.». Перед нею мають бути всі 5 обов’язкових полів: номер і дата протоколу, найменування зразка, замовник та відомості про відбір. Використовуйте стандартні підписи з прикладів або позначки {{protocol_number}}, {{protocol_date}}, {{product_name}}, {{customer}}, {{sampling_description}}. Частина після контрольної фрази не редагується.</div><p id="template-form-error" class="field-error" role="alert" hidden></p></div><div class="modal-footer"><button type="button" id="cancel-template-dialog" class="button secondary">Скасувати</button><button type="submit" id="save-template" class="button primary">Зберегти шаблон</button></div></form></dialog>
+<div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
