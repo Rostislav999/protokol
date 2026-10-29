@@ -77,9 +77,10 @@ class NumberingStore:
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS sample_allocations (
                     sample_key TEXT PRIMARY KEY,
-                    number INTEGER UNIQUE NOT NULL CHECK (number > 0)
+                    number INTEGER NOT NULL CHECK (number > 0)
                 )
             """)
+            self._allow_manual_number_reuse(connection)
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS generation_jobs (
                     job_id TEXT PRIMARY KEY,
@@ -90,6 +91,41 @@ class NumberingStore:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+    @staticmethod
+    def _allow_manual_number_reuse(connection: sqlite3.Connection) -> None:
+        """Upgrade old databases without changing issued sample identities.
+
+        The counter still advances atomically during normal generation. An
+        explicit starting-number reset may intentionally reuse an earlier
+        number, so only the old uniqueness constraint on ``number`` is removed.
+        Both this migration and all data copies share the startup transaction.
+        """
+        unique_numbers = set()
+        for index in connection.execute("PRAGMA index_list(sample_allocations)").fetchall():
+            if index[2] and [row[2] for row in connection.execute(
+                    'PRAGMA index_info("' + index[1].replace('"', '""') + '")').fetchall()] == ["number"]:
+                unique_numbers.add(index[1])
+        if not unique_numbers:
+            return
+        # Preserve explicit indexes and triggers unrelated to number uniqueness.
+        objects = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE tbl_name = 'sample_allocations' "
+            "AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+        ).fetchall()
+        connection.execute("""
+            CREATE TABLE sample_allocations_manual_numbers (
+                sample_key TEXT PRIMARY KEY,
+                number INTEGER NOT NULL CHECK (number > 0)
+            )
+        """)
+        connection.execute("INSERT INTO sample_allocations_manual_numbers(sample_key, number) "
+                           "SELECT sample_key, number FROM sample_allocations")
+        connection.execute("DROP TABLE sample_allocations")
+        connection.execute("ALTER TABLE sample_allocations_manual_numbers RENAME TO sample_allocations")
+        for name, sql in objects:
+            if name not in unique_numbers:
+                connection.execute(sql)
 
     def _connect(self) -> sqlite3.Connection:
         # One connection per operation avoids sqlite's cross-thread connection
@@ -159,12 +195,13 @@ class NumberingStore:
             return {"next_number": value}
 
     def set_next_number(self, value: int) -> dict[str, int | None]:
-        """Initialize or explicitly advance the counter, never reuse numbers."""
+        """Explicitly set any positive starting number for future new samples.
+
+        Existing sample allocations and cached archives retain their original
+        numbers. Choosing an earlier value deliberately permits number reuse.
+        """
         value = _number(value)
         with self._transaction() as connection:
-            current = self._next(connection)
-            if current is not None and value < current:
-                raise NumberingError(f"Не можна зменшити лічильник. Наступний доступний номер: {current}.")
             connection.execute("UPDATE numbering_state SET next_number = ? WHERE singleton = 1", (value,))
             return {"next_number": value}
 

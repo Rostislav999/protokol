@@ -103,7 +103,8 @@
     $('#acts-view').hidden = name !== 'acts';
     $('#library-view').hidden = name !== 'library';
     if ($('#assignments-view')) $('#assignments-view').hidden = name !== 'assignments';
-    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', acts: 'Акти відбору'})[name] || 'Робочий простір';
+    if ($('#excel-view')) $('#excel-view').hidden = name !== 'excel';
+    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', excel: 'Excel із протоколів', acts: 'Акти відбору'})[name] || 'Робочий простір';
     $$('.nav-button').forEach(button => {
       const active = button.dataset.view === name;
       button.classList.toggle('active', active);
@@ -679,6 +680,16 @@
       window.setTimeout(() => URL.revokeObjectURL(url), 60000);
       $('#download-success').hidden = false;
       $('#download-success').innerHTML = `${icon('check')}<div><strong>Протоколи створено — ${state.items.length} Word-файлів.</strong><br>Архів передано для завантаження. Відкрийте документи та перевірте оформлення перед використанням.</div>`;
+      const excelButton = document.createElement('button');
+      excelButton.type = 'button';
+      excelButton.id = 'protocols-to-excel';
+      excelButton.className = 'text-button';
+      excelButton.style.marginTop = '10px';
+      excelButton.textContent = 'Excel із цих протоколів →';
+      excelButton.addEventListener('click', () => document.dispatchEvent(new CustomEvent('protokol:excel-import', {
+        detail: {files: [new File([blob], 'protokoly.zip', {type:'application/zip'})]}
+      })));
+      $('#download-success > div').append(excelButton);
       $('#step-review').classList.remove('current');
       $('#step-review').classList.add('complete');
       $('#step-download').classList.add('current');

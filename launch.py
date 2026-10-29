@@ -95,7 +95,7 @@ def installed_dependencies(python: Path) -> bool:
         "from packaging.requirements import Requirement; "
         "requirements=[Requirement(value) for value in json.loads(sys.argv[1])]; "
         "assert requirements and all((r.marker and not r.marker.evaluate()) or version(r.name) in r.specifier for r in requirements); "
-        "import fastapi,uvicorn,multipart,PIL,fitz,cv2"
+        "import fastapi,uvicorn,multipart,PIL,fitz,cv2,lxml.etree"
     )
     try:
         result = subprocess.run([str(python), "-c", code, json.dumps(requirements)], cwd=ROOT,

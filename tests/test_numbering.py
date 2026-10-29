@@ -79,15 +79,16 @@ def test_stale_preview_is_rejected_without_counter_change(tmp_path):
     assert store.status() == {"next_number": 1331}
 
 
-def test_explicit_counter_setting_can_only_advance_and_initialization_is_repeatable(tmp_path):
+def test_explicit_counter_setting_can_move_both_directions_and_initialization_is_repeatable(tmp_path):
     store = NumberingStore(tmp_path / "numbering.sqlite3")
     assert store.initialize(100) == {"next_number": 100}
     assert store.initialize(100) == {"next_number": 100}
     with pytest.raises(NumberingError, match="налаштовано"):
         store.initialize(101)
     generate(store)
-    with pytest.raises(NumberingError, match="зменшити"):
-        store.set_next_number(100)
+    assert store.set_next_number(100) == {"next_number": 100}
+    assert generate(store, "manual-reset", ["reset-sample"])[1] == ["100"]
+    assert store.get_sample_numbers(["sample-a", "reset-sample"]) == {"sample-a": "100", "reset-sample": "100"}
     assert store.set_next_number(250) == {"next_number": 250}
     assert generate(store, "job-2", ["sample-b"])[1] == ["250"]
 

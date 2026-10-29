@@ -26,6 +26,8 @@ from .protocol_text import clean_product_name, normalize_sampling_description
 from .settings import SettingsStore, settings_router
 from .printing import printing_status
 from .sample_details import first_seal_number, sample_weight_value
+from .supplier_details import supplier_with_code
+from .excel_api import excel_router
 
 MAX_UPLOAD = 25 * 1024 * 1024
 local_tessdata = ROOT / ".local/tessdata"
@@ -220,11 +222,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(422, "Номери протоколів мають бути унікальними для кожної позиції.")
         output = io.BytesIO()
         summary = []
+        suppliers = settings.all()["suppliers"]
         with ZipFile(output, "w", ZIP_DEFLATED) as bundle:
             for i, item in enumerate(values.items, 1):
                 try:
                     template = library.get(item.template_id)
                     fields = {**values.common.model_dump(), **item.model_dump()}
+                    fields["supplier"] = supplier_with_code(fields["supplier"], suppliers)
                     fields["seal_number"] = first_seal_number(item.seal_number.strip() or values.common.seal_number.strip())
                     fields["sample_weight"] = sample_weight_value(
                         item.sample_weight if item.sample_weight is not None else template.get("sample_weight", ""))
@@ -252,6 +256,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         headers={"Content-Disposition": 'attachment; filename="protocols.zip"'})
 
     app.include_router(settings_router(settings))
+    app.include_router(excel_router(settings))
     app.include_router(assignments_router(directory, settings))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")

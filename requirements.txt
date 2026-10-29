@@ -5,3 +5,4 @@ Pillow==12.3.0
 PyMuPDF==1.26.6
 opencv-python-headless==4.12.0.88
 tzdata==2026.6
+lxml==6.1.3

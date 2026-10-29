@@ -43,7 +43,7 @@
             <label class="field"><span id="assignment-start-label">Перший номер зразка *</span><input id="assignment-start-number" type="number" min="1" max="2147483647" step="1" inputmode="numeric" placeholder="Наприклад, 1401"><small id="assignment-number-hint">Вкажіть початковий номер один раз. Після створення завдань програма продовжить нумерацію.</small></label>
             <div class="field"><span>Дата видачі завдань</span><output id="assignment-today" class="assignment-readonly">—</output><small>Поточна дата за київським часом. Встановлюється програмою під час створення.</small></div>
           </div>
-          <div class="assignment-number-footer"><p id="assignment-next-label"></p><button id="assignment-change-next" type="button" class="text-button" hidden>Змінити наступний номер</button></div>
+          <div class="assignment-number-footer"><p id="assignment-next-label"></p><button id="assignment-change-next" type="button" class="text-button" hidden>Задати початковий номер</button></div>
           <div class="assignment-number-footer"><p id="assignment-issuer-summary">Особа, яка сформулювала та видала завдання: з обраного шаблону.</p><button id="assignment-open-issuer" type="button" class="button secondary">Хто видає завдання</button></div>
         </section>
         <div class="section-heading"><div><h2>Зразки <span id="assignment-item-count" class="count-pill">0</span></h2><p>Підбір виконується за назвою продукту та НД на відповідність.</p></div><div class="assignment-heading-actions"><button id="assignment-select-unambiguous" type="button" class="button secondary">${icon('check')}Обрати однозначні шаблони</button><button id="assignment-add-item" type="button" class="button secondary">${icon('plus')}Додати зразок</button></div></div>
@@ -338,8 +338,8 @@
     const existing = state.nextNumber !== null;
     input.readOnly = existing;
     input.value = existing ? state.nextNumber : state.initialNumber;
-    $('#assignment-start-label').textContent = existing ? 'Наступний номер зразка' : 'Перший номер зразка *';
-    $('#assignment-number-hint').textContent = existing ? 'Новий номер отримує лише новий зразок. Виправлення даних і додавання відділень зберігають уже присвоєний номер.' : 'Вкажіть початковий номер один раз. Лічильник збережеться лише після успішного створення завдань.';
+    $('#assignment-start-label').textContent = existing ? 'Початковий номер для нових зразків' : 'Перший номер зразка *';
+    $('#assignment-number-hint').textContent = existing ? 'Кнопкою «Задати початковий номер» можна вказати будь-яке додатне число, зокрема менше. Уже створені зразки збережуть свої номери; ручний вибір може повторити раніше використаний номер.' : 'Вкажіть будь-який додатний початковий номер. Лічильник збережеться лише після успішного створення завдань.';
     $('#assignment-today').textContent = displayDate(state.today);
     $('#assignment-change-next').hidden = !existing;
     $('#assignment-next-label').textContent = existing ? `У збереженому лічильнику наступний номер: ${state.nextNumber}.` : 'Лічильник ще не налаштовано.';
@@ -351,7 +351,7 @@
   });
   $('#assignment-change-next').addEventListener('click', async () => {
     if (state.busy) return;
-    const value = window.prompt('Наступний номер зразка. Можна лише збільшити лічильник, щоб не повторювати вже видані номери.', state.nextNumber);
+    const value = window.prompt('Початковий номер для нових зразків: будь-яке додатне ціле число, зокрема менше за поточне. Уже створені завдання збережуть свої номери.', state.nextNumber);
     if (value === null) return;
     const number = Number(value);
     if (!Number.isInteger(number) || number < 1 || number > 2147483647) return notice('Вкажіть цілий додатний номер.', true);
@@ -362,7 +362,7 @@
       invalidate();
       renderNumbering();
       renderItems();
-      notice('Наступний номер збережено.');
+      notice('Початковий номер для нових зразків збережено.');
     } catch (error) { notice(error.message, true); }
   });
 
