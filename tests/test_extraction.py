@@ -144,8 +144,8 @@ def test_ruled_table_detection_keeps_cells_and_continues_on_next_page(monkeypatc
         drawing.line((xs[0], y, xs[-1], y), fill="black", width=2)
     values = iter([
         "№", "Назва харчового продукту", "Підприємство виробник", "Дата виготовлення", "Вага зразка", "Кількість одиниць", "Маса партії", "Метод", "Температура", "Норматив", "Показники", "Документи", "Пакет",
-        "Свинина тушкована (12012)", "Виробник: ТОВ А", "16.03.2026", "793.8 кі",
-        "Яловичина тушкована (12013)", "Виробник: ТОВ Б", "07.01.2026", "7144.2 кг",
+        "Свинина тушкована (12012)", "Виробник: ТОВ А", "16.03.2026", "793.8 кі", "00001",
+        "Яловичина тушкована (12013)", "Виробник: ТОВ Б", "07.01.2026", "7144.2 кг", "00002",
         "АКТ №1",
     ])
     monkeypatch.setattr(extraction, "_ocr_image", lambda *args, **kwargs: next(values))
@@ -158,10 +158,11 @@ def test_ruled_table_detection_keeps_cells_and_continues_on_next_page(monkeypatc
     assert parsed["items"][0]["manufacturer"] == "ТОВ А"
     assert parsed["items"][0]["batch_size"] == "793.8 кг"
     assert parsed["items"][1]["manufacture_date"] == "07.01.2026"
+    assert parsed["items"][0]["seal_number"] == "00001"
     continuation_values = iter([
         "3", "Свинина тушкована (12012)", "ТОВ А", "11.02.2026", "4 кг", "9", "7938.0 кг", "Метод 1", "+15", "ДСТУ", "Органолептичні", "Декларація", "0001",
-        "Паштет м'ясний", "ТОВ Б", "15.10.2026", "1967.875 кг",
-        "Паштет печінковий", "ТОВ Б", "13.10.2026", "2000.05 кг",
+        "Паштет м'ясний", "ТОВ Б", "15.10.2026", "1967.875 кг", "00002",
+        "Паштет печінковий", "ТОВ Б", "13.10.2026", "2000.05 кг", "00003",
         "",
     ])
     monkeypatch.setattr(extraction, "_ocr_image", lambda *args, **kwargs: next(continuation_values))

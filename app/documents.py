@@ -1,11 +1,12 @@
 """Fill protocol cover fields without reserializing the original Word XML.
 
-Only text nodes before STOP_PHRASE are patched. The rest of document.xml and
-every other member of the DOCX archive are copied unchanged.
+Cover fields and explicitly requested act/seal values are patched. Repeated
+protocol numbers in headers/footers are synchronized; other XML stays intact.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from io import BytesIO
 from html import unescape
 import re
@@ -27,6 +28,9 @@ FIELD_LABELS = {
     "contract": "Договір",
     "manufacture_date": "Дата виготовлення / вжити до",
     "batch_size": "Розмір партії",
+    "act_number": "Номер акта відбору зразків",
+    "act_date": "Дата акта відбору зразків",
+    "seal_number": "Номер пломби зразка",
 }
 _LEGACY_LABELS = {
     "customer": "Замовник:",
@@ -49,6 +53,10 @@ _HISTORICAL_REVISION_RE = re.compile(
 )
 _DATE_RE = re.compile(r"(?:«?\d{1,2}»?\s+\w+\s+\d{4}\s+року|\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2})\s*\.?$", re.I)
 _MONTHS = ("січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня")
+_ADMIN_FIELDS = {"act_number", "act_date", "seal_number"}
+_PART_NUMBER_RE = re.compile(
+    r"\bПротокол(?:у)?\s+випробувань\s*№\s*(?P<number>[\w]+(?:[-/.‐‑‒–—−][\w]+)*)", re.I,
+)
 
 
 class TemplateError(ValueError):
@@ -104,7 +112,7 @@ def _tag_end(xml: bytes, start: int) -> int:
     raise TemplateError("Пошкоджений XML у Word-документі.")
 
 
-def _read_xml(xml: bytes) -> list[_Paragraph]:
+def _read_xml(xml: bytes, *, require_marker: bool = True) -> list[_Paragraph]:
     # Expat supplies byte offsets into the *original* XML, avoiding a rewrite of
     # namespaces, fields, tables, signatures or runs outside the edited ranges.
     if b"<!DOCTYPE" in xml.upper() or b"<!ENTITY" in xml.upper():
@@ -149,11 +157,12 @@ def _read_xml(xml: bytes) -> list[_Paragraph]:
         raise TemplateError("Не вдалося прочитати XML Word-документа.") from exc
     combined = "\n".join(p.text for p in paragraphs)
     marker = _MARKER_RE.search(combined)
-    if not marker:
+    if not marker and require_marker:
         raise TemplateError(f"У шаблоні відсутня контрольна фраза: «{STOP_PHRASE}».")
     position = 0
     for para in paragraphs:
-        para.limit = max(0, min(len(para.text), marker.start() - position))
+        para.limit = (max(0, min(len(para.text), marker.start() - position))
+                      if marker and require_marker else len(para.text))
         position += len(para.text) + 1
     return paragraphs
 
@@ -164,6 +173,23 @@ def _legacy_parts(text: str) -> tuple[str, int, int] | None:
         if match:
             return key, match.end(), max(match.end(), len(text.rstrip()))
     return None
+
+
+def _administrative_parts(text: str) -> list[tuple[str, int, int]]:
+    """Recognize only the existing act/seal rows, including after the marker."""
+    act = re.match(r"\s*Акт\s+відбору\s+зразків\s*(?::\s*(?:№\s*)?|№\s*)", text, re.I)
+    if act:
+        end = len(text.rstrip(". \t"))
+        separator = re.search(r"\s+від\s+", text[act.end():end], re.I)
+        if separator:
+            start = act.end() + separator.start()
+            return [("act_number", act.end(), start),
+                    ("act_date", act.end() + separator.end(), end)]
+        return [("act_number", act.end(), max(act.end(), end))]
+    seal = re.match(r"\s*Номер\s+пломби(?:\s+зразка)?\s*:\s*", text, re.I)
+    if seal:
+        return [("seal_number", seal.end(), max(seal.end(), len(text.rstrip(". \t"))))]
+    return []
 
 
 def _identification_parts(text: str) -> tuple[int, int, str, str] | None:
@@ -195,6 +221,13 @@ def _load(data: bytes) -> _Document:
     title_seen = False
     date_found = False
     for para in paragraphs:
+        for key, a, b in _administrative_parts(para.text):
+            available.add(key)
+            if not _PLACEHOLDER.search(para.text[a:b]):
+                fields[key] = para.text[a:b]
+        for placeholder in _PLACEHOLDER.finditer(para.text):
+            if placeholder.group(1) in _ADMIN_FIELDS:
+                available.add(placeholder.group(1))
         text = para.editable
         if not text:
             continue
@@ -250,6 +283,32 @@ def inspect_template(data: bytes) -> dict:
     }
 
 
+def _parse_date(value: str, label: str) -> date:
+    value = value.strip().rstrip(".").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    numeric = re.fullmatch(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", value)
+    words = re.fullmatch(r"[«\"']?(\d{1,2})[»\"']?\s+(\w+)\s+(\d{4})\s+року", value, re.I)
+    try:
+        if numeric:
+            day, month, year = map(int, numeric.groups())
+            return date(year, month, day)
+        if words and words.group(2).lower() in _MONTHS:
+            return date(int(words.group(3)), _MONTHS.index(words.group(2).lower()) + 1, int(words.group(1)))
+    except ValueError:
+        pass
+    raise TemplateError(f"Некоректна дата {label}. Укажіть день, місяць і рік, наприклад 29.10.2026.")
+
+
+def format_protocol_date(value: str) -> str:
+    """Render the requested Ukrainian date format independently of system locale."""
+    day = _parse_date(str(value), "протоколу")
+    return f"{day.day} {_MONTHS[day.month - 1]} {day.year} року"
+
+
 def _value(fields: dict, key: str) -> str:
     value = str(fields.get(key) or "").strip()
     if not value:
@@ -261,15 +320,12 @@ def _value(fields: dict, key: str) -> str:
     # A protocol cover field is a paragraph; preserve the original paragraph
     # structure by representing pasted line breaks as ordinary spaces.
     value = re.sub(r"[\r\n\t]+", " ", value)
-    if key == "protocol_number":
+    if key in {"protocol_number", "act_number"}:
         value = value.lstrip("№").strip()
-    if key == "protocol_date" and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        from datetime import date
-        try:
-            d = date.fromisoformat(value)
-        except ValueError as exc:
-            raise TemplateError("Некоректна дата протоколу.") from exc
-        return f"«{d.day:02d}» {_MONTHS[d.month - 1]} {d.year} року"
+    if key == "protocol_date":
+        return format_protocol_date(value)
+    if key == "act_date":
+        return _parse_date(value, "акта відбору зразків").strftime("%d.%m.%Y")
     return value
 
 
@@ -326,7 +382,8 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
     """Return a complete DOCX, replacing only editable cover data.
 
     Empty/missing inputs are explicitly marked [НЕ ЗАПОВНЕНО]. Existing
-    laboratory results and all content from STOP_PHRASE onward stay untouched.
+    Laboratory results stay untouched. The existing act/seal rows after the
+    marker and repeated numbers in headers/footers are explicit exceptions.
     """
     doc = _load(data)
     replacements = {key: _value(fields, key) for key in FIELD_LABELS}
@@ -336,14 +393,21 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
     date_changed = False
     for para in doc.paragraphs:
         text = para.editable
-        if not text:
+        administrative = _administrative_parts(para.text)
+        admin_placeholders = [placeholder for placeholder in _PLACEHOLDER.finditer(para.text)
+                              if placeholder.group(1) in _ADMIN_FIELDS]
+        if not text and not administrative and not admin_placeholders:
             continue
         edits: list[tuple[int, int, str]] = []
         parts = _legacy_parts(text)
         ident = _identification_parts(text)
         placeholders = list(_PLACEHOLDER.finditer(text))
         title = _TITLE_RE.search(text)
-        if _HISTORICAL_REVISION_RE.match(text):
+        if administrative:
+            edits.extend((a, b, replacements[key]) for key, a, b in administrative)
+        elif not text:
+            edits.extend((m.start(), m.end(), replacements[m.group(1)]) for m in admin_placeholders)
+        elif _HISTORICAL_REVISION_RE.match(text):
             # An original sample may be a replacement for a previous report.
             # A new act supplies no authorization to invalidate that historical
             # report. Clear this administrative fact, retaining its paragraph
@@ -370,11 +434,33 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
                          for m in re.finditer(re.escape(old_number), text))
         if title:
             title_seen = True
+        if text and not administrative:
+            edits.extend((m.start(), m.end(), replacements[m.group(1)]) for m in admin_placeholders
+                         if m.start() >= para.limit)
         for a, b, replacement in sorted(edits, reverse=True):
             _replace_range(para, values, a, b, replacement)
 
+    xml = _apply_text_values(doc.xml, doc.paragraphs, values)
+    # Parse once more to ensure user text did not produce an invalid XML part.
+    _read_xml(xml)
+    output = BytesIO()
+    with ZipFile(BytesIO(data)) as source, ZipFile(output, "w") as target:
+        target.comment = source.comment
+        for info in source.infolist():
+            if info.filename == "word/document.xml":
+                content = xml
+            elif re.fullmatch(r"word/(?:header|footer)[^/]*\.xml", info.filename):
+                content = _render_repeated_number(source.read(info.filename), replacements["protocol_number"], old_number)
+            else:
+                content = source.read(info.filename)
+            target.writestr(info, content)
+    return output.getvalue()
+
+
+def _apply_text_values(xml: bytes, paragraphs: list[_Paragraph], values: dict[int, str]) -> bytes:
+    """Patch the smallest changed text ranges without reserializing XML."""
     byte_edits: list[tuple[int, int, bytes]] = []
-    for para in doc.paragraphs:
+    for para in paragraphs:
         for node in para.nodes:
             value = values.get(id(node))
             if value is None or value == node.text:
@@ -390,7 +476,7 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
             while (right < min(len(node.text) - left, len(value) - left)
                    and node.text[len(node.text) - right - 1] == value[len(value) - right - 1]):
                 right += 1
-            offsets = _text_offsets(doc.xml[node.start:node.end], node.text)
+            offsets = _text_offsets(xml[node.start:node.end], node.text)
             old_end = len(node.text) - right
             new_end = len(value) - right
             byte_edits.append((node.start + offsets[left], node.start + offsets[old_end],
@@ -398,20 +484,37 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
             if value and (value[0].isspace() or value[-1].isspace()) and not node.preserve_space:
                 # Spaces at run boundaries would otherwise be discarded by
                 # Word after a value is moved into the first original run.
-                opening = doc.xml[node.tag_start:node.tag_end]
+                opening = xml[node.tag_start:node.tag_end]
                 if b"xml:space=" in opening:
                     updated = re.sub(br"xml:space\s*=\s*(['\"]).*?\1", b'xml:space="preserve"', opening)
                 else:
                     updated = opening[:-1] + b' xml:space="preserve">'
                 byte_edits.append((node.tag_start, node.tag_end, updated))
-    xml = doc.xml
     for a, b, replacement in sorted(byte_edits, reverse=True):
         xml = xml[:a] + replacement + xml[b:]
-    # Parse once more to ensure user text did not produce an invalid XML part.
-    _read_xml(xml)
-    output = BytesIO()
-    with ZipFile(BytesIO(data)) as source, ZipFile(output, "w") as target:
-        target.comment = source.comment
-        for info in source.infolist():
-            target.writestr(info, xml if info.filename == "word/document.xml" else source.read(info.filename))
-    return output.getvalue()
+    return xml
+
+
+def _render_repeated_number(xml: bytes, replacement: str, old_number: str) -> bytes:
+    paragraphs = _read_xml(xml, require_marker=False)
+    values: dict[int, str] = {}
+    for para in paragraphs:
+        edits: list[tuple[int, int, str]] = []
+
+        def add(start: int, end: int):
+            if not any(start < b and end > a for a, b, _ in edits):
+                edits.append((start, end, replacement))
+
+        for placeholder in _PLACEHOLDER.finditer(para.text):
+            if placeholder.group(1) == "protocol_number":
+                add(placeholder.start(), placeholder.end())
+        for match in _PART_NUMBER_RE.finditer(para.text):
+            add(match.start("number"), match.end("number"))
+        if old_number:
+            for match in re.finditer(r"(?<![\w-])" + re.escape(old_number) + r"(?![\w-])", para.text):
+                add(match.start(), match.end())
+        for start, end, value in sorted(edits, reverse=True):
+            _replace_range(para, values, start, end, value)
+    result = _apply_text_values(xml, paragraphs, values)
+    _read_xml(result, require_marker=False)
+    return result

@@ -14,14 +14,18 @@
     ['customer', 'Замовник', true, 'Наприклад, ТОВ «Назва підприємства»'],
     ['supplier', 'Постачальник', false, 'Назва, код ЄДРПОУ'],
     ['sampling_description', 'Відомості про відбір зразків', true, 'Адреса, хто відібрав зразки, присутні представники'],
-    ['contract', 'Договір', false, 'Номер і дата договору']
+    ['contract', 'Договір', false, 'Номер і дата договору'],
+    ['act_number', 'Номер акта відбору зразків', false, 'Наприклад, 87-010-1-247'],
+    ['act_date', 'Дата акта відбору зразків', false, 'Дата з акта, наприклад 20.10.2026'],
+    ['seal_number', 'Спільний номер пломби (якщо один для всіх зразків)', false, 'Або вкажіть окремо в кожній позиції']
   ];
   const itemFields = [
     ['product_name', 'Найменування зразка', true, 'Повна назва продукту з акта', 'full'],
     ['standard', 'НД дослідження (для завдань)', false, 'Наприклад, ДСТУ 4450:2005', 'full'],
     ['protocol_number', 'Номер протоколу / зразка', true, 'Наприклад, 87-015-3000-1305-2', ''],
-    ['protocol_date', 'Дата протоколу', true, 'Наприклад, 28.10.2026', ''],
+    ['protocol_date', 'Дата протоколу', true, 'Наприклад, 29 жовтня 2026 року', ''],
     ['catalog_number', 'Номер за Каталогом', false, 'Якщо зазначений в акті', ''],
+    ['seal_number', 'Номер пломби зразка', false, 'Номер пломби або сейф-пакета з акта', ''],
     ['manufacturer', 'Виробник', false, 'Назва, адреса, код ЄДРПОУ', 'full'],
     ['manufacture_date', 'Дата виготовлення / вжити до', false, 'Як зазначено в акті', ''],
     ['batch_size', 'Розмір партії', false, 'Наприклад, 500,0 кг', 'two']
@@ -270,7 +274,23 @@
   }
 
   function blankItem() {
-    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: [], _protocol_date_manual:false, _protocol_number_manual:false};
+    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', seal_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: [], _protocol_date_manual:false, _protocol_number_manual:false};
+  }
+
+  function formatProtocolDate(value) {
+    const months = ['січня','лютого','березня','квітня','травня','червня','липня','серпня','вересня','жовтня','листопада','грудня'];
+    const text = String(value || '').trim();
+    let day, month, year;
+    let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) [,year,month,day] = match.map(Number);
+    else if ((match = text.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})\.?$/))) [,day,month,year] = match.map(Number);
+    else if ((match = text.toLocaleLowerCase('uk').match(/^«?(\d{1,2})»?\s+([а-яіїєґ]+)\s+(\d{4})(?:\s+року)?\.?$/))) {
+      day = Number(match[1]); month = months.indexOf(match[2]) + 1; year = Number(match[3]);
+    }
+    if (!year || !month || !day) return text;
+    const date = new Date(Date.UTC(year,month-1,day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month-1 || date.getUTCDate() !== day) return text;
+    return `${day} ${months[month-1]} ${year} року`;
   }
 
   function protocolParts(value, allowIncomplete = false) {
@@ -457,6 +477,15 @@
     updateGeneration();
   }
   $('#items-list').addEventListener('input', updateItemField);
+  $('#items-list').addEventListener('focusout', event => {
+    const input = event.target;
+    if (input.dataset.field !== 'protocol_date') return;
+    const formatted = formatProtocolDate(input.value);
+    if (formatted !== input.value) {
+      input.value = formatted;
+      updateItemField(event);
+    }
+  });
   $('#items-list').addEventListener('change', event => { if (event.target.tagName === 'SELECT') updateItemField(event); });
   $('#items-list').addEventListener('click', async event => {
     const card = event.target.closest('[data-item]');

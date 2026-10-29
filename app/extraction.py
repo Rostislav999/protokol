@@ -23,9 +23,11 @@ MAX_PAGES = 20
 MAX_PIXELS = 40_000_000
 ITEM_FIELDS = (
     "product_name", "protocol_number", "catalog_number", "manufacturer",
-    "manufacture_date", "batch_size", "standard",
+    "manufacture_date", "batch_size", "standard", "seal_number",
 )
-COMMON_FIELDS = ("customer", "sampling_description", "supplier", "contract")
+COMMON_FIELDS = ("customer", "sampling_description", "supplier", "contract", "act_number", "act_date", "seal_number")
+_ACT_MONTHS = ("січня", "лютого", "березня", "квітня", "травня", "червня",
+               "липня", "серпня", "вересня", "жовтня", "листопада", "грудня")
 
 
 def _normalize(value: str) -> str:
@@ -116,8 +118,8 @@ def _ocr_table(image, language: str, previous_header=None):
         return None
     pad = max(3, width // 500)
     cache = {}
-    def cell(row, column):
-        key = row, column
+    def cell(row, column, rotation=0):
+        key = row, column, rotation
         if key not in cache:
             left, right = xs[column] + pad, xs[column + 1] - pad
             upper, lower = ys[row] + pad, ys[row + 1] - pad
@@ -125,6 +127,8 @@ def _ocr_table(image, language: str, previous_header=None):
                 cache[key] = ""
             else:
                 crop = Image.fromarray(table[round(upper * ratio):round(lower * ratio), round(left * ratio):round(right * ratio)])
+                if rotation:
+                    crop = crop.rotate(rotation, expand=True)
                 # A white border prevents tightly cropped letters touching edges.
                 from PIL import ImageOps
                 crop = ImageOps.expand(crop, border=12, fill="white")
@@ -132,11 +136,26 @@ def _ocr_table(image, language: str, previous_header=None):
         return cache[key]
     first_row = [cell(0, i) for i in range(len(xs) - 1)]
     fields = [_header_field(value) for value in first_row]
+    rotations = {}
     has_header = "product_name" in fields and sum(value is not None for value in fields) >= 3
+    if has_header:
+        # The supplied act puts safe-package IDs in a narrow, rotated final
+        # column. Read that labelled column explicitly rather than dropping it
+        # or treating its numbers as sample/protocol IDs.
+        last = len(fields) - 1
+        narrow = ys[1] - ys[0] > (xs[last + 1] - xs[last]) * 1.4
+        if narrow and (fields[last] is None or "сейф" in first_row[last].lower()):
+            for rotation in (90, 270):
+                if _header_field(cell(0, last, rotation)) == "seal_number":
+                    fields[last] = "seal_number"
+                    rotations[last] = rotation
+                    break
     if not has_header:
-        if previous_header is None or len(previous_header) != len(fields):
+        prior_fields = previous_header.get("fields") if isinstance(previous_header, dict) else previous_header
+        if prior_fields is None or len(prior_fields) != len(fields):
             return None
-        fields = previous_header
+        fields = prior_fields
+        rotations = previous_header.get("rotations", {}) if isinstance(previous_header, dict) else {}
     if "product_name" not in fields:
         return None
     rows = []
@@ -144,7 +163,7 @@ def _ocr_table(image, language: str, previous_header=None):
         item = _empty_item()
         for column, field in enumerate(fields):
             if field:
-                item[field] = cell(row, column)
+                item[field] = cell(row, column, rotations.get(column, 0))
         if not item["product_name"]:
             continue
         item["manufacturer"] = re.sub(r"^виробник\s*:\s*", "", item["manufacturer"], flags=re.I)
@@ -155,15 +174,22 @@ def _ocr_table(image, language: str, previous_header=None):
         rows.append(item)
     if not rows:
         return None
-    columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії", "Нормативний документ"]
+    columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії", "Нормативний документ", "Номер пломби / сейф-пакета"]
     lines = [" | ".join(columns)]
     for index, item in enumerate(rows, 1):
         lines.append(" | ".join([str(index)] + [item[field].replace("|", " ") for field in ITEM_FIELDS]))
     header_text = ""
+    warnings = []
     min_y = round(float(np.min(points[:, 1])))
     if min_y > height * .15:
-        header_text = _ocr_image(image.crop((0, 0, image.width, max(1, round((min_y - pad) * ratio)))), language, psm=6)
-    return {"text": header_text + "\n\n" + "\n".join(lines), "header": fields, "rows": len(rows)}
+        header_image = image.crop((0, 0, image.width, max(1, round((min_y - pad) * ratio))))
+        header_text = _ocr_image(header_image, language, psm=6)
+        recovered_date = _recover_act_date(header_image, header_text, language)
+        if recovered_date:
+            header_text += "\nДата акта: " + recovered_date
+            warnings.append("Дату акта уточнено окремим розпізнаванням заголовка. Перевірте її за сканом.")
+    return {"text": header_text + "\n\n" + "\n".join(lines),
+            "header": {"fields": fields, "rotations": rotations}, "rows": len(rows), "warnings": warnings}
 
 
 def extract_text(data: bytes, filename: str) -> dict:
@@ -241,6 +267,7 @@ def extract_text(data: bytes, filename: str) -> dict:
                         text = table_result["text"]
                         table_header = table_result["header"]
                         methods.add("ocr-table")
+                        warnings.extend(table_result.get("warnings", []))
                         warnings.append("Таблицю розпізнано по комірках. Рукописні номери не визначаються надійно — внесіть їх вручну.")
                     else:
                         text = _ocr_image(image, language)
@@ -267,6 +294,7 @@ def extract_text(data: bytes, filename: str) -> dict:
                 if result:
                     texts.append(result["text"])
                     table_header = result["header"]
+                    warnings.extend(result.get("warnings", []))
                     warnings.append("Таблицю розпізнано по комірках. Рукописні номери внесіть вручну.")
                 else:
                     texts.append(_ocr_image(image.copy(), language))
@@ -282,6 +310,9 @@ _LABELS = {
     "customer": [r"замовник(?:\s+випробувань)?", r"заказчик"],
     "supplier": [r"постачальник", r"поставщик"],
     "contract": [r"договір(?:и)?", r"договор(?:и|ы)?", r"контракт(?:и)?"],
+    "act_number": [r"номер\s+акта?(?:\s+відбору(?:\s+зразків)?)?", r"акт\s+відбору(?:\s+зразків)?(?:\s*№)?"],
+    "act_date": [r"дата\s+акта?(?:\s+відбору(?:\s+зразків)?)?"],
+    "seal_number": [r"номер(?:и)?\s+(?:пломби|пломб|пломбування|сейф[- ]?пакет(?:а|ів)?)(?:\s+зразк(?:а|ів))?", r"пломб[аи](?:\s*№)?", r"опломбовано", r"сейф[- ]?пакет(?:\s*№)?"],
     "sampling_description": [r"зразки харчових продуктів відібрано за адресою", r"місце(?:\s+та\s+адреса)?\s+відбору(?:\s+(?:зразків|проб))?", r"адреса\s+відбору(?:\s+зразків)?", r"місце відбору зразка"],
     "product_name": [r"найменування(?:\s+(?:та|і)\s+назва)?(?:\s+(?:продукції|продукту|продуктів|харчових продуктів|зразка|зразків|товару))?", r"назва\s+(?:зразка|продукту|продукції|продуктів)", r"наименование(?:\s+(?:продукции|продукта|образца))?"],
     "protocol_number": [r"ідентифікаційний\s+(?:номер|код)(?:\s+зразка)?", r"номер\s+(?:протоколу|зразка)", r"протокол(?:\s+випробувань)?\s*(?:№)?"],
@@ -327,6 +358,8 @@ def _table_columns(line: str) -> list[str] | None:
 
 def _header_field(value: str) -> str | None:
     v = _normalize(value).lower().strip(".:")
+    if re.search(r"пломб|сейф[\s-]*пакет|^пакет$", v):
+        return "seal_number"
     if re.search(r"нормативн.*документ|випробування.*відпов|дослідж.*(?:відпов|вілпов)|^нд$", v):
         return "standard"
     if re.search(r"найменування|назва.*(?:продук|зраз)|наименование", v):
@@ -342,6 +375,74 @@ def _header_field(value: str) -> str | None:
     if re.search(r"парті|партии", v):
         return "batch_size"
     return None
+
+
+def _act_date(value: str) -> str:
+    """Read an explicitly dated act header without borrowing contract dates."""
+    from datetime import date
+    numeric = re.search(r"(?<!\d)(\d{2})[./](\d{2})[./](\d{4})(?!\d)", value)
+    iso = re.search(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)", value)
+    words = re.search(r"(?<![\d])(?:[«\"“]?)(\d{1,2})[»\"”]?\s+(" + "|".join(_ACT_MONTHS) + r")\s+(\d{4})(?!\d)", value, re.I)
+    try:
+        if numeric:
+            return date(int(numeric[3]), int(numeric[2]), int(numeric[1])).isoformat()
+        if iso:
+            return date(int(iso[1]), int(iso[2]), int(iso[3])).isoformat()
+        if words:
+            return date(int(words[3]), _ACT_MONTHS.index(words[2].lower()) + 1, int(words[1])).isoformat()
+    except ValueError:
+        pass
+    return ""
+
+
+def _act_metadata(preamble: str) -> tuple[str, str]:
+    marker = re.search(
+        r"(?im)^\s*[|]?\s*акт(?:\s+відбору(?:\s+зразків(?:\s+продукції)?)?)?\s*[:：]?\s*"
+        r"(?:№|No\.?|N[º°]?\.?|#)\s*([A-ZА-ЯІЇЄҐ0-9]+(?:\s*[-/]\s*[A-ZА-ЯІЇЄҐ0-9]+)*)",
+        preamble,
+    )
+    if not marker or not re.search(r"\d", marker[1]):
+        return "", ""
+    number = re.sub(r"\s+", "", marker[1])
+    header = re.split(r"\b(?:З\s+метою|Відповідно|Підстава|Договір|Контракт|Постачальник)\b",
+                      preamble[marker.end():], maxsplit=1, flags=re.I)[0][:500]
+    return number, _act_date(header)
+
+
+def _recover_act_date(image, text: str, language: str) -> str:
+    """Re-read a difficult date from its own image, without guessing OCR digits.
+
+    Quotation marks around a day can look like an extra leading digit. Accept a
+    second OCR pass only for an independently recognized, standalone date line
+    whose word month/year agree with the original act header. Contract lines,
+    numeric contract dates and ambiguous alternatives cannot supply this fact.
+    """
+    number, known_date = _act_metadata(text)
+    if not number or known_date:
+        return ""
+    header = re.split(r"\b(?:З\s+метою|Відповідно|Підстава|Договір|Контракт|Постачальник)\b",
+                      text, maxsplit=1, flags=re.I)[0]
+    month_years = {(match[1].lower(), int(match[2])) for match in re.finditer(
+        r"\b(" + "|".join(_ACT_MONTHS) + r")\s+(\d{4})(?!\d)", header, re.I)}
+    if len(month_years) != 1:
+        return ""
+    expected_month, expected_year = next(iter(month_years))
+    crop = image.crop((0, round(image.height * .15), round(image.width * .7), round(image.height * .35)))
+    recognized = _ocr_image(crop, language, psm=6)
+    standalone = re.compile(r"\s*(?:від\s+)?[«\"“]?\d{1,2}[»\"”]?\s+(?:" + "|".join(_ACT_MONTHS)
+                            + r")\s+\d{4}(?:\s+року)?\s*[.,]?\s*", re.I)
+    dates = set()
+    for line in recognized.splitlines():
+        if standalone.fullmatch(line):
+            date = _act_date(line)
+            if date:
+                dates.add(date)
+    if len(dates) != 1:
+        return ""
+    recovered = next(iter(dates))
+    if int(recovered[:4]) != expected_year or int(recovered[5:7]) != _ACT_MONTHS.index(expected_month) + 1:
+        return ""
+    return recovered
 
 
 def parse_act(text: str) -> dict:
@@ -367,6 +468,7 @@ def parse_act(text: str) -> dict:
     # in "field: value" lines. Keep these separate from table item facts.
     preamble = re.split(r"\n[^\n]*(?:Найменування продукції|Назва\s+харчового)", text, maxsplit=1, flags=re.I)[0]
     flat_preamble = _normalize(preamble)
+    common["act_number"], common["act_date"] = _act_metadata(preamble)
     supplier_match = re.search(r"постачальник\s*[:：]?\s+(.+?)(?=,?\s+за\s+кодом\s+постачальника|\s+проведено\s+відбір|$)", flat_preamble, re.I)
     if supplier_match:
         common["supplier"] = supplier_match.group(1).strip(" ,.;")
@@ -435,9 +537,15 @@ def parse_act(text: str) -> dict:
             if not match:
                 continue
             value = match.group(1).strip()
+            if field == "act_number":
+                if not common["act_date"]:
+                    common["act_date"] = _act_date(value)
+                value = re.split(r"\s+від\s+", value, maxsplit=1, flags=re.I)[0].lstrip("№ ")
             if field == "manufacture_date" and line.lower().startswith("вжити до"):
                 value = "вжити до: " + value
-            if field in COMMON_FIELDS:
+            if field == "seal_number" and current is not None:
+                current[field] = value
+            elif field in COMMON_FIELDS:
                 common[field] = value
             elif field == "product_name":
                 if current is None or current["product_name"]:
@@ -497,6 +605,8 @@ def parse_act(text: str) -> dict:
     for item in items:
         item["product_name"] = clean_product_name(item["product_name"], item["catalog_number"])
     common["sampling_description"] = sampling_description_from_act(common["sampling_description"], preamble)
+    if common["act_date"]:
+        common["act_date"] = _act_date(common["act_date"]) or common["act_date"]
     if len(items) > 200:
         raise ValueError("В акті забагато позицій: максимально 200.")
     if not items:

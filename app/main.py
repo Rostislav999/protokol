@@ -38,6 +38,9 @@ class Common(BaseModel):
     sampling_description: str = ""
     supplier: str = ""
     contract: str = ""
+    act_number: str = ""
+    act_date: str = ""
+    seal_number: str = ""
 
 
 class Item(BaseModel):
@@ -52,6 +55,7 @@ class Item(BaseModel):
     batch_size: str = ""
     template_id: str | None = None
     standard: str = ""
+    seal_number: str = ""
 
 
 class Generation(BaseModel):
@@ -219,6 +223,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     template = library.get(item.template_id)
                     fields = {**values.common.model_dump(), **item.model_dump()}
+                    fields["seal_number"] = item.seal_number.strip() or values.common.seal_number.strip()
                     fields["sampling_description"] = normalize_sampling_description(fields["sampling_description"])
                     unsupported = [label for key, label in FIELD_LABELS.items()
                                    if fields.get(key, "").strip() and key not in template["available_fields"]]
@@ -234,8 +239,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 missing = [label for key, label in FIELD_LABELS.items() if not fields.get(key, "").strip()]
                 summary.append(f"{filename}\nШаблон: {template['name']}\nНе заповнено: {', '.join(missing) or 'немає'}\n")
             bundle.writestr("ПЕРЕВІРИТИ.txt", "Це підготовлені проєкти протоколів.\n"
-                            "Змінено лише дані до фрази «Вищезазначена інформація надана замовником.».\n"
-                            "Усе нижче збережено з шаблону, включно зі старими результатами, датами та підписами.\n"
+                            "Оновлено вступні дані, номер протоколу в колонтитулах та наявні рядки акта відбору й пломби.\n"
+                            "Решта відомостей збережена з шаблону, включно зі старими результатами, датами та підписами.\n"
                             "Перевірте їх окремо перед використанням документа.\n"
                             "Порожні поля позначено [НЕ ЗАПОВНЕНО]; старі дані з прикладу не перенесено.\n\n" + "\n".join(summary))
         return Response(output.getvalue(), media_type="application/zip",
