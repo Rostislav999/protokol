@@ -154,15 +154,28 @@ def sampling_description_from_act(address: str, preamble: str) -> str:
 
 
 def clean_product_name(name: str, catalog_number: str) -> str:
-    """Remove an explicit catalog suffix only when its number is independently known."""
+    """Keep the product identity without catalog duplication or pack weight.
+
+    Physical package mass belongs in the sample-weight field. Product names
+    inside quotation marks, grades, years and normative references are retained.
+    """
     value = _space(name)
     number = re.fullmatch(r"\s*(?:№\s*)?(\d+)\s*[.;]?\s*", str(catalog_number or ""))
-    if not number:
-        return value
-    digits = re.escape(number.group(1))
-    label = r"(?:№\s*(?:за\s+каталогом\s*)?|(?:номер|код|№)\s+за\s+каталогом\s*[:№]?\s*|каталожний\s+номер\s*[:№]?\s*)"
-    suffix = re.compile(
-        r"(?:\s*[\[(]\s*(?:" + label + r")?" + digits + r"\s*[\])]|\s*[,;]?\s+" + label + digits + r")\s*[.;]?\s*$",
-        re.I,
-    )
-    return suffix.sub("", value).rstrip(" ,;")
+    if number:
+        digits = re.escape(number.group(1))
+        label = r"(?:№\s*(?:за\s+каталогом\s*)?|(?:номер|код|№)\s+за\s+каталогом\s*[:№]?\s*|каталожний\s+номер\s*[:№]?\s*)"
+        suffix = re.compile(
+            r"(?:\s*[\[(]\s*(?:" + label + r")?" + digits + r"\s*[\])]|\s*[,;]?\s+" + label + digits + r")\s*[.;]?\s*$",
+            re.I,
+        )
+        value = suffix.sub("", value).rstrip(" ,;")
+    mass = (r"(?<![\w/])(?:маса\s+(?:нетто\s+)?|нетто\s+)?"
+            r"(?:\d+\s*[/xх×]\s*)?\d+(?:[.,]\d+)?\s*(?:кг|kg|г|g)(?![\w])"
+            r"(?:\s*нетто)?\s*\.?")
+    outside_quotes = re.split(r'(«[^»]*»|“[^”]*”|"[^\"]*")', value)
+    for index in range(0, len(outside_quotes), 2):
+        part = outside_quotes[index]
+        part = re.sub(r"(?<!\w)\d+\s*/\s*\d+(?:[.,]\d+)?\s*r\b\s*\.?", "", part, flags=re.I)
+        part = re.sub(r"[\[(]\s*" + mass + r"\s*[\])]", "", part, flags=re.I)
+        outside_quotes[index] = re.sub(mass, "", part, flags=re.I)
+    return _space("".join(outside_quotes)).strip(" ,;")

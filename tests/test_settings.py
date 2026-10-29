@@ -64,7 +64,7 @@ def test_protocol_generation_removes_duplicate_catalog_and_formats_sampling(clie
     with ZipFile(io.BytesIO(result.content)) as archive:
         document = next(name for name in archive.namelist() if name.endswith(".docx"))
         fields = inspect_template(archive.read(document))["fields"]
-        assert fields["product_name"] == "Свинина тушкована 525 г"
+        assert fields["product_name"] == "Свинина тушкована"
         assert fields["catalog_number"] == "12012"
         assert "представниками військової частини А3466" in fields["sampling_description"]
         assert "капітаном О. ДАНИЛОВ" in fields["sampling_description"]

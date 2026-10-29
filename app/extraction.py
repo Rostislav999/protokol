@@ -17,13 +17,14 @@ from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
 from .protocol_text import clean_product_name, sampling_description_from_act
+from .sample_details import first_seal_number, sample_weight_value
 
 MAX_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 20
 MAX_PIXELS = 40_000_000
 ITEM_FIELDS = (
     "product_name", "protocol_number", "catalog_number", "manufacturer",
-    "manufacture_date", "batch_size", "standard", "seal_number",
+    "manufacture_date", "batch_size", "standard", "seal_number", "sample_weight", "sample_quantity",
 )
 COMMON_FIELDS = ("customer", "sampling_description", "supplier", "contract", "act_number", "act_date", "seal_number")
 _ACT_MONTHS = ("січня", "лютого", "березня", "квітня", "травня", "червня",
@@ -174,7 +175,7 @@ def _ocr_table(image, language: str, previous_header=None):
         rows.append(item)
     if not rows:
         return None
-    columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії", "Нормативний документ", "Номер пломби / сейф-пакета"]
+    columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії", "Нормативний документ", "Номер пломби / сейф-пакета", "Вага зразка", "Кількість одиниць відібраного зразка"]
     lines = [" | ".join(columns)]
     for index, item in enumerate(rows, 1):
         lines.append(" | ".join([str(index)] + [item[field].replace("|", " ") for field in ITEM_FIELDS]))
@@ -313,6 +314,8 @@ _LABELS = {
     "act_number": [r"номер\s+акта?(?:\s+відбору(?:\s+зразків)?)?", r"акт\s+відбору(?:\s+зразків)?(?:\s*№)?"],
     "act_date": [r"дата\s+акта?(?:\s+відбору(?:\s+зразків)?)?"],
     "seal_number": [r"номер(?:и)?\s+(?:пломби|пломб|пломбування|сейф[- ]?пакет(?:а|ів)?)(?:\s+зразк(?:а|ів))?", r"пломб[аи](?:\s*№)?", r"опломбовано", r"сейф[- ]?пакет(?:\s*№)?"],
+    "sample_weight": [r"(?:загальна\s+)?(?:вага|маса)\s+(?:відібраного\s+)?(?:зразка|проби|відібраних\s+зразків)"],
+    "sample_quantity": [r"кількість\s+(?:одиниць(?:\s+продукту)?(?:\s+(?:у\s+одному\s+)?відібран(?:ому|о|ого)\s+зразк(?:у|а|и))?|відібраних\s+зразків|зразків|проб)"],
     "sampling_description": [r"зразки харчових продуктів відібрано за адресою", r"місце(?:\s+та\s+адреса)?\s+відбору(?:\s+(?:зразків|проб))?", r"адреса\s+відбору(?:\s+зразків)?", r"місце відбору зразка"],
     "product_name": [r"найменування(?:\s+(?:та|і)\s+назва)?(?:\s+(?:продукції|продукту|продуктів|харчових продуктів|зразка|зразків|товару))?", r"назва\s+(?:зразка|продукту|продукції|продуктів)", r"наименование(?:\s+(?:продукции|продукта|образца))?"],
     "protocol_number": [r"ідентифікаційний\s+(?:номер|код)(?:\s+зразка)?", r"номер\s+(?:протоколу|зразка)", r"протокол(?:\s+випробувань)?\s*(?:№)?"],
@@ -358,6 +361,10 @@ def _table_columns(line: str) -> list[str] | None:
 
 def _header_field(value: str) -> str | None:
     v = _normalize(value).lower().strip(".:")
+    if re.search(r"(?:вага|маса).*?(?:відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
+        return "sample_weight"
+    if re.search(r"кількість.*?(?:одиниць|відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
+        return "sample_quantity"
     if re.search(r"пломб|сейф[\s-]*пакет|^пакет$", v):
         return "seal_number"
     if re.search(r"нормативн.*документ|випробування.*відпов|дослідж.*(?:відпов|вілпов)|^нд$", v):
@@ -603,7 +610,13 @@ def parse_act(text: str) -> dict:
                     target[previous_field] = _normalize(target[previous_field] + " " + line)
     items = [item for item in items if item["product_name"].strip()]
     for item in items:
+        # The pack mass is a physical fact in the raw act name. Use it to
+        # format sample weight before removing packaging from the display name.
+        item["sample_weight"] = sample_weight_value(item["sample_weight"], item["sample_quantity"], item["product_name"])
         item["product_name"] = clean_product_name(item["product_name"], item["catalog_number"])
+        item["seal_number"] = first_seal_number(item["seal_number"])
+    items = [item for item in items if item["product_name"]]
+    common["seal_number"] = first_seal_number(common["seal_number"])
     common["sampling_description"] = sampling_description_from_act(common["sampling_description"], preamble)
     if common["act_date"]:
         common["act_date"] = _act_date(common["act_date"]) or common["act_date"]

@@ -1,4 +1,4 @@
-"""Persistent local supplier codes and people who issue assignments."""
+"""Persistent local customer/supplier directories and assignment issuers."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -26,8 +26,12 @@ class SettingsStore:
     def all(self) -> dict:
         with self.lock:
             if not self.path.exists():
-                return {"suppliers": [], "issuers": [], "default_issuer_id": ""}
-            return json.loads(self.path.read_text(encoding="utf-8"))
+                return {"customers": [], "suppliers": [], "issuers": [], "default_issuer_id": ""}
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            # Earlier versions stored suppliers and issuers only. Reading them
+            # must leave all saved records and the selected issuer intact.
+            data.setdefault("customers", [])
+            return data
 
     def _save(self, data: dict) -> None:
         temporary = self.path.with_suffix(".tmp")
@@ -43,11 +47,19 @@ class SettingsStore:
             if not re.fullmatch(r"[0-9]{1,10}", code):
                 raise SettingsError("Код постачальника має містити від 1 до 10 цифр. Початкові нулі зберігаються.")
             fields = {"name": name, "code": code}
+            edrpou = values.get("edrpou")
+            if edrpou is not None:
+                edrpou = edrpou.strip()
+                if edrpou and not re.fullmatch(r"[0-9]{8}(?:[0-9]{2})?", edrpou):
+                    raise SettingsError("Код ЄДРПОУ має містити 8 цифр; для ФОП допускається 10 цифр.")
+                fields["edrpou"] = edrpou
         elif kind == "issuers":
             position = values.get("position", "").strip()
             if len(position) > 500 or any(ord(c) < 32 for c in position):
                 raise SettingsError("Укажіть коректну посаду або військове звання.")
             fields = {"name": name, "position": position}
+        elif kind == "customers":
+            fields = {"name": name}
         else:
             raise SettingsError("Невідомий довідник.")
         with self.lock:
@@ -61,6 +73,9 @@ class SettingsStore:
                     raise SettingsError("Такий запис уже є в довіднику.")
                 if kind == "suppliers" and entry["code"] == fields["code"]:
                     raise SettingsError("Цей код уже призначено іншому постачальнику.")
+            if kind == "suppliers" and "edrpou" not in fields:
+                existing = next((entry for entry in data[kind] if entry["id"] == entry_id), {})
+                fields["edrpou"] = existing.get("edrpou", "")
             result = {"id": entry_id or uuid4().hex, **fields}
             data[kind] = [entry for entry in data[kind] if entry["id"] != result["id"]] + [result]
             self._save(data)
@@ -95,11 +110,16 @@ class SettingsStore:
 class SupplierValues(BaseModel):
     name: str = Field(min_length=1, max_length=500)
     code: str = Field(min_length=1, max_length=10)
+    edrpou: str | None = Field(default=None, max_length=10)
 
 
 class IssuerValues(BaseModel):
     name: str = Field(min_length=1, max_length=500)
     position: str = Field(default="", max_length=500)
+
+
+class CustomerValues(BaseModel):
+    name: str = Field(min_length=1, max_length=500)
 
 
 class SettingsUpdate(BaseModel):
@@ -146,6 +166,18 @@ def settings_router(store: SettingsStore) -> APIRouter:
     @router.delete("/suppliers/{entry_id}")
     def delete_supplier(entry_id: str):
         return remove("suppliers", entry_id)
+
+    @router.post("/customers")
+    def add_customer(values: CustomerValues):
+        return save("customers", values)
+
+    @router.patch("/customers/{entry_id}")
+    def edit_customer(entry_id: str, values: CustomerValues):
+        return save("customers", values, entry_id)
+
+    @router.delete("/customers/{entry_id}")
+    def delete_customer(entry_id: str):
+        return remove("customers", entry_id)
 
     @router.post("/issuers")
     def add_issuer(values: IssuerValues):

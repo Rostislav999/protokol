@@ -32,7 +32,8 @@ class Library:
                 raw = (ROOT / "assets/templates" / sample["filename"]).read_bytes()
                 info = inspect_template(raw)
                 entry = {**sample, "product_name": info["product_name"],
-                         "available_fields": info["available_fields"], "protocol_fields_version": 2}
+                         "available_fields": info["available_fields"], "sample_weight": info["fields"].get("sample_weight", ""),
+                         "protocol_fields_version": 3}
                 (directory / (entry["id"] + ".docx")).write_bytes(raw)
                 entries.append(entry)
             # Introduce the subgroup field without overwriting user settings.
@@ -42,11 +43,13 @@ class Library:
         # Discover new supported rows in existing originals without resetting
         # user names, aliases, categories or deliberately deleted templates.
         for entry in entries:
-            if entry.get("protocol_fields_version") != 2:
+            if entry.get("protocol_fields_version") != 3:
                 try:
                     raw = (directory / (entry["id"] + ".docx")).read_bytes()
-                    entry["available_fields"] = inspect_template(raw)["available_fields"]
-                    entry["protocol_fields_version"] = 2
+                    info = inspect_template(raw)
+                    entry["available_fields"] = info["available_fields"]
+                    entry["sample_weight"] = info["fields"].get("sample_weight", "")
+                    entry["protocol_fields_version"] = 3
                 except (OSError, TemplateError):
                     pass
         self._save(entries)
@@ -82,7 +85,8 @@ class Library:
                  "name": name.strip() or info["product_name"] or Path(filename).stem,
                  "product_name": info["product_name"], "aliases": aliases,
                  "category": category.strip() or "Інше", "subcategory": subcategory,
-                 "available_fields": info["available_fields"], "protocol_fields_version": 2}
+                 "available_fields": info["available_fields"], "sample_weight": info["fields"].get("sample_weight", ""),
+                 "protocol_fields_version": 3}
         with self.lock:
             entries = self.all()
             (self.directory / (entry["id"] + ".docx")).write_bytes(data)

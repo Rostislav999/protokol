@@ -42,7 +42,7 @@ def test_api_fills_existing_act_and_seal_rows_and_all_footer_numbers(tmp_path):
                 assert fields["protocol_date"] == "29 жовтня 2026 року"
                 assert fields["act_number"] == "87-010-1-247"
                 assert fields["act_date"] == "20.10.2026"
-                assert fields["seal_number"] == ("№1 00004850; №2 00004849" if index == 0 else "СПІЛЬНА-0001")
+                assert fields["seal_number"] == ("00004850" if index == 0 else "0001")
                 with ZipFile(io.BytesIO(data)) as document:
                     body = document.read("word/document.xml")
                     assert len(ElementTree.fromstring(body).findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p")) == original_paragraphs
@@ -73,3 +73,19 @@ def test_existing_library_upgrade_detects_act_and_seal_rows_without_resetting_ed
         assert selected["aliases"] == ["Мій шаблон"]
         assert {"act_number", "act_date", "seal_number"} <= set(selected["available_fields"])
         assert upgraded.post("/api/generate", json=payload()).status_code == 200
+
+
+def test_sample_weight_uses_template_only_if_omitted_and_preserves_manual_edits(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        for supplied, expected in ((None, "9 ж/б по 525 г (4,725 кг)"),
+                                   ("", "[НЕ ЗАПОВНЕНО]"),
+                                   ("2 ж/б по 525 г (1,05 кг).", "2 ж/б по 525 г (1,05 кг)")):
+            values = payload()
+            values["items"] = values["items"][:1]
+            if supplied is not None:
+                values["items"][0]["sample_weight"] = supplied
+            result = client.post("/api/generate", json=values)
+            assert result.status_code == 200, result.text
+            with ZipFile(io.BytesIO(result.content)) as archive:
+                name = next(name for name in archive.namelist() if name.endswith(".docx"))
+                assert inspect_template(archive.read(name))["fields"]["sample_weight"] == expected

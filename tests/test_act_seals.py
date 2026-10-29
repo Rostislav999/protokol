@@ -55,11 +55,11 @@ def test_shared_seal_is_separate_from_specific_item_seals():
     assert [item["seal_number"] for item in result["items"]] == ["00010001", "00010002"]
 
 
-def test_safe_package_columns_preserve_both_physical_ids_and_repeated_headers():
+def test_safe_package_columns_select_first_physical_id_and_repeated_headers():
     header = "№ | Назва зразка | Номер за каталогом | Номер пломби зразка"
     result = parse_act(header + '\n1 | Свинина | 12012 | №1 00004850; №2 00004849\n' + header + '\n2 | Яловичина | 12013 | 00004852')
     assert len(result["items"]) == 2
-    assert result["items"][0]["seal_number"] == "№1 00004850; №2 00004849"
+    assert result["items"][0]["seal_number"] == "00004850"
     assert result["items"][1]["seal_number"] == "00004852"
     assert all(item["protocol_number"] == "" for item in result["items"])
 
@@ -88,7 +88,7 @@ def test_rotated_safe_package_ocr_is_retained_on_continuation_pages(monkeypatch)
     first = extraction._ocr_table(image, "ukr")
     assert first is not None
     assert first["header"]["rotations"] == {5: 90}
-    assert parse_act(first["text"])["items"][0]["seal_number"] == "№1 00004850 №2 00004849"
+    assert parse_act(first["text"])["items"][0]["seal_number"] == "00004850"
     following = iter([
         "3", "Свинина", "ТОВ А", "18.03.2026", "30 кг", "rotated body",
         "№1 00004854 №2 00004853",
@@ -101,7 +101,7 @@ def test_rotated_safe_package_ocr_is_retained_on_continuation_pages(monkeypatch)
     assert continued is not None
     items = parse_act(continued["text"])["items"]
     assert len(items) == 3
-    assert [item["seal_number"] for item in items] == ["№1 00004854 №2 00004853", "№1 00004856 №2 00004855", "№1 00004858 №2 00004857"]
+    assert [item["seal_number"] for item in items] == ["00004854", "00004856", "00004858"]
 
 
 def test_targeted_date_recovery_requires_independently_recognized_same_month_and_year(monkeypatch):

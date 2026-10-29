@@ -31,6 +31,7 @@ FIELD_LABELS = {
     "act_number": "Номер акта відбору зразків",
     "act_date": "Дата акта відбору зразків",
     "seal_number": "Номер пломби зразка",
+    "sample_weight": "Вага зразка",
 }
 _LEGACY_LABELS = {
     "customer": "Замовник:",
@@ -53,7 +54,7 @@ _HISTORICAL_REVISION_RE = re.compile(
 )
 _DATE_RE = re.compile(r"(?:«?\d{1,2}»?\s+\w+\s+\d{4}\s+року|\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2})\s*\.?$", re.I)
 _MONTHS = ("січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня")
-_ADMIN_FIELDS = {"act_number", "act_date", "seal_number"}
+_ADMIN_FIELDS = {"act_number", "act_date", "seal_number", "sample_weight"}
 _PART_NUMBER_RE = re.compile(
     r"\bПротокол(?:у)?\s+випробувань\s*№\s*(?P<number>[\w]+(?:[-/.‐‑‒–—−][\w]+)*)", re.I,
 )
@@ -78,6 +79,7 @@ class _Text:
 class _Paragraph:
     nodes: list[_Text] = field(default_factory=list)
     limit: int = 0
+    in_table: bool = False
 
     @property
     def text(self) -> str:
@@ -121,11 +123,14 @@ def _read_xml(xml: bytes, *, require_marker: bool = True) -> list[_Paragraph]:
     paragraphs: list[_Paragraph] = []
     stack: list[_Paragraph] = []
     current: _Text | None = None
+    table_depth = 0
 
     def start(name, attrs):
-        nonlocal current
-        if name == _W_NS + "}p":
-            para = _Paragraph()
+        nonlocal current, table_depth
+        if name == _W_NS + "}tc":
+            table_depth += 1
+        elif name == _W_NS + "}p":
+            para = _Paragraph(in_table=table_depth > 0)
             paragraphs.append(para)
             stack.append(para)
         elif name == _W_NS + "}t" and stack:
@@ -141,12 +146,14 @@ def _read_xml(xml: bytes, *, require_marker: bool = True) -> list[_Paragraph]:
             current.text += value
 
     def end(name):
-        nonlocal current
+        nonlocal current, table_depth
         if name == _W_NS + "}t" and current is not None:
             current.end = current.start if current.empty else parser.CurrentByteIndex
             current = None
         elif name == _W_NS + "}p" and stack:
             stack.pop()
+        elif name == _W_NS + "}tc":
+            table_depth -= 1
 
     parser.StartElementHandler = start
     parser.CharacterDataHandler = chars
@@ -189,7 +196,49 @@ def _administrative_parts(text: str) -> list[tuple[str, int, int]]:
     seal = re.match(r"\s*Номер\s+пломби(?:\s+зразка)?\s*:\s*", text, re.I)
     if seal:
         return [("seal_number", seal.end(), max(seal.end(), len(text.rstrip(". \t"))))]
+    weight = re.match(r"\s*(?:Вага|Маса)\s+зразка\s*:\s*", text, re.I)
+    if weight:
+        return [("sample_weight", weight.end(), max(weight.end(), len(text.rstrip(". \t"))))]
     return []
+
+
+def _sample_table_parts(para: _Paragraph) -> list[tuple[str, int, int]]:
+    """Only the sample identity row inside a table, retaining its separator."""
+    if not para.in_table:
+        return []
+    match = re.match(r"\s*№\s*(?P<number>[^\s–—]+)\s*(?:[–—]|\s-\s)\s*(?P<name>\S(?:.*?\S)?)\s*$", para.text)
+    if not match:
+        return []
+    return [("protocol_number", match.start("number"), match.end("number")),
+            ("product_name", match.start("name"), match.end("name"))]
+
+
+def _purpose_parts(text: str) -> list[tuple[str, int, int]]:
+    label = re.match(r"\s*Мета\s+випробувань\s+зразка\s*:\s*.*?\bа\s+саме\s*:\s*", text, re.I)
+    if not label:
+        return []
+    tail = re.search(r"\s+на\s+відповідність\b", text[label.end():], re.I)
+    return [("product_name", label.end(), label.end() + tail.start())] if tail else []
+
+
+def _conclusion_parts(text: str) -> list[tuple[str, int, int]]:
+    prefix = re.match(r"\s*Висновок\s*:\s*Представлений\s+зразок\s*:\s*№?\s*", text, re.I)
+    if not prefix:
+        return []
+    batch = re.search(r"\s*,?\s*відібраний\s+від\s+партії\s*:\s*", text[prefix.end():], re.I)
+    if not batch:
+        return []
+    number_end = prefix.end() + batch.start()
+    number_end = len(text[:number_end].rstrip(" ,"))
+    batch_start = prefix.end() + batch.end()
+    tail = re.search(r"\s+за\s+вище\s+вказаними\b", text[batch_start:], re.I)
+    if not tail:
+        return []
+    batch_end = batch_start + tail.start()
+    # The comma and spacing introduce the preserved assessment, not the batch.
+    batch_end = len(text[:batch_end].rstrip(" ,"))
+    return [("protocol_number", prefix.end(), number_end),
+            ("batch_size", batch_start, batch_end)]
 
 
 def _identification_parts(text: str) -> tuple[int, int, str, str] | None:
@@ -322,6 +371,9 @@ def _value(fields: dict, key: str) -> str:
     value = re.sub(r"[\r\n\t]+", " ", value)
     if key in {"protocol_number", "act_number"}:
         value = value.lstrip("№").strip()
+    if key == "seal_number":
+        from .sample_details import first_seal_number
+        return first_seal_number(value) or MISSING_VALUE
     if key == "protocol_date":
         return format_protocol_date(value)
     if key == "act_date":
@@ -329,7 +381,23 @@ def _value(fields: dict, key: str) -> str:
     return value
 
 
-def _replace_range(para: _Paragraph, values: dict[int, str], start: int, end: int, replacement: str) -> None:
+def _trust_replacement(trusted: dict[int, list[tuple[int, int]]], node: _Text,
+                       start: int, end: int, replacement: str) -> None:
+    """Keep trusted coordinates correct while ranges are applied right-to-left."""
+    delta = len(replacement) - (end - start)
+    ranges = []
+    for left, right in trusted.get(id(node), []):
+        if left < start:
+            ranges.append((left, min(right, start)))
+        if right > end:
+            ranges.append((max(left, end) + delta, right + delta))
+    if replacement:
+        ranges.append((start, start + len(replacement)))
+    trusted[id(node)] = sorted((left, right) for left, right in ranges if right > left)
+
+
+def _replace_range(para: _Paragraph, values: dict[int, str], start: int, end: int, replacement: str,
+                   trusted: dict[int, list[tuple[int, int]]] | None = None) -> None:
     """Replace a paragraph character range while retaining every original run."""
     offset = 0
     inserted = False
@@ -341,7 +409,10 @@ def _replace_range(para: _Paragraph, values: dict[int, str], start: int, end: in
         old = values.get(id(node), node.text)
         a, b = max(start - node_start, 0), min(end - node_start, len(node.text))
         # Apply ranges right-to-left so original coordinates remain valid.
-        values[id(node)] = old[:a] + (replacement if not inserted else "") + old[b:]
+        inserted_text = replacement if not inserted else ""
+        values[id(node)] = old[:a] + inserted_text + old[b:]
+        if trusted is not None:
+            _trust_replacement(trusted, node, a, b, inserted_text)
         inserted = True
     if not inserted and start == end:
         # Empty original label value: add into the preceding text node.
@@ -352,7 +423,19 @@ def _replace_range(para: _Paragraph, values: dict[int, str], start: int, end: in
                 at = start - (offset - len(node.text))
                 old = values.get(id(node), node.text)
                 values[id(node)] = old[:at] + replacement + old[at:]
+                if trusted is not None:
+                    _trust_replacement(trusted, node, at, at, replacement)
                 return
+
+
+def _review_colors(xml: bytes, paragraphs: list[_Paragraph], trusted: dict[int, list[tuple[int, int]]]) -> bytes:
+    from .document_review import ReviewColorError, color_review_xml
+    nodes = sorted((node for para in paragraphs for node in para.nodes), key=lambda node: node.start)
+    ordinals = {index: trusted[id(node)] for index, node in enumerate(nodes) if id(node) in trusted}
+    try:
+        return color_review_xml(xml, ordinals)
+    except ReviewColorError as exc:
+        raise TemplateError("Не вдалося позначити неперевірені відомості червоним: " + str(exc)) from exc
 
 
 def _text_offsets(raw: bytes, expected: str) -> list[int]:
@@ -389,14 +472,16 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
     replacements = {key: _value(fields, key) for key in FIELD_LABELS}
     old_number = doc.fields.get("protocol_number", "")
     values: dict[int, str] = {}
+    trusted: dict[int, list[tuple[int, int]]] = {}
     title_seen = False
     date_changed = False
     for para in doc.paragraphs:
         text = para.editable
         administrative = _administrative_parts(para.text)
+        repeated = _sample_table_parts(para) or _purpose_parts(para.text) or _conclusion_parts(para.text)
         admin_placeholders = [placeholder for placeholder in _PLACEHOLDER.finditer(para.text)
                               if placeholder.group(1) in _ADMIN_FIELDS]
-        if not text and not administrative and not admin_placeholders:
+        if not text and not administrative and not repeated and not admin_placeholders:
             continue
         edits: list[tuple[int, int, str]] = []
         parts = _legacy_parts(text)
@@ -404,7 +489,16 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
         placeholders = list(_PLACEHOLDER.finditer(text))
         title = _TITLE_RE.search(text)
         if administrative:
-            edits.extend((a, b, replacements[key]) for key, a, b in administrative)
+            for key, a, b in administrative:
+                replacement = replacements[key]
+                # Existing weight rows already own their final sentence dot.
+                # A formatted input may include the same dot for readability.
+                if key == "sample_weight" and para.text[b:].lstrip().startswith("."):
+                    replacement = replacement.rstrip(". ")
+                edits.append((a, b, replacement))
+        elif repeated:
+            edits.extend((a, b, replacements[key].rstrip(". ") if key == "batch_size" else replacements[key])
+                         for key, a, b in repeated)
         elif not text:
             edits.extend((m.start(), m.end(), replacements[m.group(1)]) for m in admin_placeholders)
         elif _HISTORICAL_REVISION_RE.match(text):
@@ -434,15 +528,16 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
                          for m in re.finditer(re.escape(old_number), text))
         if title:
             title_seen = True
-        if text and not administrative:
+        if text and not administrative and not repeated:
             edits.extend((m.start(), m.end(), replacements[m.group(1)]) for m in admin_placeholders
                          if m.start() >= para.limit)
         for a, b, replacement in sorted(edits, reverse=True):
-            _replace_range(para, values, a, b, replacement)
+            _replace_range(para, values, a, b, replacement, trusted)
 
     xml = _apply_text_values(doc.xml, doc.paragraphs, values)
     # Parse once more to ensure user text did not produce an invalid XML part.
     _read_xml(xml)
+    xml = _review_colors(xml, doc.paragraphs, trusted)
     output = BytesIO()
     with ZipFile(BytesIO(data)) as source, ZipFile(output, "w") as target:
         target.comment = source.comment
@@ -451,6 +546,11 @@ def render_protocol(data: bytes, fields: dict[str, str]) -> bytes:
                 content = xml
             elif re.fullmatch(r"word/(?:header|footer)[^/]*\.xml", info.filename):
                 content = _render_repeated_number(source.read(info.filename), replacements["protocol_number"], old_number)
+            elif info.filename in {"word/footnotes.xml", "word/endnotes.xml", "word/comments.xml"}:
+                content = source.read(info.filename)
+                note_paragraphs = _read_xml(content, require_marker=False)
+                if any(node.text for paragraph in note_paragraphs for node in paragraph.nodes):
+                    content = _review_colors(content, note_paragraphs, {})
             else:
                 content = source.read(info.filename)
             target.writestr(info, content)
@@ -498,6 +598,7 @@ def _apply_text_values(xml: bytes, paragraphs: list[_Paragraph], values: dict[in
 def _render_repeated_number(xml: bytes, replacement: str, old_number: str) -> bytes:
     paragraphs = _read_xml(xml, require_marker=False)
     values: dict[int, str] = {}
+    trusted: dict[int, list[tuple[int, int]]] = {}
     for para in paragraphs:
         edits: list[tuple[int, int, str]] = []
 
@@ -514,7 +615,7 @@ def _render_repeated_number(xml: bytes, replacement: str, old_number: str) -> by
             for match in re.finditer(r"(?<![\w-])" + re.escape(old_number) + r"(?![\w-])", para.text):
                 add(match.start(), match.end())
         for start, end, value in sorted(edits, reverse=True):
-            _replace_range(para, values, start, end, value)
+            _replace_range(para, values, start, end, value, trusted)
     result = _apply_text_values(xml, paragraphs, values)
     _read_xml(result, require_marker=False)
-    return result
+    return _review_colors(result, paragraphs, trusted)

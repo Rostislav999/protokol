@@ -25,6 +25,7 @@ from .assignments_api import assignments_router
 from .protocol_text import clean_product_name, normalize_sampling_description
 from .settings import SettingsStore, settings_router
 from .printing import printing_status
+from .sample_details import first_seal_number, sample_weight_value
 
 MAX_UPLOAD = 25 * 1024 * 1024
 local_tessdata = ROOT / ".local/tessdata"
@@ -56,6 +57,7 @@ class Item(BaseModel):
     template_id: str | None = None
     standard: str = ""
     seal_number: str = ""
+    sample_weight: str | None = None
 
 
 class Generation(BaseModel):
@@ -223,7 +225,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     template = library.get(item.template_id)
                     fields = {**values.common.model_dump(), **item.model_dump()}
-                    fields["seal_number"] = item.seal_number.strip() or values.common.seal_number.strip()
+                    fields["seal_number"] = first_seal_number(item.seal_number.strip() or values.common.seal_number.strip())
+                    fields["sample_weight"] = sample_weight_value(
+                        item.sample_weight if item.sample_weight is not None else template.get("sample_weight", ""))
                     fields["sampling_description"] = normalize_sampling_description(fields["sampling_description"])
                     unsupported = [label for key, label in FIELD_LABELS.items()
                                    if fields.get(key, "").strip() and key not in template["available_fields"]]
@@ -239,10 +243,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 missing = [label for key, label in FIELD_LABELS.items() if not fields.get(key, "").strip()]
                 summary.append(f"{filename}\nШаблон: {template['name']}\nНе заповнено: {', '.join(missing) or 'немає'}\n")
             bundle.writestr("ПЕРЕВІРИТИ.txt", "Це підготовлені проєкти протоколів.\n"
-                            "Оновлено вступні дані, номер протоколу в колонтитулах та наявні рядки акта відбору й пломби.\n"
+                            "Оновлено дані зразка у вступі, колонтитулах, таблиці, меті випробувань та визначених полях висновку.\n"
                             "Решта відомостей збережена з шаблону, включно зі старими результатами, датами та підписами.\n"
+                            "Червоний текст залишився з шаблону та потребує перевірки; чорний текст підставлено програмою.\n"
                             "Перевірте їх окремо перед використанням документа.\n"
-                            "Порожні поля позначено [НЕ ЗАПОВНЕНО]; старі дані з прикладу не перенесено.\n\n" + "\n".join(summary))
+                            "Порожні заповнювані поля позначено [НЕ ЗАПОВНЕНО] замість старих значень.\n\n" + "\n".join(summary))
         return Response(output.getvalue(), media_type="application/zip",
                         headers={"Content-Disposition": 'attachment; filename="protocols.zip"'})
 

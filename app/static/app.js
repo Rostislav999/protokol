@@ -26,6 +26,7 @@
     ['protocol_date', 'Дата протоколу', true, 'Наприклад, 29 жовтня 2026 року', ''],
     ['catalog_number', 'Номер за Каталогом', false, 'Якщо зазначений в акті', ''],
     ['seal_number', 'Номер пломби зразка', false, 'Номер пломби або сейф-пакета з акта', ''],
+    ['sample_weight', 'Вага зразка', false, 'Наприклад, 9 ж/б по 525 г (4,725 кг).', 'two'],
     ['manufacturer', 'Виробник', false, 'Назва, адреса, код ЄДРПОУ', 'full'],
     ['manufacture_date', 'Дата виготовлення / вжити до', false, 'Як зазначено в акті', ''],
     ['batch_size', 'Розмір партії', false, 'Наприклад, 500,0 кг', 'two']
@@ -62,11 +63,22 @@
     return response;
   }
   const jsonPost = (url, data) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+  function supplierLine(supplier) {
+    const name = String(supplier?.name || '').trim();
+    const existing = name.match(/(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*(\d{8}(?:\d{2})?)/i);
+    const plain = value => String(value || '').replace(/[,;]?\s*(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*\d{8}(?:\d{2})?\.?/ig,'').replace(/[ ,;.]+$/,'').trim();
+    const current = String(state.common.supplier || '');
+    const fromAct = plain(current) === plain(name) ? current.match(/(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*(\d{8}(?:\d{2})?)/i)?.[1] : '';
+    const edrpou = String(supplier?.edrpou || existing?.[1] || fromAct || '').trim();
+    if (!edrpou) return name;
+    const company = name.replace(/[,;]?\s*(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*\d{8}(?:\d{2})?\.?/ig,'').replace(/[ ,;.]+$/,'');
+    return `${company}, код ЄДРПОУ: ${edrpou}`;
+  }
   const supplierDirectory = createSupplierDirectory({api,jsonPost,escape,icon,onSelect:supplier => {
     if (supplier) {
-      state.common.supplier = supplier.name;
+      state.common.supplier = supplierLine(supplier);
       const supplierInput = $('[data-common="supplier"]');
-      if (supplierInput) supplierInput.value = supplier.name;
+      if (supplierInput) supplierInput.value = state.common.supplier;
       state.items.forEach(item => {
         const parts = protocolParts(item.protocol_number,true);
         if (parts) { parts[1] = supplier.code; item.protocol_number = parts.join('-'); }
@@ -76,6 +88,16 @@
     invalidateReview();
     updateGeneration();
   }});
+  document.addEventListener('protokol:customer-selected', event => {
+    const customer = event.detail?.customer;
+    if (customer) {
+      state.common.customer = customer.name;
+      const input = $('[data-common="customer"]');
+      if (input) input.value = customer.name;
+    }
+    invalidateReview();
+    updateGeneration();
+  });
 
   function switchView(name) {
     $('#acts-view').hidden = name !== 'acts';
@@ -274,7 +296,25 @@
   }
 
   function blankItem() {
-    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', seal_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: [], _protocol_date_manual:false, _protocol_number_manual:false};
+    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', seal_number: '', sample_weight: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: [], _protocol_date_manual:false, _protocol_number_manual:false, _sample_weight_source:'template', _sample_weight_manual:false};
+  }
+
+  function syncProtocolWeight(item) {
+    if (item._sample_weight_manual || item._sample_weight_source === 'act') return;
+    const template = state.templates.find(value => String(value.id) === String(item.template_id));
+    item.sample_weight = String(template?.sample_weight || '');
+  }
+  function weightHint(item) {
+    if (item._sample_weight_manual) return item.sample_weight.trim() ? 'Значення змінено вручну.' : 'Поле очищено вручну: у протоколі буде «[НЕ ЗАПОВНЕНО]».';
+    if (item._sample_weight_source === 'act') return 'Вага й кількість упаковок з акта. За потреби відредагуйте.';
+    return item.sample_weight ? 'Вага з обраного шаблону. Звірте з актом і за потреби відредагуйте.' : 'Оберіть шаблон або введіть вагу за актом.';
+  }
+  function updateWeightControl(item, card) {
+    syncProtocolWeight(item);
+    const input = $('[data-field="sample_weight"]',card);
+    if (input && input.value !== item.sample_weight) input.value = item.sample_weight;
+    const hint = $('[data-protocol-weight-hint]',card);
+    if (hint) hint.textContent = weightHint(item);
   }
 
   function formatProtocolDate(value) {
@@ -362,6 +402,8 @@
     state.items.forEach((item,index) => {
       item._protocol_date_manual = !!(index && item.protocol_date.trim() && item.protocol_date !== state.items[0].protocol_date);
       item._protocol_number_manual = false;
+      item._sample_weight_source = item.sample_weight?.trim() ? 'act' : 'template';
+      item._sample_weight_manual = false;
     });
     supplierDirectory.syncName(state.common.supplier);
     applyProtocolDefaults();
@@ -375,6 +417,7 @@
     $('#source-banner').innerHTML = `${icon('file')}<div><strong>${escape(source || 'Дані акта')}</strong><small>${escape(method)}${data.pages ? ` · Сторінок: ${escape(data.pages)}` : ''} · Позицій: ${state.items.length}</small></div>${state.sourceUrl ? `<a class="source-original-link" href="${escape(state.sourceUrl)}" target="_blank" rel="noopener noreferrer">Відкрити оригінал акта ${icon('arrow')}</a>` : ''}`;
     renderWarnings(data.warnings || []);
     renderCommon();
+    document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:state.common.customer}}));
     renderItems();
     showStage('review');
   }
@@ -406,6 +449,7 @@
   }
 
   function renderItemField(item,index,[key,label,required,placeholder,width]) {
+    if (key === 'sample_weight') return `<div class="field ${width}"><label for="protocol-row-${index}-sample_weight">${escape(label)}</label><input id="protocol-row-${index}-sample_weight" data-field="sample_weight" value="${escape(item.sample_weight)}" placeholder="${escape(placeholder)}"><small data-protocol-weight-hint>${escape(weightHint(item))}</small><button type="button" class="text-button" data-protocol-weight-reset>Взяти з шаблону</button></div>`;
     if (key === 'protocol_number' || key === 'protocol_date') {
       const number = key === 'protocol_number';
       const manual = number ? item._protocol_number_manual : item._protocol_date_manual;
@@ -416,6 +460,7 @@
   }
 
   function renderItems() {
+    state.items.forEach(syncProtocolWeight);
     applyProtocolDefaults();
     $('#item-count').textContent = state.items.length;
     $('#empty-items').hidden = state.items.length > 0;
@@ -441,7 +486,7 @@
   $('#common-fields').addEventListener('input', event => {
     if (!event.target.dataset.common) return;
     state.common[event.target.dataset.common] = event.target.value;
-    if (event.target.dataset.common === 'supplier' && supplierDirectory.selected()?.name !== event.target.value) supplierDirectory.clearSelection();
+    if (event.target.dataset.common === 'supplier' && supplierLine(supplierDirectory.selected()) !== event.target.value) supplierDirectory.clearSelection();
     event.target.closest('.field').classList.remove('invalid');
     invalidateReview();
     updateGeneration();
@@ -453,6 +498,11 @@
     const item = state.items.find(v => String(v.id) === card.dataset.item);
     if (!item) return;
     item[input.dataset.field] = input.value;
+    if (input.dataset.field === 'sample_weight') {
+      item._sample_weight_manual = true;
+      updateWeightControl(item,card);
+    }
+    if (input.dataset.field === 'template_id') updateWeightControl(item,card);
     const first = state.items[0] === item;
     if (input.dataset.field === 'protocol_date') {
       if (!first) item._protocol_date_manual = true;
@@ -471,6 +521,7 @@
       $$('.match-chip', card).forEach(node => node.remove());
       $('.match-summary', card).textContent = 'Назву змінено. Знайдіть шаблон знову або оберіть його вручну.';
       $('.match-summary', card).classList.add('no-match');
+      updateWeightControl(item,card);
     }
     input.closest('.field').classList.remove('invalid');
     invalidateReview();
@@ -492,6 +543,13 @@
     if (!card) return;
     const item = state.items.find(v => String(v.id) === card.dataset.item);
     if (!item) return;
+    if (event.target.closest('[data-protocol-weight-reset]')) {
+      item._sample_weight_manual = false;
+      item._sample_weight_source = 'template';
+      updateWeightControl(item,card);
+      invalidateReview(); updateGeneration();
+      return;
+    }
     if (event.target.closest('[data-inherit-date]') || event.target.closest('[data-inherit-number]')) {
       if (event.target.closest('[data-inherit-date]')) item._protocol_date_manual = false;
       else item._protocol_number_manual = false;
@@ -509,6 +567,7 @@
     const matchButton = event.target.closest('[data-match]');
     if (matchButton) {
       item.template_id = matchButton.dataset.match;
+      updateWeightControl(item,card);
       $('select[data-field="template_id"]', card).value = item.template_id;
       $('select[data-field="template_id"]', card).closest('.field').classList.remove('invalid');
       invalidateReview();
@@ -551,6 +610,7 @@
     revokeSourceUrl();
     state.items = []; state.common = {}; state.text = ''; state.source = ''; state.sequenceEnabled = false;
     supplierDirectory.clearSelection();
+    document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:''}}));
     $('#review-confirmed').checked = false;
     $('#download-success').hidden = true;
     showStage('upload');
@@ -646,11 +706,12 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'supplier-directory-dialog';
     dialog.className = 'modal';
-    dialog.innerHTML = `<form id="supplier-directory-form"><div class="modal-heading"><div><p class="eyebrow">ПОСТАЧАЛЬНИКИ</p><h2>Довідник постачальників</h2></div><button id="supplier-directory-close" type="button" class="icon-button" aria-label="Закрити довідник">${icon('close')}</button></div><div class="modal-body"><div class="section-heading"><h3 id="supplier-directory-form-title">Новий постачальник</h3><button id="supplier-directory-new" type="button" class="text-button" hidden>Додати іншого</button></div><label class="field"><span>Найменування постачальника *</span><input id="supplier-directory-name" maxlength="300" required placeholder="Наприклад, ТОВ «Назва підприємства»"></label><label class="field"><span>Код для номера протоколу *</span><input id="supplier-directory-code" type="text" inputmode="numeric" pattern="[0-9]{1,10}" maxlength="10" required placeholder="Наприклад, 015"><small>Від 1 до 10 цифр. Початкові нулі зберігаються.</small></label><p id="supplier-directory-error" class="field-error" role="alert" hidden></p><div class="source-actions"><button id="supplier-directory-save" type="submit" class="button primary">Додати постачальника</button></div><div class="section-heading"><h3>Збережені постачальники</h3></div><div id="supplier-directory-list"></div><p id="supplier-directory-empty" class="empty-state">Поки немає збережених постачальників.</p></div><div class="modal-footer"><button id="supplier-directory-done" type="button" class="button secondary">Готово</button></div></form>`;
+    dialog.innerHTML = `<form id="supplier-directory-form"><div class="modal-heading"><div><p class="eyebrow">ПОСТАЧАЛЬНИКИ</p><h2>Довідник постачальників</h2></div><button id="supplier-directory-close" type="button" class="icon-button" aria-label="Закрити довідник">${icon('close')}</button></div><div class="modal-body"><div class="section-heading"><h3 id="supplier-directory-form-title">Новий постачальник</h3><button id="supplier-directory-new" type="button" class="text-button" hidden>Додати іншого</button></div><label class="field"><span>Найменування постачальника *</span><input id="supplier-directory-name" maxlength="300" required placeholder="Наприклад, ТОВ «Назва підприємства»"></label><label class="field"><span>Код для номера протоколу *</span><input id="supplier-directory-code" type="text" inputmode="numeric" pattern="[0-9]{1,10}" maxlength="10" required placeholder="Наприклад, 015"><small>Від 1 до 10 цифр. Початкові нулі зберігаються.</small></label><label class="field"><span>Код ЄДРПОУ</span><input id="supplier-directory-edrpou" type="text" inputmode="numeric" pattern="[0-9]{8}|[0-9]{10}" maxlength="10" placeholder="Наприклад, 39422516"><small>8 цифр, для ФОП — 10. Буде додано до рядка постачальника.</small></label><p id="supplier-directory-error" class="field-error" role="alert" hidden></p><div class="source-actions"><button id="supplier-directory-save" type="submit" class="button primary">Додати постачальника</button></div><div class="section-heading"><h3>Збережені постачальники</h3></div><div id="supplier-directory-list"></div><p id="supplier-directory-empty" class="empty-state">Поки немає збережених постачальників.</p></div><div class="modal-footer"><button id="supplier-directory-done" type="button" class="button secondary">Готово</button></div></form>`;
     document.body.append(dialog);
     const select = query('#supplier-directory-select');
     const nameInput = query('#supplier-directory-name');
     const codeInput = query('#supplier-directory-code');
+    const edrpouInput = query('#supplier-directory-edrpou');
     const errorNode = query('#supplier-directory-error');
     const selected = () => suppliers.find(supplier => String(supplier.id) === selectedId) || null;
     function showError(message) {
@@ -668,7 +729,7 @@
     function render() {
       select.innerHTML = '<option value="">Ввести постачальника вручну</option>' + suppliers.map(supplier => `<option value="${escape(supplier.id)}">${escape(supplier.name)} · ${escape(supplier.code)}</option>`).join('');
       select.value = selectedId;
-      query('#supplier-directory-list').innerHTML = suppliers.map(supplier => `<article class="template-row" data-supplier-id="${escape(supplier.id)}"><div class="template-info"><h3>${escape(supplier.name)}</h3><p>Код: ${escape(supplier.code)}${String(supplier.id) === selectedId ? ' · Обрано для поточного акта' : ''}</p></div><div class="row-actions"><button type="button" class="icon-button supplier-directory-edit" aria-label="Редагувати ${escape(supplier.name)}" title="Редагувати">${icon('edit')}</button><button type="button" class="icon-button danger supplier-directory-delete" aria-label="Видалити ${escape(supplier.name)}" title="Видалити">${icon('trash')}</button></div></article>`).join('');
+      query('#supplier-directory-list').innerHTML = suppliers.map(supplier => `<article class="template-row" data-supplier-id="${escape(supplier.id)}"><div class="template-info"><h3>${escape(supplier.name)}</h3><p>Код: ${escape(supplier.code)}${supplier.edrpou ? ` · ЄДРПОУ: ${escape(supplier.edrpou)}` : ''}${String(supplier.id) === selectedId ? ' · Обрано для поточного акта' : ''}</p></div><div class="row-actions"><button type="button" class="icon-button supplier-directory-edit" aria-label="Редагувати ${escape(supplier.name)}" title="Редагувати">${icon('edit')}</button><button type="button" class="icon-button danger supplier-directory-delete" aria-label="Видалити ${escape(supplier.name)}" title="Видалити">${icon('trash')}</button></div></article>`).join('');
       query('#supplier-directory-empty').hidden = suppliers.length > 0;
     }
     function setBusy(value) {
@@ -701,6 +762,7 @@
         editingId = String(supplier.id);
         nameInput.value = supplier.name;
         codeInput.value = supplier.code;
+        edrpouInput.value = supplier.edrpou || supplier.name.match(/(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*(\d{8}(?:\d{2})?)/i)?.[1] || '';
         query('#supplier-directory-form-title').textContent = 'Редагувати постачальника';
         query('#supplier-directory-save').textContent = 'Зберегти зміни';
         query('#supplier-directory-new').hidden = false;
@@ -728,8 +790,13 @@
       if (busy) return;
       const name = nameInput.value.trim();
       const code = codeInput.value.trim();
+      const edrpou = edrpouInput.value.trim();
       if (!name || !/^[0-9]{1,10}$/.test(code)) {
         showError('Укажіть найменування й код постачальника: від 1 до 10 цифр.');
+        return;
+      }
+      if (edrpou && !/^(?:[0-9]{8}|[0-9]{10})$/.test(edrpou)) {
+        showError('Укажіть 8 цифр ЄДРПОУ або 10 цифр для ФОП.');
         return;
       }
       setBusy(true);
@@ -737,8 +804,8 @@
       try {
         const wasEditing = !!editingId;
         const response = editingId
-          ? await api(`/api/settings/suppliers/${encodeURIComponent(editingId)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,code})})
-          : await jsonPost('/api/settings/suppliers', {name,code});
+          ? await api(`/api/settings/suppliers/${encodeURIComponent(editingId)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,code,edrpou})})
+          : await jsonPost('/api/settings/suppliers', {name,code,edrpou});
         const supplier = await response.json();
         const position = suppliers.findIndex(value => String(value.id) === String(supplier.id));
         if (position < 0) suppliers.push(supplier); else suppliers[position] = supplier;
@@ -762,7 +829,9 @@
       },
       clearSelection() { selectedId = ''; render(); },
       syncName(name) {
-        const matches = suppliers.filter(supplier => supplier.name.trim() === String(name || '').trim());
+        const value = String(name || '').trim();
+        const plain = text => String(text || '').replace(/[,;]?\s*(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*\d{8}(?:\d{2})?\.?/ig,'').replace(/[ ,;]+$/,'').trim();
+        const matches = suppliers.filter(supplier => supplierLine(supplier) === value || supplier.name.trim() === value || plain(supplier.name) === plain(value));
         selectedId = matches.length === 1 ? String(matches[0].id) : '';
         render();
       },
