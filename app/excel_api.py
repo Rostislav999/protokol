@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 import io
 from pathlib import Path
+import re
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
 
@@ -11,7 +13,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from .protocol_excel import DATES, FIELDS, NUMBERS, Record, extract_text, read_docx, report_text, write_excel_bytes
+from .protocol_excel import DATES, FIELDS, NUMBERS, Record, date_text, extract_text, kg, protocol_key, read_docx, report_text, write_excel_bytes
+from .protocol_text import clean_product_name
 from .settings import SettingsStore
 from .supplier_details import supplier_with_code
 
@@ -50,6 +53,86 @@ class ExcelGeneration(BaseModel):
     records: list[ExcelRecord] = Field(min_length=1, max_length=MAX_RECORDS)
     confirmed: bool = False
     update_existing: bool = True
+
+
+class ActExcelCommon(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_max_length=4000)
+    supplier: str = ""
+
+
+class ActExcelItem(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_max_length=4000)
+    product_name: str = ""
+    protocol_number: str = ""
+    protocol_date: str = ""
+    catalog_number: str = ""
+    manufacturer: str = ""
+    manufacture_date: str = ""
+    batch_size: str = ""
+    sample_weight: str | None = None
+
+
+class ActExcelInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    common: ActExcelCommon = Field(default_factory=ActExcelCommon)
+    items: list[ActExcelItem] = Field(min_length=1, max_length=MAX_RECORDS)
+    source: str = Field(default="", max_length=1000)
+
+
+def records_from_act(payload: ActExcelInput, suppliers: list[dict]) -> dict:
+    """Map reviewed form fields directly, without generating or reading Word."""
+    records = []
+    supplier = supplier_with_code(payload.common.supplier, suppliers)
+    for index, item in enumerate(payload.items, 1):
+        record = Record(f"Акт: {_source_name(payload.source or 'поточна форма')} · позиція {index}")
+        v = record.values = {column: "" for column, _ in FIELDS}
+
+        def parsed_date(value, label):
+            value = value.strip()
+            if not value:
+                return ""
+            try:
+                iso = re.search(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", value)
+                parsed = date.fromisoformat(iso[0]).strftime("%d.%m.%Y") if iso else date_text(value)
+            except ValueError:
+                parsed = ""
+            if not parsed:
+                record.warnings.append(f"{label}: не вдалося визначити дату з «{value}». Заповніть її вручну.")
+            return parsed
+
+        number = protocol_key(item.protocol_number)
+        v["D"] = "№" + number if number else ""
+        v["E"] = parsed_date(item.protocol_date, "Дата протоколу")
+        codes = set(re.findall(r"(?<!\d)\d{4,8}(?!\d)", item.catalog_number))
+        v["F"] = next(iter(codes)) if len(codes) == 1 else ""
+        if item.catalog_number.strip() and not v["F"]:
+            record.warnings.append("Код каталогу: не знайдено однозначний код із 4–8 цифр.")
+        v["G"] = clean_product_name(item.product_name, item.catalog_number)
+        expiry = re.search(r"\bвжити\s+до\b", item.manufacture_date, re.I)
+        manufactured = item.manufacture_date[:expiry.start()] if expiry else item.manufacture_date
+        v["H"] = v["I"] = parsed_date(manufactured.strip(" /,;"), "Дата виготовлення")
+        if expiry:
+            v["J"] = parsed_date(item.manufacture_date[expiry.end():], 'Дата «Вжити до»')
+        v["K"] = kg(item.batch_size)
+        if item.batch_size.strip() and not v["K"]:
+            record.warnings.append("Розмір партії: вкажіть масу з одиницею г або кг.")
+        # The total sample weight is not the net weight of one package. Only
+        # an explicit per-package mass immediately after «по» establishes L.
+        each = re.search(r"\bпо\s+([0-9]+(?:[ \u00a0][0-9]{3})*(?:[,.][0-9]+)?\s*(?:кг|kg|г|g)\b)",
+                         item.sample_weight or "", re.I)
+        v["L"] = kg(each[1]) if each else ""
+        v["M"] = supplier
+        if supplier and not re.search(r"(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*\d{8}(?:\d{2})?(?!\d)", supplier, re.I):
+            record.warnings.append("Постачальник: код ЄДРПОУ не знайдено однозначно; перевірте довідник або заповніть поле вручну.")
+        manufacturer_codes = set(re.findall(r"(?<!\d)\d{8}(?!\d)", item.manufacturer))
+        v["N"] = next(iter(manufacturer_codes)) if len(manufacturer_codes) == 1 else ""
+        if item.manufacturer.strip() and not v["N"]:
+            record.warnings.append("Виробник: не знайдено однозначний код ЄДРПОУ з 8 цифр.")
+        records.append({"id": uuid4().hex, "source": record.source[:1000], "values": v,
+                        "warnings": record.warnings, "missing": record.missing()})
+    return {"records": records, "warnings": [
+        "Дані перенесено з поточної форми акта. Перевірте номер і дату протоколу та решту полів перед збереженням Excel."
+    ]}
 
 
 def _source_name(filename):
@@ -151,6 +234,10 @@ def excel_router(settings: SettingsStore) -> APIRouter:
         finally:
             for file in files:
                 await file.close()
+
+    @router.post("/from-act")
+    def from_act(payload: ActExcelInput):
+        return records_from_act(payload, settings.all()["suppliers"])
 
     @router.post("/generate")
     async def generate(payload: str = Form(...), template: UploadFile | None = File(None)):

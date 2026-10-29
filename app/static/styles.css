@@ -16,3 +16,5 @@ main{margin-left:246px;min-height:100vh;display:flex;flex-direction:column}.topb
 
 .subgroup-tag{color:#277e6d;background:#e9f5ef;border-color:#cfe4db;font-weight:600}.library-toolbar .category-filter select{max-width:190px}.library-toolbar .search-box{min-width:150px}
 @media(max-width:720px){.library-toolbar .category-filter select{max-width:none;width:100%}}
+.assignment-import-bar{flex-wrap:wrap}.act-preparation-actions{display:flex;flex-wrap:wrap;gap:10px}.act-preparation-actions>.button{flex:1 1 auto}
+@media(max-width:720px){.act-preparation-actions{width:100%}.act-preparation-actions>.button{width:100%}}

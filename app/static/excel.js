@@ -12,7 +12,7 @@
   section.hidden = true;
   section.setAttribute('aria-labelledby','excel-title');
   section.innerHTML = `
-    <div class="page-heading"><div><p class="eyebrow">ПРОТОКОЛИ → ПЕРЕВІРКА → ТАБЛИЦЯ</p><h1 id="excel-title">Excel із протоколів</h1><p class="subtitle">Знайома таблиця D–N. Два стовпці про відповідність не заповнюються.</p></div><button id="excel-clear" type="button" class="button secondary">Новий список</button></div>
+    <div class="page-heading"><div><p class="eyebrow">АКТ АБО ПРОТОКОЛИ → ПЕРЕВІРКА → ТАБЛИЦЯ</p><h1 id="excel-title">Excel за актом і протоколами</h1><p class="subtitle">Перенесіть дані поточного акта або завантажте готові протоколи. Знайома таблиця D–N; два стовпці про відповідність не заповнюються.</p></div><button id="excel-clear" type="button" class="button secondary">Новий список</button></div>
     <div id="excel-load-error" class="notice warning" hidden><p></p><button id="excel-retry" type="button" class="text-button">Спробувати знову</button></div>
     <section class="panel common-panel"><div class="panel-heading"><div><h2>Протоколи випробувань</h2><p>Виберіть один або кілька DOCX, PDF чи ZIP із протоколами.</p></div></div><div class="source-actions"><button id="excel-upload" type="button" class="button primary">${icon('upload')}Додати протоколи</button><small>До 100 файлів, по 25 МБ. Загалом до 100 МБ.</small></div><input id="excel-files" type="file" accept=".docx,.pdf,.zip" multiple hidden></section>
     <section id="excel-processing" class="panel processing" hidden aria-live="polite"><div class="spinner"></div><h2>Читаємо протоколи</h2><p>Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.</p></section>
@@ -21,8 +21,8 @@
       <section class="panel common-panel"><div class="panel-heading"><div><h2>Таблиця Excel</h2><p>Можна продовжити вашу таблицю або створити нову.</p></div></div><div class="form-grid"><label class="field wide"><span>Вихідна таблиця .xlsx (за потреби)</span><input id="excel-template" type="file" accept=".xlsx"><small>Без файлу буде створено нову таблицю з тими самими стовпцями D–N. Оригінал завантаженої таблиці не змінюється.</small></label><label class="confirmation"><input id="excel-update-existing" type="checkbox" checked><span>Оновлювати рядки з тим самим номером протоколу. Якщо дані не знайдено, зберігати попереднє значення клітинки.</span></label></div></section>
       <div class="section-heading"><div><h2>Протоколи <span id="excel-record-count" class="count-pill">0</span></h2><p>Перевірте назви, дати, масу в кг та коди організацій перед збереженням.</p></div></div>
       <div id="excel-records"></div>
-      <div id="excel-empty" class="panel empty-state"><h3>Протоколи ще не додані</h3><p>Завантажте готові файли або скористайтеся кнопкою «Excel із цих протоколів» після їх створення.</p></div>
-      <div class="notice soft">${icon('info')}<div>Партія (позначення) заповнюється датою виготовлення. Маса нетто одиниці — вага однієї упаковки, а не загальна вага зразка. Постачальник містить назву й ЄДРПОУ; виробник — код із протоколу.</div></div>
+      <div id="excel-empty" class="panel empty-state"><h3>Дані ще не додані</h3><p>Перенесіть дані кнопкою «Підготувати Excel за цим актом» або завантажте готові протоколи.</p></div>
+      <div class="notice soft">${icon('info')}<div>Партія (позначення) заповнюється датою виготовлення. Маса нетто одиниці — вага однієї упаковки, а не загальна вага зразка. Постачальник містить назву й ЄДРПОУ; виробник — код ЄДРПОУ виробника.</div></div>
       <section class="panel generation-panel"><div><label class="confirmation"><input id="excel-confirmed" type="checkbox"><span>Я перевірив(-ла) витягнуті дані та попередження.</span></label><p id="excel-generation-help" class="generation-help"></p></div><button id="excel-generate" type="button" class="button primary" disabled>${icon('download')}Створити Excel</button></section>
     </fieldset>
     <div id="excel-error" class="notice warning" role="alert" hidden></div>
@@ -123,6 +123,8 @@
     if (files.reduce((sum,file) => sum+file.size,0) > 100 * 1024 * 1024) return showError(new Error('Загальний розмір файлів — до 100 МБ.'));
     invalidate();
     state.busy = true;
+    $('#excel-processing h2').textContent = 'Читаємо протоколи';
+    $('#excel-processing p').textContent = 'Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.';
     $('#excel-processing').hidden = false;
     updateReadiness();
     try {
@@ -134,6 +136,38 @@
       state.records.push(...imported);
       state.warnings.push(...(data.warnings || []));
       if (!imported.length && !(data.warnings || []).length) throw new Error('У файлах не знайдено протоколів для імпорту.');
+      render();
+    } catch (error) { showError(error); }
+    finally { state.busy=false; $('#excel-processing').hidden=true; updateReadiness(); }
+  }
+  async function importAct(detail) {
+    if (state.busy) {
+      document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));
+      showError(new Error('Дочекайтеся завершення поточної операції Excel.'));
+      return;
+    }
+    if (!detail?.items?.length) return;
+    if (state.records.length && !window.confirm('Замінити поточний список Excel даними цього акта? Незбережені зміни списку буде замінено.')) return;
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));
+    if (!await load()) return;
+    if (state.busy) { showError(new Error('Дочекайтеся завершення поточної операції Excel.')); return; }
+    state.busy = true;
+    $('#excel-error').hidden = true;
+    $('#excel-processing h2').textContent = 'Готуємо Excel за актом';
+    $('#excel-processing p').textContent = 'Переносимо поточні дані та ваші виправлення. Створювати Word-протоколи для цього не потрібно.';
+    $('#excel-processing').hidden = false;
+    updateReadiness();
+    try {
+      const data = await (await api('/api/excel/from-act', {
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(detail)
+      })).json();
+      const imported = (data.records || []).map(record => ({...record,id:uid(),values:{...(record.values || {})},warnings:record.warnings || []}));
+      if (!imported.length) throw new Error('В акті не знайдено позицій для таблиці Excel.');
+      if (imported.length > 100) throw new Error('Список містить більше 100 позицій. Створіть окремі таблиці.');
+      // Keep the existing preview and its downloads until the replacement succeeds.
+      invalidate();
+      state.records = imported;
+      state.warnings = data.warnings || [];
       render();
     } catch (error) { showError(error); }
     finally { state.busy=false; $('#excel-processing').hidden=true; updateReadiness(); }
@@ -200,5 +234,6 @@
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));
     await importFiles(event.detail?.files || []);
   });
+  document.addEventListener('protokol:excel-from-act',event => importAct(event.detail));
   render();
 })();

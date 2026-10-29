@@ -104,7 +104,7 @@
     $('#library-view').hidden = name !== 'library';
     if ($('#assignments-view')) $('#assignments-view').hidden = name !== 'assignments';
     if ($('#excel-view')) $('#excel-view').hidden = name !== 'excel';
-    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', excel: 'Excel із протоколів', acts: 'Акти відбору'})[name] || 'Робочий простір';
+    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
     $$('.nav-button').forEach(button => {
       const active = button.dataset.view === name;
       button.classList.toggle('active', active);
@@ -120,6 +120,15 @@
   $('#prepare-assignments').addEventListener('click', () => {
     if (!state.items.length) { toast('Спочатку додайте позиції акта.', true); return; }
     document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: JSON.parse(JSON.stringify(state.items)), text: state.text, source: state.source}}));
+  });
+  $('#prepare-excel-from-act').addEventListener('click', () => {
+    if (state.busy) { toast('Дочекайтеся завершення поточної операції.', true); return; }
+    if (!state.items.length) { toast('Спочатку додайте позиції акта.', true); return; }
+    document.dispatchEvent(new CustomEvent('protokol:excel-from-act', {detail: {
+      common: JSON.parse(JSON.stringify(state.common)),
+      items: JSON.parse(JSON.stringify(state.items)),
+      source: state.source
+    }}));
   });
 
   async function loadTemplates() {
