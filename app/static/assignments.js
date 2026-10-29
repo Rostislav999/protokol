@@ -13,7 +13,8 @@
   ];
   const state = {
     templates: [], items: [], loaded: false, loading: false, busy: false, source: '', sourceUrl: '',
-    text: '', today: '', nextNumber: null, initialNumber: '', jobId: uid(), result: null, editing: null
+    text: '', today: '', nextNumber: null, initialNumber: '', jobId: uid(), result: null, editing: null,
+    issuers: [], issuerId: ''
   };
   const view = document.createElement('section');
   view.id = 'assignments-view';
@@ -43,11 +44,12 @@
             <div class="field"><span>Дата видачі завдань</span><output id="assignment-today" class="assignment-readonly">—</output><small>Поточна дата за київським часом. Встановлюється програмою під час створення.</small></div>
           </div>
           <div class="assignment-number-footer"><p id="assignment-next-label"></p><button id="assignment-change-next" type="button" class="text-button" hidden>Змінити наступний номер</button></div>
+          <div class="assignment-number-footer"><p id="assignment-issuer-summary">Особа, яка сформулювала та видала завдання: з обраного шаблону.</p><button id="assignment-open-issuer" type="button" class="button secondary">Хто видає завдання</button></div>
         </section>
         <div class="section-heading"><div><h2>Зразки <span id="assignment-item-count" class="count-pill">0</span></h2><p>Підбір виконується за назвою продукту та НД на відповідність.</p></div><div class="assignment-heading-actions"><button id="assignment-select-unambiguous" type="button" class="button secondary">${icon('check')}Обрати однозначні шаблони</button><button id="assignment-add-item" type="button" class="button secondary">${icon('plus')}Додати зразок</button></div></div>
         <div id="assignment-items"></div>
         <div id="assignment-empty" class="panel empty-state" hidden><h3>Зразки ще не визначено</h3><p>Додайте зразок вручну або виправте текст акта.</p></div>
-        <div class="notice soft">${icon('info')}<div>Перевірте нормативний документ для кожного продукту. Стандарт із назви файлу або попереднього зразка не підставляється. Вага та кількість для відділення вводяться вручну; порожнє поле буде позначено «[НЕ ЗАПОВНЕНО]».</div></div>
+        <div class="notice soft">${icon('info')}<div>Перевірте нормативний документ для кожного продукту. Вага та кількість автоматично підставляються з обраного шаблону кожного відділення. За потреби відредагуйте їх; очищене вручну поле буде позначено «[НЕ ЗАПОВНЕНО]».</div></div>
         <section class="panel generation-panel"><div><label class="confirmation"><input id="assignment-confirmed" type="checkbox"><span>Я перевірив(-ла) зразки, НД, відділення та відповідність кожного шаблону.</span></label><p id="assignment-generation-help" class="generation-help"></p></div><button id="assignment-generate" type="button" class="button primary" disabled>${icon('download')}Створити завдання</button></section>
         <div id="assignment-success" class="notice success" role="status" hidden></div>
       </fieldset>
@@ -63,6 +65,11 @@
   dialog.className = 'modal';
   dialog.innerHTML = `<form id="assignment-template-form"><div class="modal-heading"><div><p class="eyebrow">ЗАВДАННЯ</p><h2 id="assignment-dialog-title">Додати шаблон завдання</h2></div><button type="button" id="assignment-dialog-close" class="icon-button" aria-label="Закрити">${icon('close')}</button></div><div class="modal-body"><label id="assignment-template-file-label" class="field"><span>Word-файл *</span><input id="assignment-template-file" type="file" accept=".docx"><small>Формат .docx, до 25 МБ.</small></label><label class="field"><span>Назва шаблону</span><input id="assignment-template-name" maxlength="250" placeholder="Наприклад, Свинина — бактеріологія"></label><label class="field"><span>Синоніми назви продукту</span><textarea id="assignment-template-aliases" rows="3" placeholder="Кожен варіант з нового рядка"></textarea><small>Розділяйте комами або новими рядками.</small></label><label class="field"><span>Область застосування</span><select id="assignment-template-scope"><option value="">Точне найменування</option><option value="first_course">Готові перші страви</option><option value="jam">Джеми</option><option value="ready_second_cereals_potatoes">Другі страви: крупи та картопля</option><option value="ready_second_all">Усі готові другі страви</option></select><small>Розширюйте область лише для шаблону, показники та методи якого придатні для цієї групи продуктів.</small></label><label id="assignment-template-department-label" class="field"><span>Відділення (якщо не визначене в документі)</span><select id="assignment-template-department"><option value="">Автоматично з документа</option>${DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}</select></label><div id="assignment-template-metadata" class="notice soft" hidden></div><div class="notice soft compact">Відділення та нормативний документ читаються з Word. Таблиці показників і методів зберігаються з обраного шаблону.</div><p id="assignment-template-error" class="field-error" role="alert" hidden></p></div><div class="modal-footer"><button type="button" id="assignment-dialog-cancel" class="button secondary">Скасувати</button><button type="submit" id="assignment-template-save" class="button primary">Зберегти шаблон</button></div></form>`;
   document.body.append(dialog);
+  const issuerDialog = document.createElement('dialog');
+  issuerDialog.id = 'assignment-issuer-dialog';
+  issuerDialog.className = 'modal';
+  issuerDialog.innerHTML = `<form id="assignment-issuer-form"><div class="modal-heading"><div><p class="eyebrow">ОСОБА, ЯКА ВИДАЄ ЗАВДАННЯ</p><h2>Сформулював та видав завдання</h2></div><button type="button" id="assignment-issuer-close" class="icon-button" aria-label="Закрити">${icon('close')}</button></div><div class="modal-body"><label class="field"><span>Збережена особа</span><select id="assignment-issuer-select"><option value="">Залишити особу з Word-шаблону</option></select></label><div class="source-actions"><button type="button" id="assignment-issuer-new" class="text-button">Додати нову особу</button><button type="button" id="assignment-issuer-delete" class="text-button danger" hidden>Видалити особу</button></div><label class="field"><span>Ім’я та прізвище</span><input id="assignment-issuer-name" maxlength="300" placeholder="Наприклад, Олександр ПРІЗВИЩЕ"></label><label class="field"><span>Звання / посада</span><input id="assignment-issuer-position" maxlength="300" placeholder="Наприклад, старший лейтенант"></label><button type="button" id="assignment-issuer-save" class="button secondary">Зберегти дані особи</button><div class="notice soft compact">Обрана особа підставляється в рядок «Сформулював та видав завдання» або «Видав» у завданнях усіх відділень. Вибір зберігається для наступних актів.</div><p id="assignment-issuer-error" class="field-error" role="alert" hidden></p></div><div class="modal-footer"><button type="button" id="assignment-issuer-cancel" class="button secondary">Скасувати</button><button type="submit" id="assignment-issuer-apply" class="button primary">Використовувати</button></div></form>`;
+  document.body.append(issuerDialog);
 
   function notice(message, error = false) {
     const node = document.createElement('div');
@@ -111,9 +118,21 @@
     $('#assignment-loading').hidden = false;
     $('#assignment-load-error').hidden = true;
     try {
-      const [templatesResponse, numberResponse] = await Promise.all([api('/api/assignments/templates'), api('/api/assignments/numbering')]);
-      const [data, number] = await Promise.all([templatesResponse.json(), numberResponse.json()]);
+      const [templatesResponse, numberResponse, settingsResponse] = await Promise.all([api('/api/assignments/templates'), api('/api/assignments/numbering'), api('/api/settings')]);
+      const [data, number, settings] = await Promise.all([templatesResponse.json(), numberResponse.json(), settingsResponse.json()]);
+      state.issuers = settings.issuers || [];
+      const issuerId = state.issuers.some(issuer => issuer.id === settings.default_issuer_id) ? settings.default_issuer_id : '';
+      if (state.loaded && state.issuerId !== issuerId) invalidate();
+      state.issuerId = issuerId;
+      renderIssuerSummary();
       state.templates = data.templates || [];
+      state.items.forEach(item => DEPTS.forEach(department => {
+        const selection = item.departments[department.id];
+        if (selection.template_id && !state.templates.some(template => template.id === selection.template_id)) {
+          selectDepartmentTemplate(item, department.id, '');
+        }
+        syncDepartmentWeight(item, department.id);
+      }));
       state.today = data.today || '';
       state.nextNumber = number.next_number ?? null;
       state.loaded = true;
@@ -137,15 +156,158 @@
     if (event.detail.name === 'assignments' && !state.loaded && !state.loading) load();
   });
 
+  function renderIssuerSummary() {
+    const issuer = state.issuers.find(value => value.id === state.issuerId);
+    $('#assignment-issuer-summary').textContent = issuer
+      ? `Сформулював та видав завдання: ${[issuer.position,issuer.name].filter(Boolean).join(' ')}.`
+      : 'Особа, яка сформулювала та видала завдання: з обраного Word-шаблону.';
+  }
+  function renderIssuerOptions(selected = state.issuerId) {
+    $('#assignment-issuer-select').innerHTML = '<option value="">Залишити особу з Word-шаблону</option>' +
+      state.issuers.map(issuer => `<option value="${esc(issuer.id)}">${esc([issuer.position,issuer.name].filter(Boolean).join(' '))}</option>`).join('');
+    $('#assignment-issuer-select').value = selected;
+    fillIssuerForm();
+  }
+  function fillIssuerForm() {
+    const issuer = state.issuers.find(value => value.id === $('#assignment-issuer-select').value);
+    $('#assignment-issuer-name').value = issuer?.name || '';
+    $('#assignment-issuer-position').value = issuer?.position || '';
+    $('#assignment-issuer-delete').hidden = !issuer;
+    $('#assignment-issuer-error').hidden = true;
+  }
+  async function refreshIssuers() {
+    const settings = await (await api('/api/settings')).json();
+    state.issuers = settings.issuers || [];
+    return settings;
+  }
+  function issuerError(error) {
+    $('#assignment-issuer-error').textContent = error.message;
+    $('#assignment-issuer-error').hidden = false;
+  }
+  function issuerBusy(value) {
+    ['apply','save','delete','new'].forEach(name => { $(`#assignment-issuer-${name}`).disabled = value; });
+  }
+  async function saveIssuerProfile() {
+    const id = $('#assignment-issuer-select').value;
+    const values = {name:$('#assignment-issuer-name').value.trim(),position:$('#assignment-issuer-position').value.trim()};
+    if (!values.name) throw new Error('Укажіть ім’я та прізвище особи.');
+    const response = await api(`/api/settings/issuers${id ? `/${encodeURIComponent(id)}` : ''}`, {
+      method:id?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)
+    });
+    const saved = await response.json();
+    await refreshIssuers();
+    if (saved.id === state.issuerId) invalidate();
+    renderIssuerOptions(saved.id);
+    renderIssuerSummary();
+    updateReadiness();
+    return saved.id;
+  }
+  $('#assignment-open-issuer').addEventListener('click', async () => {
+    if (state.busy) return;
+    try {
+      await refreshIssuers();
+      renderIssuerOptions();
+      issuerDialog.showModal();
+    } catch (error) { notice(error.message,true); }
+  });
+  ['#assignment-issuer-close','#assignment-issuer-cancel'].forEach(id => $(id).addEventListener('click', () => issuerDialog.close()));
+  issuerDialog.addEventListener('click',event => { if(event.target === issuerDialog) issuerDialog.close(); });
+  $('#assignment-issuer-select').addEventListener('change',fillIssuerForm);
+  $('#assignment-issuer-new').addEventListener('click', () => {
+    $('#assignment-issuer-select').value = '';
+    fillIssuerForm();
+    $('#assignment-issuer-name').focus();
+  });
+  $('#assignment-issuer-save').addEventListener('click',async () => {
+    issuerBusy(true);
+    try { await saveIssuerProfile(); notice('Дані особи збережено. Натисніть «Використовувати», щоб обрати її для завдань.'); }
+    catch(error) { issuerError(error); }
+    finally { issuerBusy(false); }
+  });
+  $('#assignment-issuer-delete').addEventListener('click',async () => {
+    const id = $('#assignment-issuer-select').value;
+    if (!id || !window.confirm('Видалити цю особу з довідника? Уже створені файли збережуть попередні дані.')) return;
+    issuerBusy(true);
+    try {
+      await api(`/api/settings/issuers/${encodeURIComponent(id)}`,{method:'DELETE'});
+      await refreshIssuers();
+      if (state.issuerId === id) { state.issuerId=''; invalidate(); }
+      renderIssuerOptions('');
+      renderIssuerSummary();
+      updateReadiness();
+    } catch(error) { issuerError(error); }
+    finally { issuerBusy(false); }
+  });
+  $('#assignment-issuer-form').addEventListener('submit',async event => {
+    event.preventDefault();
+    issuerBusy(true);
+    try {
+      let id = $('#assignment-issuer-select').value;
+      const issuer = state.issuers.find(value => value.id === id);
+      const name = $('#assignment-issuer-name').value.trim(), position = $('#assignment-issuer-position').value.trim();
+      if (id || name || position) {
+        if (!issuer || issuer.name !== name || issuer.position !== position) id = await saveIssuerProfile();
+      }
+      await api('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({default_issuer_id:id})});
+      state.issuerId=id;
+      invalidate(); renderIssuerSummary(); updateReadiness();
+      issuerDialog.close();
+      notice(id ? 'Особу для завдань обрано.' : 'У завданнях залишиться особа з відповідного Word-шаблону.');
+    } catch(error) { issuerError(error); }
+    finally { issuerBusy(false); }
+  });
+
   function blankItem(data = {}) {
-    const departments = Object.fromEntries(DEPTS.map(d => [d.id, {enabled:false, template_id:'', sample_weight:''}]));
+    const departments = Object.fromEntries(DEPTS.map(d => [d.id, {enabled:false, template_id:'', sample_weight:'', weight_edited:false, weight_from_template:false}]));
     return {id: uid(), product_name:'', standard:'', sample_weight:'', assigned_number:null, matches:{}, reviewMatches:{}, matched:false, ...data, departments};
+  }
+  function defaultDepartmentWeight(item, departmentId) {
+    const common = item.departments[departmentId].weight_from_template ? '' : item.sample_weight.trim();
+    if (common) return {value:common, source:'common'};
+    const template = state.templates.find(value => value.id === item.departments[departmentId].template_id);
+    return {value:String(template?.sample_weight || ''), source:template ? 'template' : ''};
+  }
+  function syncDepartmentWeight(item, departmentId) {
+    const selection = item.departments[departmentId];
+    if (!selection.weight_edited) selection.sample_weight = defaultDepartmentWeight(item, departmentId).value;
+  }
+  function selectDepartmentTemplate(item, departmentId, templateId) {
+    const selection = item.departments[departmentId];
+    selection.template_id = templateId;
+    selection.allow_standard_override = false;
+    syncDepartmentWeight(item, departmentId);
+  }
+  function departmentWeightHint(item, departmentId) {
+    const selection = item.departments[departmentId];
+    if (selection.weight_edited) return selection.sample_weight.trim()
+      ? 'Змінено вручну. Це значення буде використано в завданні.'
+      : 'Поле очищено вручну. У завданні буде «[НЕ ЗАПОВНЕНО]».';
+    const defaults = defaultDepartmentWeight(item, departmentId);
+    if (defaults.source === 'common') return 'Підставлено зі спільного поля зразка. Можна змінити для цього відділення.';
+    if (!defaults.source) return 'Оберіть шаблон, щоб підставити вагу для цього відділення.';
+    return defaults.value.trim()
+      ? 'Підставлено з обраного шаблону. За потреби відредагуйте.'
+      : 'У шаблоні вагу не вказано. Заповніть за потреби.';
+  }
+  function updateDepartmentWeightControl(item, departmentId, card) {
+    const selection = item.departments[departmentId];
+    const input = $(`[data-dept-weight="${departmentId}"]`,card);
+    if (input && input.value !== selection.sample_weight) input.value = selection.sample_weight;
+    const hint = $(`[data-dept-weight-hint="${departmentId}"]`,card);
+    if (hint) hint.textContent = departmentWeightHint(item, departmentId);
+    const reset = $(`[data-dept-weight-reset="${departmentId}"]`,card);
+    if (reset) {
+      const defaults = defaultDepartmentWeight(item, departmentId);
+      reset.hidden = !selection.weight_edited && defaults.source !== 'common';
+      reset.disabled = !state.templates.some(template => template.id === selection.template_id);
+    }
   }
   function invalidate() {
     state.result = null;
     state.jobId = uid();
     $('#assignment-confirmed').checked = false;
     $('#assignment-success').hidden = true;
+    document.dispatchEvent(new CustomEvent('protokol:assignments-invalidated'));
     $$('.assignment-number-preview').forEach((node, index) => node.textContent = previewNumber(index));
   }
   function startingNumber() {
@@ -307,17 +469,18 @@
       <label class="assignment-dept-toggle"><input type="checkbox" data-dept-enabled="${department.id}" ${selection.enabled ? 'checked' : ''}><strong>${department.name}</strong></label>
       <div class="assignment-dept-fields" ${selection.enabled ? '' : 'hidden'}><label class="field"><span>Шаблон завдання *</span><select data-dept-template="${department.id}"><option value="">Оберіть відповідний шаблон</option>${options.length ? `<optgroup label="Назва та НД збігаються">${options.map(t => `<option value="${esc(t.id)}" ${t.id === selection.template_id ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)}</option>`).join('')}</optgroup>` : ''}${reviewOptions.length ? `<optgroup label="Інший НД — потрібна перевірка">${reviewOptions.map(t => `<option value="${esc(t.id)}" ${t.id === selection.template_id ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)}</option>`).join('')}</optgroup>` : ''}</select></label>
       ${needsOverride ? `<div class="assignment-standard-warning"><strong>Нормативні документи відрізняються</strong><br>В акті: ${esc(item.standard)}<br>У шаблоні: ${esc(selectedTemplate?.standard || 'не зазначено')}<br>У завданні залишаться НД та методи саме цього шаблону.<label><input type="checkbox" data-dept-override="${department.id}" ${selection.allow_standard_override ? 'checked' : ''}><span>Підтверджую застосування НД цього шаблону</span></label></div>` : ''}
-      <label class="field"><span>Вага та кількість для відділення</span><input data-dept-weight="${department.id}" value="${esc(selection.sample_weight)}" placeholder="Наприклад, 1,575 кг (3 шт.)"><small>Якщо не вказано, використовується спільне поле зразка або «[НЕ ЗАПОВНЕНО]».</small></label></div>
+      <label class="field"><span>Вага та кількість для відділення</span><input data-dept-weight="${department.id}" value="${esc(selection.sample_weight)}" placeholder="Вага з шаблону або власне значення"><small data-dept-weight-hint="${department.id}">${esc(departmentWeightHint(item, department.id))}</small></label><button type="button" class="text-button" data-dept-weight-reset="${department.id}" ${selection.weight_edited || defaultDepartmentWeight(item, department.id).source === 'common' ? '' : 'hidden'} ${selectedTemplate ? '' : 'disabled'}>Взяти з шаблону</button></div>
       <p class="assignment-dept-hint ${!matches.length ? 'no-match' : ''}">${!item.product_name.trim() || !item.standard.trim() ? 'Для підбору вкажіть назву та НД зразка.' : !matches.length ? reviewMatches.length ? `Точного збігу НД немає. Є ${reviewMatches.length} варіант(и) з іншим НД: увімкніть відділення та перевірте їх перед вибором.` : 'Для цієї назви та НД шаблону не знайдено. Додайте його в бібліотеку.' : `Відповідних шаблонів: ${matches.length}. Перевірте та оберіть потрібний.`}</p>
       ${selection.enabled && matches.length ? `<div class="match-actions">${matches.slice(0,2).map(m => `<button type="button" class="match-chip" data-assignment-match="${esc(m.id)}" data-match-department="${department.id}" title="${esc(m.reason || 'Перевірте відповідність шаблону')}"><span>${esc(m.name)}</span><small>Схожість ${Math.round(Number(m.score) * 100)}%</small></button>`).join('')}</div>` : ''}
       </section>`;
   }
   function renderItems() {
+    state.items.forEach(item => DEPTS.forEach(department => syncDepartmentWeight(item, department.id)));
     $('#assignment-item-count').textContent = state.items.length;
     $('#assignment-empty').hidden = state.items.length > 0;
     $('#assignment-items').innerHTML = state.items.map((item, index) => `<article class="panel item-card assignment-item" data-assignment-item="${esc(item.id)}">
       <div class="item-heading"><div class="item-label"><span class="item-number">${index + 1}</span><div><h3 class="item-title">${esc(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Номер зразка: <strong class="assignment-number-preview">${esc(previewNumber(index))}</strong> · той самий для всіх відділень</p></div></div><button type="button" class="icon-button danger assignment-remove" aria-label="Видалити зразок ${index + 1}">${icon('trash')}</button></div>
-      <div class="form-grid"><label class="field wide"><span>Назва зразка *</span><input data-assignment-field="product_name" value="${esc(item.product_name)}" placeholder="Повне найменування з акта" required></label><label class="field"><span>НД на відповідність *</span><input data-assignment-field="standard" value="${esc(item.standard)}" placeholder="Наприклад, ДСТУ 4450:2005" required></label><label class="field"><span>Спільна вага та кількість (за потреби)</span><input data-assignment-field="sample_weight" value="${esc(item.sample_weight)}" placeholder="Або вкажіть окремо для відділень"></label></div>
+      <div class="form-grid"><label class="field wide"><span>Назва зразка *</span><input data-assignment-field="product_name" value="${esc(item.product_name)}" placeholder="Повне найменування з акта" required></label><label class="field"><span>НД на відповідність *</span><input data-assignment-field="standard" value="${esc(item.standard)}" placeholder="Наприклад, ДСТУ 4450:2005" required></label><label class="field"><span>Спільна вага та кількість (за потреби)</span><input data-assignment-field="sample_weight" value="${esc(item.sample_weight)}" placeholder="Залиште порожнім для ваги з шаблонів"><small>Замінює вагу з шаблонів для відділень без ручних змін.</small></label></div>
       <div class="assignment-match-toolbar"><button type="button" class="text-button assignment-find">Підібрати за назвою та НД</button><small>Дата видачі: ${esc(displayDate(state.today))}</small></div>
       <div class="assignment-departments">${DEPTS.map(d => renderDepartment(item,d)).join('')}</div>
     </article>`).join('');
@@ -337,7 +500,8 @@
         const selection = item.departments[department.id];
         const matches = item.matches[department.id] || [];
         const stillAvailable = matches.some(match => match.id === selection.template_id) || (item.reviewMatches[department.id] || []).some(match => match.id === selection.template_id);
-        if (!stillAvailable) selection.template_id = '';
+        if (!stillAvailable) selectDepartmentTemplate(item, department.id, '');
+        syncDepartmentWeight(item, department.id);
         selection.enabled = matches.length > 0 || !!selection.template_id;
         selection.allow_standard_override = false;
       }
@@ -359,7 +523,7 @@
       item[key] = input.value;
       if (key === 'product_name' || key === 'standard') {
         item.matches = {}; item.reviewMatches = {}; item.matched = false;
-        DEPTS.forEach(d => { item.departments[d.id].template_id = ''; item.departments[d.id].enabled = false; });
+        DEPTS.forEach(d => { selectDepartmentTemplate(item, d.id, ''); item.departments[d.id].enabled = false; });
         $('.item-title',card).textContent = item.product_name || 'Новий зразок';
         $$('.assignment-department',card).forEach(node => {
           node.classList.remove('enabled');
@@ -368,8 +532,18 @@
           $('.assignment-dept-hint',node).textContent = 'Дані змінено. Виконайте підбір за назвою та НД знову.';
           $$('.match-actions',node).forEach(n => n.remove());
         });
+      } else if (key === 'sample_weight') {
+        DEPTS.forEach(department => {
+          syncDepartmentWeight(item, department.id);
+          updateDepartmentWeightControl(item, department.id, card);
+        });
       }
-    } else if (input.dataset.deptWeight) item.departments[input.dataset.deptWeight].sample_weight = input.value;
+    } else if (input.dataset.deptWeight) {
+      const selection = item.departments[input.dataset.deptWeight];
+      selection.sample_weight = input.value;
+      selection.weight_edited = true;
+      updateDepartmentWeightControl(item, input.dataset.deptWeight, card);
+    }
     else return;
     invalidate();
     updateReadiness();
@@ -384,8 +558,7 @@
       item.departments[input.dataset.deptEnabled].enabled = input.checked;
       invalidate(); renderItems();
     } else if (input.dataset.deptTemplate) {
-      item.departments[input.dataset.deptTemplate].template_id = input.value;
-      item.departments[input.dataset.deptTemplate].allow_standard_override = false;
+      selectDepartmentTemplate(item, input.dataset.deptTemplate, input.value);
       invalidate(); renderItems();
     } else if (input.dataset.deptOverride) {
       item.departments[input.dataset.deptOverride].allow_standard_override = input.checked;
@@ -397,6 +570,16 @@
     if (!card) return;
     const item = state.items.find(v => v.id === card.dataset.assignmentItem);
     if (!item) return;
+    const weightReset = event.target.closest('[data-dept-weight-reset]');
+    if (weightReset) {
+      const departmentId = weightReset.dataset.deptWeightReset;
+      item.departments[departmentId].weight_edited = false;
+      item.departments[departmentId].weight_from_template = true;
+      syncDepartmentWeight(item, departmentId);
+      updateDepartmentWeightControl(item, departmentId, card);
+      invalidate(); updateReadiness();
+      return;
+    }
     if (event.target.closest('.assignment-remove')) {
       if (item.product_name && !window.confirm(`Видалити зразок «${item.product_name}»?`)) return;
       state.items = state.items.filter(v => v !== item);
@@ -412,9 +595,8 @@
     }
     const match = event.target.closest('[data-assignment-match]');
     if (match) {
-      item.departments[match.dataset.matchDepartment].template_id = match.dataset.assignmentMatch;
-      $(`select[data-dept-template="${match.dataset.matchDepartment}"]`,card).value = match.dataset.assignmentMatch;
-      invalidate(); updateReadiness();
+      selectDepartmentTemplate(item, match.dataset.matchDepartment, match.dataset.assignmentMatch);
+      invalidate(); renderItems();
     }
   });
   $('#assignment-add-item').addEventListener('click', async () => {
@@ -433,8 +615,7 @@
       if (!choice.enabled || choice.template_id) return;
       const candidates = (item.matches[department.id] || []).filter(match => state.templates.some(template => template.id === match.id && template.department === department.id));
       if (candidates.length !== 1 || !Number.isFinite(Number(candidates[0].score)) || Number(candidates[0].score) < 0.5) return;
-      choice.template_id = candidates[0].id;
-      choice.allow_standard_override = false;
+      selectDepartmentTemplate(item, department.id, candidates[0].id);
       selected++;
     }));
     renderItems();
@@ -477,7 +658,7 @@
     if (missing().issues.length || !$('#assignment-confirmed').checked || state.busy) return;
     const base = startingNumber();
     const payload = state.result?.payload || {
-      job_id:state.jobId, confirmed:true, start_number:base,
+      job_id:state.jobId, confirmed:true, start_number:base, issuer_id:state.issuerId,
       items:state.items.map(item => ({id:item.id,product_name:item.product_name.trim(),standard:item.standard.trim(),sample_weight:item.sample_weight.trim(),
         departments:Object.fromEntries(DEPTS.filter(d => item.departments[d.id].enabled).map(d => [d.id,{template_id:item.departments[d.id].template_id,sample_weight:item.departments[d.id].sample_weight.trim(),allow_standard_override:!!item.departments[d.id].allow_standard_override}]))}))
     };
@@ -505,6 +686,7 @@
       $('#assignment-success').hidden=false;
       const numbers=state.result.numbers;
       $('#assignment-success').innerHTML=`${icon('check')}<div><strong>Завдання сформовано. Номери зразків: ${esc(numbers.slice(0,8).join(', '))}${numbers.length > 8 ? ` та ще ${numbers.length - 8}` : ''}.</strong><br>Дата видачі: ${esc(displayDate(issued))}. Архів передано для завантаження. Уже присвоєні номери зберігаються при виправленні даних і додаванні відділень.</div>`;
+      document.dispatchEvent(new CustomEvent('protokol:assignments-ready',{detail:{payload:state.result.payload}}));
       notice('Архів завдань готовий.');
     } catch(error) {
       notice(error.message,true);
@@ -563,7 +745,7 @@
       if(!window.confirm(`Видалити шаблон «${template.name}»?`))return;
       try{
         await api(`/api/assignments/templates/${encodeURIComponent(template.id)}`,{method:'DELETE'});
-        state.items.forEach(item=>DEPTS.forEach(d=>{if(item.departments[d.id].template_id===template.id)item.departments[d.id].template_id='';}));
+        state.items.forEach(item=>DEPTS.forEach(d=>{if(item.departments[d.id].template_id===template.id)selectDepartmentTemplate(item,d.id,'');}));
         invalidate();
         await load();
         notice('Шаблон завдання видалено.');

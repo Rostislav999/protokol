@@ -4,6 +4,7 @@ import zipfile
 import pytest
 
 from app.extraction import MAX_BYTES, extract_text, parse_act
+from app.protocol_text import SAMPLING_ENDING
 
 
 def test_labeled_items_keep_distinct_batch_facts_and_common_fields():
@@ -27,7 +28,7 @@ def test_labeled_items_keep_distinct_batch_facts_and_common_fields():
 """
     result = parse_act(text)
     assert result["common"]["customer"] == 'ТОВ «Приклад»'
-    assert result["common"]["sampling_description"] == "м. Самар, вул. Прикладна, 1"
+    assert result["common"]["sampling_description"] == "м. Самар, вул. Прикладна, 1, " + SAMPLING_ENDING
     assert len(result["items"]) == 2
     first, second = result["items"]
     assert first["protocol_number"] == "87-010-100-1-2"

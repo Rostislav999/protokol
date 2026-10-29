@@ -16,6 +16,8 @@ from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
+from .protocol_text import clean_product_name, sampling_description_from_act
+
 MAX_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 20
 MAX_PIXELS = 40_000_000
@@ -379,9 +381,6 @@ def parse_act(text: str) -> dict:
                 break
             address_lines.append(value_line)
         common["sampling_description"] = _normalize(" ".join(address_lines))
-        representative_match = re.search(r"Представники військової частини\s+([^:]+):\s*(.+?)(?=\s+У присутності|$)", preamble, re.I | re.S)
-        if representative_match:
-            common["sampling_description"] += " Представники: " + _normalize(representative_match.group(2)).rstrip(";") + "."
     for raw in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         line = _normalize(raw)
         if not line:
@@ -495,6 +494,9 @@ def parse_act(text: str) -> dict:
                 if target is not None:
                     target[previous_field] = _normalize(target[previous_field] + " " + line)
     items = [item for item in items if item["product_name"].strip()]
+    for item in items:
+        item["product_name"] = clean_product_name(item["product_name"], item["catalog_number"])
+    common["sampling_description"] = sampling_description_from_act(common["sampling_description"], preamble)
     if len(items) > 200:
         raise ValueError("В акті забагато позицій: максимально 200.")
     if not items:

@@ -9,7 +9,7 @@
   const subgroupLabels = {legumes: 'Бобові', cereals: 'Круп’яні', potatoes: 'Картопляні', other: 'Інші другі страви'};
   const subgroupOf = (template) => template.subcategory || template.inferred_subcategory || '';
   const subgroupLabel = (template) => subgroupLabels[subgroupOf(template)] || '';
-  const state = {templates: [], common: {}, items: [], text: '', source: '', sourceUrl: '', busy: false, editingTemplate: null, libraryLoaded: false};
+  const state = {templates: [], common: {}, items: [], text: '', source: '', sourceUrl: '', busy: false, editingTemplate: null, libraryLoaded: false, sequenceEnabled:false};
   const commonFields = [
     ['customer', 'Замовник', true, 'Наприклад, ТОВ «Назва підприємства»'],
     ['supplier', 'Постачальник', false, 'Назва, код ЄДРПОУ'],
@@ -58,6 +58,20 @@
     return response;
   }
   const jsonPost = (url, data) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+  const supplierDirectory = createSupplierDirectory({api,jsonPost,escape,icon,onSelect:supplier => {
+    if (supplier) {
+      state.common.supplier = supplier.name;
+      const supplierInput = $('[data-common="supplier"]');
+      if (supplierInput) supplierInput.value = supplier.name;
+      state.items.forEach(item => {
+        const parts = protocolParts(item.protocol_number,true);
+        if (parts) { parts[1] = supplier.code; item.protocol_number = parts.join('-'); }
+      });
+    }
+    applyProtocolDefaults();
+    invalidateReview();
+    updateGeneration();
+  }});
 
   function switchView(name) {
     $('#acts-view').hidden = name !== 'acts';
@@ -256,12 +270,81 @@
   }
 
   function blankItem() {
-    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: []};
+    return {id: uid(), product_name: '', standard: '', protocol_number: '', protocol_date: '', catalog_number: '', manufacturer: '', manufacture_date: '', batch_size: '', template_id: '', matches: [], _protocol_date_manual:false, _protocol_number_manual:false};
+  }
+
+  function protocolParts(value, allowIncomplete = false) {
+    const parts = String(value || '').trim().replace(/^№\s*/, '').replace(/[‐‑‒–—−]/g, '-').replace(/\s+/g, '').split('-');
+    if (parts.length !== 5 || ![0,1,2,4].every(index => /^\d+$/.test(parts[index]))) return null;
+    if (!(allowIncomplete ? /^\d{0,4}$/ : /^\d{4}$/).test(parts[3])) return null;
+    return parts;
+  }
+
+  function protocolNumberHint(item, index) {
+    if (!index) return 'Для решти позицій спільні частини копіюються, а чотиризначна частина збільшується на 1.';
+    if (item._protocol_number_manual) return 'Індивідуальну частину змінено вручну. Спільні частини беруться з першої позиції.';
+    if (item._protocol_number_overflow) return 'Черга перевищує 9999. Змініть початковий номер або вкажіть номер цієї позиції вручну.';
+    return state.sequenceEnabled ? 'Номер підставлено за першою позицією: індивідуальна частина наступна за порядком.' : 'Введіть повний номер у першій позиції, щоб продовжити чергу автоматично.';
+  }
+
+  function updateProtocolControls() {
+    $$('#items-list [data-item]').forEach((card,index) => {
+      const item = state.items.find(value => value.id === card.dataset.item);
+      if (!item) return;
+      ['protocol_number','protocol_date'].forEach(key => {
+        const input = $(`[data-field="${key}"]`,card);
+        if (input && input.value !== item[key]) input.value = item[key];
+      });
+      const numberHint = $('[data-protocol-number-hint]',card);
+      if (numberHint) numberHint.textContent = protocolNumberHint(item,index);
+      const dateHint = $('[data-protocol-date-hint]',card);
+      if (dateHint) dateHint.textContent = !index ? 'Дата застосовується до решти позицій, доки її не змінено вручну.' : item._protocol_date_manual ? 'Дата змінена вручну для цієї позиції.' : 'Дата автоматично береться з першої позиції.';
+      const numberReset = $('[data-inherit-number]',card);
+      if (numberReset) numberReset.hidden = !index || !item._protocol_number_manual;
+      const dateReset = $('[data-inherit-date]',card);
+      if (dateReset) dateReset.hidden = !index || !item._protocol_date_manual;
+    });
+  }
+
+  function applyProtocolDefaults() {
+    if (!state.items.length) return;
+    const first = state.items[0];
+    const parts = protocolParts(first.protocol_number);
+    const supplierCode = supplierDirectory.selected()?.code || '';
+    if (parts && supplierCode) {
+      parts[1] = supplierCode;
+      first.protocol_number = parts.join('-');
+    }
+    state.items.forEach((item,index) => {
+      if (index && !item._protocol_date_manual) item.protocol_date = first.protocol_date;
+      item._protocol_number_overflow = false;
+      if (!index || !parts || !state.sequenceEnabled) return;
+      const number = [...parts];
+      if (item._protocol_number_manual) {
+        const own = protocolParts(item.protocol_number);
+        if (own) number[3] = own[3];
+        else if (/^\d{4}$/.test(item.protocol_number.trim())) number[3] = item.protocol_number.trim();
+        else return;
+      } else {
+        const individual = Number(parts[3]) + index;
+        item._protocol_number_overflow = individual > 9999;
+        number[3] = individual > 9999 ? '' : String(individual).padStart(4,'0');
+      }
+      item.protocol_number = number.join('-');
+    });
+    updateProtocolControls();
   }
 
   function applyExtraction(data, source) {
     state.common = Object.fromEntries(commonFields.map(([key]) => [key, data.common?.[key] || '']));
     state.items = (data.items || []).map(item => ({...blankItem(), ...item, id: item.id || uid(), template_id: item.template_id || '', matches: item.matches || []}));
+    state.sequenceEnabled = false;
+    state.items.forEach((item,index) => {
+      item._protocol_date_manual = !!(index && item.protocol_date.trim() && item.protocol_date !== state.items[0].protocol_date);
+      item._protocol_number_manual = false;
+    });
+    supplierDirectory.syncName(state.common.supplier);
+    applyProtocolDefaults();
     state.text = data.text || '';
     state.source = source;
     $('#raw-text').value = state.text;
@@ -302,14 +385,25 @@
     return `<button type="button" class="match-chip" data-match="${escape(match.id)}" title="Обрати шаблон ${escape(match.name)}"><span>${escape(match.name)}${group ? ` · ${escape(group)}` : ''}</span><small title="Схожість найменувань, а не ймовірність правильного розпізнавання">Схожість ${scoreText(match.score)}</small></button>`;
   }
 
+  function renderItemField(item,index,[key,label,required,placeholder,width]) {
+    if (key === 'protocol_number' || key === 'protocol_date') {
+      const number = key === 'protocol_number';
+      const manual = number ? item._protocol_number_manual : item._protocol_date_manual;
+      const hint = number ? protocolNumberHint(item,index) : !index ? 'Дата застосовується до решти позицій, доки її не змінено вручну.' : manual ? 'Дата змінена вручну для цієї позиції.' : 'Дата автоматично береться з першої позиції.';
+      return `<div class="field ${width}"><label for="protocol-row-${index}-${key}">${escape(label)}${required ? ' *' : ''}</label><input id="protocol-row-${index}-${key}" data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}><small ${number ? 'data-protocol-number-hint' : 'data-protocol-date-hint'}>${escape(hint)}</small><button type="button" class="text-button" ${number ? 'data-inherit-number' : 'data-inherit-date'} ${index && manual ? '' : 'hidden'}>${number ? 'Повернути номер до черги' : 'Взяти дату першої позиції'}</button></div>`;
+    }
+    return `<label class="field ${width}"><span>${escape(label)}${required ? ' *' : ''}</span>${key === 'manufacturer' ? `<textarea rows="2" data-field="${key}" placeholder="${escape(placeholder)}">${escape(item[key])}</textarea>` : `<input data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>`}</label>`;
+  }
+
   function renderItems() {
+    applyProtocolDefaults();
     $('#item-count').textContent = state.items.length;
     $('#empty-items').hidden = state.items.length > 0;
     $('#items-list').innerHTML = state.items.map((item, index) => {
       const matches = (item.matches || []).filter(m => state.templates.some(t => String(t.id) === String(m.id))).slice(0, 3);
       return `<article class="panel item-card" data-item="${escape(item.id)}">
         <div class="item-heading"><div class="item-label"><span class="item-number">${String(index + 1).padStart(2, '0')}</span><div><h3 class="item-title">${escape(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Окремий протокол випробувань</p></div></div><button type="button" class="icon-button danger remove-item" aria-label="Видалити позицію ${index + 1}" title="Видалити позицію">${icon('trash')}</button></div>
-        <div class="item-grid">${itemFields.map(([key, label, required, placeholder, width]) => `<label class="field ${width}"><span>${escape(label)}${required ? ' *' : ''}</span>${key === 'manufacturer' ? `<textarea rows="2" data-field="${key}" placeholder="${escape(placeholder)}">${escape(item[key])}</textarea>` : `<input data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>`}</label>`).join('')}</div>
+        <div class="item-grid">${itemFields.map(field => renderItemField(item,index,field)).join('')}</div>
         <div class="template-selection"><label class="field"><span>Шаблон протоколу *</span><select data-field="template_id" required>${templateOptions(item.template_id)}</select></label><p class="match-summary ${!matches.length ? 'no-match' : ''}">${matches.length ? 'Пропозиції за найменуванням. Перевірте відповідність продукту перед вибором.' : 'Шаблон ще не підібрано. Оберіть його вручну або знайдіть за назвою.'}</p><div class="match-actions"><button type="button" class="text-button find-matches">Знайти за найменуванням</button>${matches.map(renderMatchChip).join('')}</div></div><p class="item-footnote">Незаповнені необов’язкові поля не успадковують дані з попереднього протоколу.</p>
       </article>`;
     }).join('');
@@ -327,6 +421,7 @@
   $('#common-fields').addEventListener('input', event => {
     if (!event.target.dataset.common) return;
     state.common[event.target.dataset.common] = event.target.value;
+    if (event.target.dataset.common === 'supplier' && supplierDirectory.selected()?.name !== event.target.value) supplierDirectory.clearSelection();
     event.target.closest('.field').classList.remove('invalid');
     invalidateReview();
     updateGeneration();
@@ -338,6 +433,16 @@
     const item = state.items.find(v => String(v.id) === card.dataset.item);
     if (!item) return;
     item[input.dataset.field] = input.value;
+    const first = state.items[0] === item;
+    if (input.dataset.field === 'protocol_date') {
+      if (!first) item._protocol_date_manual = true;
+      applyProtocolDefaults();
+    }
+    if (input.dataset.field === 'protocol_number') {
+      if (first && protocolParts(input.value)) state.sequenceEnabled = true;
+      if (!first) item._protocol_number_manual = true;
+      applyProtocolDefaults();
+    }
     if (input.dataset.field === 'product_name') {
       $('.item-title', card).textContent = input.value || 'Новий зразок';
       item.matches = [];
@@ -358,6 +463,14 @@
     if (!card) return;
     const item = state.items.find(v => String(v.id) === card.dataset.item);
     if (!item) return;
+    if (event.target.closest('[data-inherit-date]') || event.target.closest('[data-inherit-number]')) {
+      if (event.target.closest('[data-inherit-date]')) item._protocol_date_manual = false;
+      else item._protocol_number_manual = false;
+      applyProtocolDefaults();
+      invalidateReview();
+      updateGeneration();
+      return;
+    }
     if (event.target.closest('.remove-item')) {
       if (item.product_name && !window.confirm(`Видалити позицію «${item.product_name}»?`)) return;
       state.items = state.items.filter(v => v !== item);
@@ -393,6 +506,7 @@
 
   $('#add-item').addEventListener('click', () => {
     state.items.push(blankItem());
+    if (protocolParts(state.items[0].protocol_number)) state.sequenceEnabled = true;
     invalidateReview();
     renderItems();
     const last = $$('.item-card').at(-1);
@@ -406,7 +520,8 @@
   $('#new-act').addEventListener('click', () => {
     if (!window.confirm('Почати новий акт? Поточні незавантажені дані буде очищено.')) return;
     revokeSourceUrl();
-    state.items = []; state.common = {}; state.text = ''; state.source = '';
+    state.items = []; state.common = {}; state.text = ''; state.source = ''; state.sequenceEnabled = false;
+    supplierDirectory.clearSelection();
     $('#review-confirmed').checked = false;
     $('#download-success').hidden = true;
     showStage('upload');
@@ -430,9 +545,15 @@
 
   function missingFields() {
     const missing = [];
+    const numbers = new Set();
     commonFields.forEach(([key, label, required]) => { if (required && !String(state.common[key] || '').trim()) missing.push(label); });
     state.items.forEach((item, index) => {
       itemFields.forEach(([key, label, required]) => { if (required && !String(item[key] || '').trim()) missing.push(`Позиція ${index + 1}: ${label.toLocaleLowerCase('uk')}`); });
+      const number = String(item.protocol_number || '').trim().replace(/^№\s*/, '').replace(/[‐‑‒–—−]/g, '-').replace(/\s+/g, '');
+      const parts = number.split('-');
+      if ((parts.length === 5 && parts.every(part => /^\d*$/.test(part)) && !protocolParts(number)) || (!index && state.sequenceEnabled && !protocolParts(number))) missing.push(`Позиція ${index + 1}: повний номер у форматі 87-015-3000-1305-2`);
+      if (number && numbers.has(number)) missing.push(`Позиція ${index + 1}: номер протоколу повторюється`);
+      numbers.add(number);
       if (!item.template_id || !state.templates.some(t => String(t.id) === String(item.template_id))) missing.push(`Позиція ${index + 1}: шаблон`);
     });
     return missing;
@@ -481,5 +602,148 @@
     }
   });
 
+  function createSupplierDirectory({api,jsonPost,escape,icon,onSelect}) {
+    const query = (selector, root = document) => root.querySelector(selector);
+    let suppliers = [];
+    let selectedId = '';
+    let editingId = '';
+    let busy = false;
+    const panel = document.createElement('div');
+    panel.className = 'form-grid';
+    panel.style.marginBottom = '18px';
+    panel.innerHTML = `<label class="field"><span>Постачальник з довідника</span><select id="supplier-directory-select"><option value="">Ввести постачальника вручну</option></select><small>Код постачальника підставляється у другу частину номера протоколу.</small></label><div class="field"><span>Збережені постачальники</span><button id="supplier-directory-manage" type="button" class="button secondary">${icon('edit')}Довідник постачальників</button></div>`;
+    const commonFields = query('#common-fields');
+    commonFields.parentNode.insertBefore(panel, commonFields);
+    const dialog = document.createElement('dialog');
+    dialog.id = 'supplier-directory-dialog';
+    dialog.className = 'modal';
+    dialog.innerHTML = `<form id="supplier-directory-form"><div class="modal-heading"><div><p class="eyebrow">ПОСТАЧАЛЬНИКИ</p><h2>Довідник постачальників</h2></div><button id="supplier-directory-close" type="button" class="icon-button" aria-label="Закрити довідник">${icon('close')}</button></div><div class="modal-body"><div class="section-heading"><h3 id="supplier-directory-form-title">Новий постачальник</h3><button id="supplier-directory-new" type="button" class="text-button" hidden>Додати іншого</button></div><label class="field"><span>Найменування постачальника *</span><input id="supplier-directory-name" maxlength="300" required placeholder="Наприклад, ТОВ «Назва підприємства»"></label><label class="field"><span>Код для номера протоколу *</span><input id="supplier-directory-code" type="text" inputmode="numeric" pattern="[0-9]{1,10}" maxlength="10" required placeholder="Наприклад, 015"><small>Від 1 до 10 цифр. Початкові нулі зберігаються.</small></label><p id="supplier-directory-error" class="field-error" role="alert" hidden></p><div class="source-actions"><button id="supplier-directory-save" type="submit" class="button primary">Додати постачальника</button></div><div class="section-heading"><h3>Збережені постачальники</h3></div><div id="supplier-directory-list"></div><p id="supplier-directory-empty" class="empty-state">Поки немає збережених постачальників.</p></div><div class="modal-footer"><button id="supplier-directory-done" type="button" class="button secondary">Готово</button></div></form>`;
+    document.body.append(dialog);
+    const select = query('#supplier-directory-select');
+    const nameInput = query('#supplier-directory-name');
+    const codeInput = query('#supplier-directory-code');
+    const errorNode = query('#supplier-directory-error');
+    const selected = () => suppliers.find(supplier => String(supplier.id) === selectedId) || null;
+    function showError(message) {
+      errorNode.textContent = message;
+      errorNode.hidden = !message;
+    }
+    function resetForm() {
+      editingId = '';
+      query('#supplier-directory-form').reset();
+      query('#supplier-directory-form-title').textContent = 'Новий постачальник';
+      query('#supplier-directory-save').textContent = 'Додати постачальника';
+      query('#supplier-directory-new').hidden = true;
+      showError('');
+    }
+    function render() {
+      select.innerHTML = '<option value="">Ввести постачальника вручну</option>' + suppliers.map(supplier => `<option value="${escape(supplier.id)}">${escape(supplier.name)} · ${escape(supplier.code)}</option>`).join('');
+      select.value = selectedId;
+      query('#supplier-directory-list').innerHTML = suppliers.map(supplier => `<article class="template-row" data-supplier-id="${escape(supplier.id)}"><div class="template-info"><h3>${escape(supplier.name)}</h3><p>Код: ${escape(supplier.code)}${String(supplier.id) === selectedId ? ' · Обрано для поточного акта' : ''}</p></div><div class="row-actions"><button type="button" class="icon-button supplier-directory-edit" aria-label="Редагувати ${escape(supplier.name)}" title="Редагувати">${icon('edit')}</button><button type="button" class="icon-button danger supplier-directory-delete" aria-label="Видалити ${escape(supplier.name)}" title="Видалити">${icon('trash')}</button></div></article>`).join('');
+      query('#supplier-directory-empty').hidden = suppliers.length > 0;
+    }
+    function setBusy(value) {
+      busy = value;
+      query('#supplier-directory-save').disabled = value;
+      query('#supplier-directory-new').disabled = value;
+      query('#supplier-directory-list').querySelectorAll('button').forEach(button => { button.disabled = value; });
+    }
+    select.addEventListener('change', () => {
+      selectedId = select.value;
+      render();
+      onSelect(selected());
+    });
+    query('#supplier-directory-manage').addEventListener('click', () => {
+      resetForm();
+      render();
+      dialog.showModal();
+    });
+    ['#supplier-directory-close','#supplier-directory-done'].forEach(selector => query(selector).addEventListener('click', () => { if (!busy) dialog.close(); }));
+    dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+    dialog.addEventListener('click', event => { if (event.target === dialog && !busy) dialog.close(); });
+    query('#supplier-directory-new').addEventListener('click', () => { if (!busy) { resetForm(); nameInput.focus(); } });
+    query('#supplier-directory-list').addEventListener('click', async event => {
+      if (busy) return;
+      const row = event.target.closest('[data-supplier-id]');
+      if (!row) return;
+      const supplier = suppliers.find(value => String(value.id) === row.dataset.supplierId);
+      if (!supplier) return;
+      if (event.target.closest('.supplier-directory-edit')) {
+        editingId = String(supplier.id);
+        nameInput.value = supplier.name;
+        codeInput.value = supplier.code;
+        query('#supplier-directory-form-title').textContent = 'Редагувати постачальника';
+        query('#supplier-directory-save').textContent = 'Зберегти зміни';
+        query('#supplier-directory-new').hidden = false;
+        showError('');
+        nameInput.focus();
+      }
+      if (event.target.closest('.supplier-directory-delete')) {
+        if (!window.confirm(`Видалити постачальника «${supplier.name}» з довідника?`)) return;
+        setBusy(true);
+        showError('');
+        try {
+          await api(`/api/settings/suppliers/${encodeURIComponent(supplier.id)}`, {method:'DELETE'});
+          suppliers = suppliers.filter(value => String(value.id) !== String(supplier.id));
+          const wasSelected = selectedId === String(supplier.id);
+          if (wasSelected) selectedId = '';
+          if (editingId === String(supplier.id)) resetForm();
+          render();
+          if (wasSelected) onSelect(null);
+        } catch (error) { showError(error.message); }
+        finally { setBusy(false); }
+      }
+    });
+    query('#supplier-directory-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (busy) return;
+      const name = nameInput.value.trim();
+      const code = codeInput.value.trim();
+      if (!name || !/^[0-9]{1,10}$/.test(code)) {
+        showError('Укажіть найменування й код постачальника: від 1 до 10 цифр.');
+        return;
+      }
+      setBusy(true);
+      showError('');
+      try {
+        const wasEditing = !!editingId;
+        const response = editingId
+          ? await api(`/api/settings/suppliers/${encodeURIComponent(editingId)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,code})})
+          : await jsonPost('/api/settings/suppliers', {name,code});
+        const supplier = await response.json();
+        const position = suppliers.findIndex(value => String(value.id) === String(supplier.id));
+        if (position < 0) suppliers.push(supplier); else suppliers[position] = supplier;
+        // A new entry is immediately available for the current act. Editing an
+        // unrelated entry leaves the current supplier selection in place.
+        const shouldSelect = !wasEditing || selectedId === String(supplier.id);
+        if (shouldSelect) selectedId = String(supplier.id);
+        resetForm();
+        render();
+        if (shouldSelect) onSelect(supplier);
+      } catch (error) { showError(error.message); }
+      finally { setBusy(false); }
+    });
+    return {
+      async load() {
+        const response = await api('/api/settings');
+        const settings = await response.json();
+        suppliers = Array.isArray(settings.suppliers) ? settings.suppliers : [];
+        if (!suppliers.some(value => String(value.id) === selectedId)) selectedId = '';
+        render();
+      },
+      clearSelection() { selectedId = ''; render(); },
+      syncName(name) {
+        const matches = suppliers.filter(supplier => supplier.name.trim() === String(name || '').trim());
+        selectedId = matches.length === 1 ? String(matches[0].id) : '';
+        render();
+      },
+      selected,
+    };
+  }
+
   loadTemplates();
+  supplierDirectory.load().then(() => {
+    supplierDirectory.syncName(state.common.supplier);
+    applyProtocolDefaults();
+  }).catch(error => toast(`Довідник постачальників: ${error.message}`,true));
 })();

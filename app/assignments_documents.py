@@ -1,8 +1,8 @@
 """Fill assignment forms while retaining their original Word layout and methods.
 
 Both supplied layouts are supported: labelled paragraphs and label/value table
-rows. Only the five explicitly mapped form fields are editable. Other ZIP parts
-and all unrelated XML are retained verbatim.
+rows. Five sample fields and an explicitly selected issuing person are editable.
+Other ZIP parts and all unrelated XML are retained verbatim.
 """
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ _LABELS = {
     "issue_date": r"Дата\s+видачі\s+завдання",
 }
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
+_ISSUER_FIELDS = {"issuer_name", "issuer_position"}
+_ISSUER_LABEL = re.compile(r"\s*(?:Сформулював\s+та\s+видав\s+завдання|Видав)\s*:\s*", re.I)
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
@@ -53,6 +55,7 @@ class _Target:
     paragraphs: list[_Para]
     start: int = 0
     end: int | None = None
+    separator: str = " "
 
 
 @dataclass
@@ -62,6 +65,7 @@ class _Assignment:
     targets: list[_Target]
     fields: dict[str, str]
     department: str
+    issuer_targets: list[_Target] = field(default_factory=list)
 
 
 def _parse(xml: bytes) -> tuple[list[_Para], list[list[_Cell]]]:
@@ -154,6 +158,7 @@ def _load(data: bytes) -> _Assignment:
         raise TemplateError("Завантажте справжній Word-шаблон завдання у форматі .docx.") from exc
     paragraphs, rows = _parse(xml)
     targets: list[_Target] = []
+    issuer_targets: list[_Target] = []
     fields: dict[str, str] = {}
     table_labels: set[int] = set()
     for row in rows:
@@ -177,6 +182,9 @@ def _load(data: bytes) -> _Assignment:
         placeholders = list(_PLACEHOLDER.finditer(para.text))
         for placeholder in placeholders:
             key = placeholder.group(1)
+            if key in _ISSUER_FIELDS:
+                issuer_targets.append(_Target(key, [para], placeholder.start(), placeholder.end()))
+                continue
             if key not in FIELD_LABELS:
                 raise TemplateError(f"Невідоме поле шаблону завдання: {{{{{key}}}}}.")
             targets.append(_Target(key, [para], placeholder.start(), placeholder.end()))
@@ -204,6 +212,28 @@ def _load(data: bytes) -> _Assignment:
         missing = ", ".join(FIELD_LABELS[key] for key in sorted(required - found))
         raise TemplateError("У шаблоні завдання відсутні поля: " + missing)
 
+    # The issuing person is distinct from the department's receiving officer.
+    # Supplied forms either put rank/name after the label on a separate line,
+    # or use an inline "Видав:" paragraph. Keep their original spacing and runs.
+    explicit_issuer_paras = {id(p) for target in issuer_targets for p in target.paragraphs}
+    for index, para in enumerate(paragraphs):
+        match = _ISSUER_LABEL.match(para.text)
+        if not match or id(para) in explicit_issuer_paras:
+            continue
+        value_para, start = para, match.end()
+        if not para.text[start:].strip():
+            value_para = next((candidate for candidate in paragraphs[index + 1:]
+                               if candidate.text.strip()), None)
+            if value_para is None or re.match(r"\s*(?:Представник\s+відділення|Отримав|Дата\s+видачі)", value_para.text, re.I):
+                continue
+            start = len(value_para.text) - len(value_para.text.lstrip())
+        if id(value_para) in explicit_issuer_paras:
+            continue
+        end = len(value_para.text.rstrip())
+        gap = re.search(r"[ \t]{2,}", value_para.text[start:end])
+        issuer_targets.append(_Target("issuer_signature", [value_para], start, end,
+                                      gap.group() if gap else " "))
+
     header = "\n".join(p.text for p in paragraphs[:12]).lower()
     if "бактеріологіч" in header:
         department = "bacteriology"
@@ -213,7 +243,7 @@ def _load(data: bytes) -> _Assignment:
         department = "vet"
     else:
         department = ""
-    return _Assignment(xml, paragraphs, targets, fields, department)
+    return _Assignment(xml, paragraphs, targets, fields, department, issuer_targets)
 
 
 def inspect_assignment_template(data: bytes) -> dict:
@@ -263,11 +293,27 @@ def render_assignment(data: bytes, fields: dict[str, str]) -> bytes:
     """Fill sample identity, weight, ND and date; retain tests and signatures."""
     doc = _load(data)
     replacements = {key: _value(fields, key, doc) for key in FIELD_LABELS}
+    selected_issuer = any(key in fields for key in _ISSUER_FIELDS)
+    if selected_issuer:
+        if not doc.issuer_targets:
+            raise TemplateError("У шаблоні немає рядка видавця завдання. Додайте «Видав:» або метки {{issuer_name}} і {{issuer_position}}.")
+        for key in _ISSUER_FIELDS:
+            value = str(fields.get(key) or "").strip()
+            if len(value) > 500 or any(ord(c) < 32 for c in value):
+                raise TemplateError("Некоректне ім’я або посада особи, яка видає завдання.")
+            replacements[key] = value
+        if not replacements["issuer_name"]:
+            raise TemplateError("Укажіть ім’я особи, яка сформулювала та видала завдання.")
     values: dict[int, str] = {}
     insertions: dict[int, str] = {}
     # Ranges in a paragraph use original positions and therefore run right-to-left.
-    for target in sorted(doc.targets, key=lambda t: (t.paragraphs[0].tag_start, t.start), reverse=True):
-        replacement = replacements[target.key]
+    targets = doc.targets + (doc.issuer_targets if selected_issuer else [])
+    for target in sorted(targets, key=lambda t: (t.paragraphs[0].tag_start, t.start), reverse=True):
+        if target.key == "issuer_signature":
+            position = replacements["issuer_position"]
+            replacement = (position + target.separator if position else "") + replacements["issuer_name"]
+        else:
+            replacement = replacements[target.key]
         if target.end is None:
             for i, para in enumerate(target.paragraphs):
                 _set_paragraph(para, replacement if i == 0 else "", values, insertions)

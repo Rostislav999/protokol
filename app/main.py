@@ -22,6 +22,9 @@ from .extraction import extract_text, parse_act
 from .library import Library, ROOT
 from .matching import infer_subcategory, rank_templates
 from .assignments_api import assignments_router
+from .protocol_text import clean_product_name, normalize_sampling_description
+from .settings import SettingsStore, settings_router
+from .printing import printing_status
 
 MAX_UPLOAD = 25 * 1024 * 1024
 local_tessdata = ROOT / ".local/tessdata"
@@ -94,7 +97,9 @@ async def read_upload(file: UploadFile) -> bytes:
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="Протокол", version="1.0.0")
-    library = Library((data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))) / "templates")
+    directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
+    library = Library(directory / "templates")
+    settings = SettingsStore(directory)
     app.state.library = library
 
     def public_template(entry: dict) -> dict:
@@ -117,6 +122,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/templates")
     def templates():
         return {"templates": [public_template(entry) for entry in library.all()], "field_labels": FIELD_LABELS}
+
+    @app.get("/api/printing/status")
+    def print_status():
+        return printing_status()
 
     @app.post("/api/templates")
     async def add_template(file: UploadFile = File(...), name: str = Form(""),
@@ -192,6 +201,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         numbers = []
         for i, item in enumerate(values.items, 1):
             item.protocol_number = re.sub(r"^(?:№\s*)+", "", item.protocol_number.strip()).strip()
+            item.product_name = clean_product_name(item.product_name, item.catalog_number)
+            if re.fullmatch(r"\d*(?:-\d*){4}", item.protocol_number):
+                parts = item.protocol_number.split("-")
+                if not all(parts) or not re.fullmatch(r"\d{4}", parts[3]):
+                    raise HTTPException(422, f"Позиція {i}: перевірте індивідуальну чотиризначну частину номера протоколу.")
             if any(not (getattr(item, key) or "").strip() for key in
                    ("product_name", "protocol_number", "protocol_date", "template_id")):
                 raise HTTPException(422, f"Позиція {i}: заповніть назву, номер і дату протоколу та оберіть шаблон.")
@@ -205,6 +219,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     template = library.get(item.template_id)
                     fields = {**values.common.model_dump(), **item.model_dump()}
+                    fields["sampling_description"] = normalize_sampling_description(fields["sampling_description"])
                     unsupported = [label for key, label in FIELD_LABELS.items()
                                    if fields.get(key, "").strip() and key not in template["available_fields"]]
                     if unsupported:
@@ -226,7 +241,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return Response(output.getvalue(), media_type="application/zip",
                         headers={"Content-Disposition": 'attachment; filename="protocols.zip"'})
 
-    app.include_router(assignments_router(data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))))
+    app.include_router(settings_router(settings))
+    app.include_router(assignments_router(directory, settings))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app

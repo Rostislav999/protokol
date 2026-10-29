@@ -33,9 +33,19 @@ class AssignmentLibrary:
             if sample["id"] not in known and not any(e["id"] == sample["id"] for e in entries):
                 data = (ROOT / "assets/assignments" / sample["asset"]).read_bytes()
                 info = inspect_assignment_template(data)
-                entry = {**sample, "available_fields": info["available_fields"]}
+                entry = {**sample, "available_fields": info["available_fields"],
+                         "sample_weight": info["sample_weight"]}
                 (directory / (entry["id"] + ".docx")).write_bytes(data)
                 entries.append(entry)
+        # Existing libraries, including user uploads, predate weight defaults.
+        # Read their own Word files without replacing names, aliases or forms.
+        for entry in entries:
+            if "sample_weight" not in entry:
+                try:
+                    data = (directory / (entry["id"] + ".docx")).read_bytes()
+                    entry["sample_weight"] = inspect_assignment_template(data)["sample_weight"]
+                except (OSError, TemplateError):
+                    entry["sample_weight"] = ""
         self._save(entries)
         self.seed_record.write_text(json.dumps(sorted(known | {s["id"] for s in manifest})), encoding="utf-8")
 
@@ -69,6 +79,7 @@ class AssignmentLibrary:
         entry = {"id": uuid4().hex, "name": name.strip() or Path(filename).stem,
                  "filename": Path(filename).name, "department": department,
                  "product_name": info["product_name"], "standard": info["standard"],
+                 "sample_weight": info["sample_weight"],
                  "aliases": aliases, "product_scope": product_scope,
                  "available_fields": info["available_fields"]}
         if not entry["standard"]:

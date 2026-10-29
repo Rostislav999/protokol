@@ -20,6 +20,8 @@ from .assignment_matching import rank_assignments
 from .assignments_documents import render_assignment
 from .documents import TemplateError
 from .numbering import NumberingStore, NumberingError
+from .settings import SettingsStore, SettingsError
+from .printing import PrintError, print_assignments
 
 Scope = Literal["", "family", "first_course", "jam", "ready_second_cereals_potatoes", "ready_second_all"]
 
@@ -35,7 +37,7 @@ class AssignmentMatch(BaseModel):
 
 class AssignmentSelection(BaseModel):
     template_id: str = Field(min_length=1, max_length=200)
-    sample_weight: str = Field(default="", max_length=2000)
+    sample_weight: str | None = Field(default=None, max_length=2000)
     allow_standard_override: bool = False
 
 
@@ -53,6 +55,13 @@ class AssignmentGeneration(BaseModel):
     confirmed: bool = False
     start_number: int | None = Field(default=None, ge=1, le=2147483647, strict=True)
     items: list[AssignmentItem] = Field(min_length=1, max_length=100)
+    issuer_id: str = Field(default="", max_length=200)
+
+
+class AssignmentPrint(BaseModel):
+    generation: AssignmentGeneration
+    copies: Literal[2] = 2
+    confirmed: bool = False
 
 
 class NumberSetting(BaseModel):
@@ -75,10 +84,11 @@ def _aliases(value):
     return list(dict.fromkeys(v.strip() for v in value if v.strip()))
 
 
-def assignments_router(directory: Path) -> APIRouter:
+def assignments_router(directory: Path, settings: SettingsStore | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/assignments", tags=["assignments"])
     library = AssignmentLibrary(directory / "assignment_templates")
     numbering = NumberingStore(directory / "numbering.sqlite3")
+    settings = settings or SettingsStore(directory)
 
     @router.get("/templates")
     def templates():
@@ -162,6 +172,20 @@ def assignments_router(directory: Path) -> APIRouter:
             "X-Next-Sample-Number": str(numbering.status()["next_number"]), "X-Assignment-Date": issued,
             "X-Sample-Numbers": json.dumps(numbers)})
 
+    @router.post("/print")
+    def print_generated_assignments(values: AssignmentPrint):
+        if not values.confirmed or not values.generation.confirmed:
+            raise HTTPException(422, "Підтвердьте перевірку завдань та друк двох примірників кожного документа.")
+        generation = values.generation
+        fingerprint = sha256(json.dumps(generation.model_dump(), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        try:
+            cached = numbering.get_cached(generation.job_id, [item.id for item in generation.items], payload_hash=fingerprint)
+            if cached is None:
+                raise NumberingError("Спочатку створіть та перевірте завдання. Друк не присвоює нових номерів.")
+            return print_assignments(cached[0], copies=values.copies)
+        except (NumberingError, PrintError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @router.post("/generate")
     def generate(values: AssignmentGeneration):
         if not values.confirmed:
@@ -175,6 +199,10 @@ def assignments_router(directory: Path) -> APIRouter:
             raise HTTPException(422, str(exc)) from exc
         if cached is not None:
             return archive_response(*cached)
+        try:
+            issuer = settings.issuer(values.issuer_id) if values.issuer_id else None
+        except SettingsError as exc:
+            raise HTTPException(422, str(exc)) from exc
         selected = []
         for index, item in enumerate(values.items, 1):
             if not item.product_name.strip() or not item.standard.strip():
@@ -201,13 +229,22 @@ def assignments_router(directory: Path) -> APIRouter:
             output = io.BytesIO()
             summary = [f"Дата видачі завдань: {today} (Europe/Kyiv).", "Один номер зразка використовується для всіх його відділень.",
                        "Методи досліджень, підписи та НД збережені з обраного шаблону. Перевірте вагу й кількість проб.", ""]
+            if issuer:
+                summary.insert(2, "Сформулював та видав завдання: " + " ".join(value for value in
+                               (issuer["position"], issuer["name"]) if value))
             with ZipFile(output, "w", ZIP_DEFLATED) as bundle:
                 for item_index, department, template, selection in selected:
                     item = values.items[item_index]
-                    weight = selection.sample_weight.strip() or item.sample_weight.strip()
-                    data = render_assignment(library.read(template["id"]), {
+                    # Explicit edits, including a cleared field, take priority.
+                    # API clients may omit the weight to use the form's default.
+                    weight = (selection.sample_weight.strip() if selection.sample_weight is not None
+                              else item.sample_weight.strip() or template.get("sample_weight", "").strip())
+                    fields = {
                         "product_name": item.product_name, "sample_number": numbers[item_index],
-                        "sample_weight": weight, "standard": template["standard"], "issue_date": today})
+                        "sample_weight": weight, "standard": template["standard"], "issue_date": today}
+                    if issuer:
+                        fields.update(issuer_name=issuer["name"], issuer_position=issuer["position"])
+                    data = render_assignment(library.read(template["id"]), fields)
                     safe_name = re.sub(r"[^\w .-]", "_", item.product_name, flags=re.U)[:80].strip('. ')
                     department_name = {"vet": "Ветсан", "bacteriology": "Бактеріологія", "chemistry": "Хімтокс"}[department]
                     filename = f"{numbers[item_index]} {department_name} {safe_name}.docx"
@@ -215,7 +252,7 @@ def assignments_router(directory: Path) -> APIRouter:
                     summary.extend([filename, "НД з акта: " + item.standard, "НД завдання: " + template["standard"],
                                     "Вага: " + (weight or "[НЕ ЗАПОВНЕНО]"), ""])
                 bundle.writestr("ПЕРЕВІРИТИ.txt", "\n".join(summary))
-                bundle.writestr("НУМЕРАЦІЯ.json", json.dumps({"issue_date": today, "samples": [
+                bundle.writestr("НУМЕРАЦІЯ.json", json.dumps({"issue_date": today, "issuer": issuer, "samples": [
                     {"id": item.id, "number": number, "product_name": item.product_name}
                     for item, number in zip(values.items, numbers)]}, ensure_ascii=False, indent=2))
             return output.getvalue()
