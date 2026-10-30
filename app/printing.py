@@ -213,6 +213,7 @@ def print_assignments(archive: bytes, copies: int = 2) -> dict:
                  "-SettingsPath", str(settings), "-ResultPath", str(result_path)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=min(900, 60 + len(documents) * 30),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
         except subprocess.TimeoutExpired as exc:
             raise PrintError(_failure(_read_result(result_path),

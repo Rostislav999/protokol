@@ -31,7 +31,8 @@ def run_tesseract(args: list[str], *, executable="tesseract", models_directory: 
     env["TESSDATA_PREFIX"] = "."
     try:
         return subprocess.run([str(executable), *args, "--tessdata-dir", "."], cwd=directory, env=env,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"Tesseract не відповів за {timeout} секунд.") from exc
     except OSError as exc:

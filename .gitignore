@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 .env
 test-results/
+build/
+dist/
