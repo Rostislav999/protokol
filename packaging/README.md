@@ -37,6 +37,8 @@ existing checkout:
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-windows-build.lock
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 .\.venv\Scripts\python.exe scripts/build_windows.py --version 1.0.0
 ```
 
