@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import shutil
 from types import SimpleNamespace
 from zipfile import ZipFile
 
@@ -142,3 +143,41 @@ def test_document_limit_is_enforced_before_worker(available, monkeypatch):
     monkeypatch.setattr(printing.subprocess, "run", lambda *a, **k: pytest.fail("Unexpected print"))
     with pytest.raises(printing.PrintError, match="від 1 до 300"):
         printing.print_assignments(archive("one.docx", "two.docx"))
+
+
+@pytest.mark.skipif(not (shutil.which('powershell.exe') or shutil.which('pwsh')), reason='Requires PowerShell, not Word or a printer')
+def test_word_variant_arguments_do_not_use_boolean_ref_conversion(tmp_path):
+    # Exercise the worker helper against Word's ref-object method signature.
+    # The fake object cannot create any physical print job.
+    helper = printing._PRINT_SCRIPT.split('$ErrorActionPreference', 1)[0].split('\n', 1)[1]
+    script = r'''$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public class WordPrintSignature {
+    public int Calls = 0;
+    public void PrintOut([Optional] ref object background, [Optional] ref object append, [Optional] ref object range,
+        [Optional] ref object output, [Optional] ref object from, [Optional] ref object to, [Optional] ref object item,
+        [Optional] ref object copies, [Optional] ref object pages, [Optional] ref object pageType, [Optional] ref object printToFile,
+        [Optional] ref object collate, [Optional] ref object printer, [Optional] ref object duplex, [Optional] ref object columns,
+        [Optional] ref object rows, [Optional] ref object width, [Optional] ref object height) {
+        if (!(background is bool) || (bool)background || !(collate is bool) || !(bool)collate)
+            throw new System.Exception("Incorrect Boolean variants");
+        if (!(copies is int) || (int)copies != 2 || (bool)printToFile || (int)range != 0)
+            throw new System.Exception("Incorrect print settings");
+        if (!object.ReferenceEquals(output, System.Type.Missing) ||
+            !object.ReferenceEquals(height, System.Type.Missing))
+            throw new System.Exception("Missing optional variants were changed");
+        Calls++;
+    }
+}
+'@
+''' + helper + r'''
+$document = New-Object WordPrintSignature
+Invoke-WordPrint $document 2
+if ($document.Calls -ne 1) { throw 'Print method not invoked exactly once' }
+'''
+    path = tmp_path / 'variant-check.ps1'
+    path.write_text(script, encoding='ascii')
+    result = subprocess.run([shutil.which('powershell.exe') or shutil.which('pwsh'), '-NoProfile', '-NonInteractive', '-File', str(path)],
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

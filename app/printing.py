@@ -69,6 +69,16 @@ def printing_status() -> dict:
 # JSON file, never interpolated into PowerShell commands. Keep the script ASCII
 # so Windows PowerShell 5.1 does not mistake its source encoding for an ANSI codepage.
 _PRINT_SCRIPT = r'''param([string]$SettingsPath, [string]$ResultPath)
+function Invoke-WordPrint([object]$Document, [int]$Copies) {
+    # Dispatch optional VARIANT arguments as boxed objects. Passing [ref]
+    # Boolean variables through PowerShell's COM adapter can fail conversion.
+    $missing = [System.Type]::Missing
+    [object[]]$arguments = @($false, $false, 0, $missing, $missing, $missing,
+        0, $Copies, $missing, 0, $false, $true,
+        $missing, $missing, $missing, $missing, $missing, $missing)
+    [void]$Document.GetType().InvokeMember('PrintOut',
+        [System.Reflection.BindingFlags]::InvokeMethod, $null, $Document, $arguments)
+}
 $ErrorActionPreference = 'Stop'
 $word = $null
 $document = $null
@@ -92,18 +102,7 @@ try {
     $result.stage = 'printing'
     foreach ($path in $settings.documents) {
         $document = $word.Documents.Open([string]$path, $false, $true, $false)
-        $background = $false
-        $append = $false
-        $range = 0
-        $missing = [System.Type]::Missing
-        $item = 0
-        $copies = [int]$settings.copies
-        $pageType = 0
-        $printToFile = $false
-        $collate = $true
-        $document.PrintOut([ref]$background, [ref]$append, [ref]$range,
-            [ref]$missing, [ref]$missing, [ref]$missing, [ref]$item,
-            [ref]$copies, [ref]$missing, [ref]$pageType, [ref]$printToFile, [ref]$collate)
+        Invoke-WordPrint $document ([int]$settings.copies)
         $result.documents += 1
         [System.IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Compress),
             $utf8)
