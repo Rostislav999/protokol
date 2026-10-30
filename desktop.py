@@ -172,13 +172,18 @@ def check_application(server: LocalServer) -> bytes:
 
 def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> int:
     from PySide6.QtCore import QTimer, QUrl, Qt
+    from PySide6.QtGui import QIcon
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings, QWebEngineUrlRequestInterceptor
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox
 
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Protokol.Desktop")
     application = QApplication([sys.argv[0]])
-    application.setApplicationName("Протокол")
+    application.setApplicationName("ОЗтаУСЯ")
     application.setOrganizationName("Protokol")
+    application.setWindowIcon(QIcon(str(bundle_root() / "app/static/app.ico")))
     profile = QWebEngineProfile(application)  # Off the record: no persistent browsing history.
     profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
 
@@ -196,15 +201,15 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
             return local_url_allowed(url.toString(), server.port)
 
         def javaScriptAlert(self, origin, message):
-            QMessageBox.information(window, "Протокол", message)
+            QMessageBox.information(window, "ОЗтаУСЯ", message)
 
         def javaScriptConfirm(self, origin, message):
-            return QMessageBox.question(window, "Протокол", message) == QMessageBox.StandardButton.Yes
+            return QMessageBox.question(window, "ОЗтаУСЯ", message) == QMessageBox.StandardButton.Yes
 
         def createWindow(self, window_type):
             child = QMainWindow(window)
             child.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-            child.setWindowTitle("Протокол — оригінал документа")
+            child.setWindowTitle("ОЗтаУСЯ — оригінал документа")
             child.resize(1000, 800)
             view = QWebEngineView(child)
             page = Page(profile, view)
@@ -218,7 +223,7 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
             return page
 
     window = QMainWindow()
-    window.setWindowTitle("Протокол")
+    window.setWindowTitle("ОЗтаУСЯ")
     window.resize(1280, 900)
     window.setMinimumSize(900, 650)
     window.statusBar().showMessage("Обробка документів виконується на цьому комп’ютері")
@@ -262,7 +267,7 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
                 if smoke_workbook is not None:
                     finish_smoke(False)
                 elif state == download.DownloadState.DownloadInterrupted:
-                    QMessageBox.warning(window, "Протокол", "Не вдалося зберегти файл: " + download.interruptReasonString())
+                    QMessageBox.warning(window, "ОЗтаУСЯ", "Не вдалося зберегти файл: " + download.interruptReasonString())
 
         download.isFinishedChanged.connect(finished)
         download.accept()
@@ -272,7 +277,7 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
     def loaded(success):
         if smoke_workbook is None:
             if not success:
-                QMessageBox.critical(window, "Протокол", "Не вдалося відкрити локальний інтерфейс програми.")
+                QMessageBox.critical(window, "ОЗтаУСЯ", "Не вдалося відкрити локальний інтерфейс програми.")
             return
         if smoke["loaded"]:
             return
@@ -283,7 +288,7 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
         encoded = json.dumps(base64.b64encode(smoke_workbook).decode("ascii"))
         script = """(() => {
           if (!document.querySelector('#generate') || !document.querySelector('#act-file') ||
-              !document.styleSheets.length || !document.title.includes('Протокол')) return false;
+              !document.styleSheets.length || !document.title.includes('ОЗтаУСЯ')) return false;
           const bytes = Uint8Array.from(atob(%s), c => c.charCodeAt(0));
           const link = document.createElement('a');
           link.href = URL.createObjectURL(new Blob([bytes], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
@@ -312,7 +317,7 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Протокол — локальна програма для Windows.")
+    parser = argparse.ArgumentParser(description="ОЗтаУСЯ — локальна програма для Windows.")
     parser.add_argument("--check", action="store_true", help="Перевірити комплектний OCR та експорт Excel без вікна.")
     parser.add_argument("--smoke-test", action="store_true", help="Перевірити вікно й збереження файлу, потім закрити програму.")
     args = parser.parse_args(argv)
@@ -339,7 +344,7 @@ def main(argv=None) -> int:
             try:
                 from PySide6.QtWidgets import QApplication, QMessageBox
                 application = QApplication.instance() or QApplication([sys.argv[0]])
-                QMessageBox.critical(None, "Протокол — помилка запуску", message)
+                QMessageBox.critical(None, "ОЗтаУСЯ — помилка запуску", message)
             except Exception:
                 if sys.stderr is not None:
                     print(message, file=sys.stderr)

@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#102b37">
-  <title>Протокол — підготовка протоколів випробувань</title>
+  <title>ОЗтаУСЯ — підготовка протоколів випробувань</title>
+  <link rel="icon" href="/static/app.ico" type="image/x-icon">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/customer-directory.js" defer></script>
@@ -32,7 +33,7 @@
 </svg>
 
 <aside class="sidebar">
- <a href="/" class="brand" aria-label="Протокол — головна"><span class="brand-mark"><svg class="icon"><use href="#i-flask"/></svg></span><span>Протокол<small>ЛАБОРАТОРНИЙ ПОМІЧНИК</small></span></a>
+ <a href="/" class="brand" aria-label="ОЗтаУСЯ — головна"><span class="brand-mark"><img src="/static/app.ico" alt="" width="42" height="44"></span><span>ОЗтаУСЯ<small>ЛАБОРАТОРНИЙ ПОМІЧНИК</small></span></a>
  <span class="nav-caption">РОБОЧИЙ ПРОСТІР</span>
  <nav aria-label="Основна навігація">
   <button class="nav-button active" data-view="acts" aria-current="page"><svg class="icon"><use href="#i-file"/></svg>Акти відбору</button>
@@ -93,7 +94,7 @@
    <div class="notice soft"><svg class="icon"><use href="#i-info"/></svg><div>Для точного підбору додайте синоніми назви: наприклад, «свинина тушкована», «тушкована свинина». Для супу зі свининою використовуйте окремий шаблон першої страви. У готових других стравах розрізняйте бобові, круп’яні та картопляні: квасоля й каша потребують відповідних шаблонів.</div></div>
   </section>
  </div>
- <footer class="main-footer">Протокол <span>·</span> Підготовка документів для лабораторних випробувань</footer>
+ <footer class="main-footer">ОЗтаУСЯ <span>·</span> Підготовка документів для лабораторних випробувань</footer>
 </main>
 
 <dialog id="template-dialog" class="modal"><form id="template-form"><div class="modal-heading"><div><p class="eyebrow">БІБЛІОТЕКА</p><h2 id="template-dialog-title">Додати шаблон</h2></div><button type="button" class="icon-button" id="close-template-dialog" aria-label="Закрити"><svg class="icon"><use href="#i-close"/></svg></button></div><div class="modal-body"><label id="template-file-label" class="field"><span>Word-файл шаблону *</span><input type="file" id="template-file" accept=".docx"><small>Формат .docx, до 25 МБ.</small></label><label class="field"><span>Назва шаблону</span><input id="template-name" maxlength="250" placeholder="Наприклад, Свинина тушкована"><small>Якщо не вказати, назву буде визначено з документа.</small></label><label class="field"><span>Категорія</span><input id="template-category" maxlength="100" placeholder="Наприклад, М’ясні консерви" list="category-options"><datalist id="category-options"></datalist></label><label class="field"><span>Група другої страви</span><select id="template-subcategory"><option value="">Автоматично</option><option value="legumes">Бобові</option><option value="cereals">Круп’яні</option><option value="potatoes">Картопляні</option><option value="other">Інші</option></select><small>Для готових других страв. «Автоматично» визначає групу за найменуванням; для інших категорій група не застосовується.</small></label><label class="field"><span>Ключові слова та синоніми</span><textarea id="template-aliases" rows="3" placeholder="свинина тушкована, тушкована свинина"></textarea><small>Розділяйте комами або пишіть кожен варіант з нового рядка.</small></label><div class="notice soft compact">У шаблоні має бути фраза «Вищезазначена інформація надана замовником.». Перед нею мають бути всі 5 обов’язкових полів: номер і дата протоколу, найменування зразка, замовник та відомості про відбір. Використовуйте стандартні підписи з прикладів або позначки {{protocol_number}}, {{protocol_date}}, {{product_name}}, {{customer}}, {{sampling_description}}. Після контрольної фрази заповнюються наявні рядки акта, пломби й ваги, ідентифікація в таблиці, назва в меті та номер і партія у висновку. Решта тексту зберігається й виділяється червоним.</div><p id="template-form-error" class="field-error" role="alert" hidden></p></div><div class="modal-footer"><button type="button" id="cancel-template-dialog" class="button secondary">Скасувати</button><button type="submit" id="save-template" class="button primary">Зберегти шаблон</button></div></form></dialog>

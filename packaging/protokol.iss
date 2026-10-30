@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\Protokol"
@@ -10,11 +10,12 @@
 
 [Setup]
 AppId={{A71497EF-82C6-4400-AB15-5CBFE75D8D86}
-AppName=Протокол
+AppName=ОЗтаУСЯ
 AppVersion={#AppVersion}
-AppPublisher=Protokol
+AppPublisher=ОЗтаУСЯ
 DefaultDirName={localappdata}\Programs\Protokol
-DefaultGroupName=Протокол
+DefaultGroupName=ОЗтаУСЯ
+UsePreviousGroup=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -29,6 +30,7 @@ UninstallDisplayIcon={app}\Protokol.exe
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
+SetupIconFile=..\app\static\app.ico
 InfoBeforeFile=THIRD_PARTY_NOTICES.md
 
 [Languages]
@@ -43,11 +45,16 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Протокол"; Filename: "{app}\Protokol.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Протокол"; Filename: "{app}\Protokol.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\ОЗтаУСЯ"; Filename: "{app}\Protokol.exe"; WorkingDir: "{app}"; AppUserModelID: "Protokol.Desktop"
+Name: "{autodesktop}\ОЗтаУСЯ"; Filename: "{app}\Protokol.exe"; WorkingDir: "{app}"; AppUserModelID: "Protokol.Desktop"; Tasks: desktopicon
+
+[InstallDelete]
+Type: files; Name: "{autoprograms}\Протокол\Протокол.lnk"
+Type: dirifempty; Name: "{autoprograms}\Протокол"
+Type: files; Name: "{autodesktop}\Протокол.lnk"
 
 [Run]
-Filename: "{app}\Protokol.exe"; Description: "Запустить Протокол"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Protokol.exe"; Description: "Запустить ОЗтаУСЯ"; Flags: nowait postinstall skipifsilent
 
 ; User libraries and numbering live outside {app}. Uninstallation deliberately
 ; leaves %LOCALAPPDATA%\Protokol untouched.

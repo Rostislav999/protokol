@@ -104,7 +104,7 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="Протокол", version="1.0.0")
+    app = FastAPI(title="ОЗтаУСЯ", version="1.0.1")
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
     library = Library(directory / "templates")
     settings = SettingsStore(directory)

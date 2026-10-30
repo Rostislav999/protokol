@@ -39,6 +39,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True, name="Protokol",
     debug=False, strip=False, upx=False, console=False,
+    icon=str(root / "app/static/app.ico"),
+    version=str(root / "packaging/version_info.txt"),
     disable_windowed_traceback=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Protokol")

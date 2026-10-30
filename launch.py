@@ -213,7 +213,7 @@ def app_is_ready(url: str) -> bool:
         # Distinguish our app from another local service with a generic health endpoint.
         with opener.open(url + "/", timeout=1) as response:
             beginning = response.read(8192).decode("utf-8", errors="replace")
-        return "<title>Протокол" in beginning
+        return any(title in beginning for title in ("<title>ОЗтаУСЯ", "<title>Протокол"))
     except (OSError, ValueError, urllib.error.URLError):
         return False
 
@@ -267,7 +267,7 @@ def serve(python: Path, environ: dict, *, no_browser: bool = False) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Запуск программы Протокол.")
+    parser = argparse.ArgumentParser(description="Запуск программы ОЗтаУСЯ.")
     parser.add_argument("--check", action="store_true", help="Проверить готовность без установки, сети, сервера и браузера.")
     parser.add_argument("--no-browser", action="store_true", help="Запустить сервер, не открывая браузер автоматически.")
     args = parser.parse_args(argv)

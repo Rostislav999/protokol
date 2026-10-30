@@ -18,3 +18,5 @@ main{margin-left:246px;min-height:100vh;display:flex;flex-direction:column}.topb
 @media(max-width:720px){.library-toolbar .category-filter select{max-width:none;width:100%}}
 .assignment-import-bar{flex-wrap:wrap}.act-preparation-actions{display:flex;flex-wrap:wrap;gap:10px}.act-preparation-actions>.button{flex:1 1 auto}
 @media(max-width:720px){.act-preparation-actions{width:100%}.act-preparation-actions>.button{width:100%}}
+
+.brand-mark img{width:100%;height:100%;object-fit:contain}
