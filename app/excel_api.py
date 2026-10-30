@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from .protocol_excel import DATES, FIELDS, NUMBERS, Record, date_text, extract_text, kg, protocol_key, read_docx, report_text, write_excel_bytes
+from .protocol_excel import DATES, FIELDS, NUMBERS, Record, supplier_code, date_text, extract_text, kg, protocol_key, read_docx, report_text, write_excel_bytes
 from .protocol_text import clean_product_name
 from .settings import SettingsStore
 from .supplier_details import supplier_with_code
@@ -121,8 +121,8 @@ def records_from_act(payload: ActExcelInput, suppliers: list[dict]) -> dict:
         each = re.search(r"\bпо\s+([0-9]+(?:[ \u00a0][0-9]{3})*(?:[,.][0-9]+)?\s*(?:кг|kg|г|g)\b)",
                          item.sample_weight or "", re.I)
         v["L"] = kg(each[1]) if each else ""
-        v["M"] = supplier
-        if supplier and not re.search(r"(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*\d{8}(?:\d{2})?(?!\d)", supplier, re.I):
+        v["M"] = supplier_code(supplier)
+        if supplier and not v["M"]:
             record.warnings.append("Постачальник: код ЄДРПОУ не знайдено однозначно; перевірте довідник або заповніть поле вручну.")
         manufacturer_codes = set(re.findall(r"(?<!\d)\d{8}(?!\d)", item.manufacturer))
         v["N"] = next(iter(manufacturer_codes)) if len(manufacturer_codes) == 1 else ""
@@ -167,7 +167,7 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
             return
         try:
             record = _read_record(data, filename)
-            record.values["M"] = supplier_with_code(record.values.get("M", ""), suppliers)
+            record.values["M"] = supplier_code(supplier_with_code(record.values.get("M", ""), suppliers))
             records.append({"id": uuid4().hex, "source": record.source, "values": record.values,
                             "warnings": record.warnings, "missing": record.missing()})
         except ValueError as exc:

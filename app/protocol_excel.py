@@ -141,6 +141,14 @@ def supplier_text(value: str) -> str:
     return (name + ", " if name else "") + "код ЄДРПОУ: " + code
 
 
+def supplier_code(value: str) -> str:
+    """Return only an unambiguous supplier code, preserving leading zeroes."""
+    codes = set(re.findall(r"(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*([0-9]{8}(?:[0-9]{2})?)(?![0-9])", value, re.I))
+    if not codes:
+        codes = {value.strip()} if re.fullmatch(r"[0-9]{8}(?:[0-9]{2})?", value.strip()) else set(re.findall(r"(?<![0-9])[0-9]{8}(?![0-9])", value))
+    return next(iter(codes)) if len(codes) == 1 else ""
+
+
 def date_text(value: str) -> str:
     match = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", value)
     if match:
@@ -271,6 +279,10 @@ def validate(record: Record) -> dict[str, str | float | date]:
         value = value.strip()
         if not value:
             continue
+        if col == "M":
+            value = supplier_code(value)
+            if not value:
+                continue
         if col in DATES:
             try:
                 result[col] = datetime.strptime(value, "%d.%m.%Y").date()

@@ -53,7 +53,7 @@ def test_edited_act_fields_map_directly_without_word_requirements(client):
     assert record["values"] == {
         "D": "№87-015-3000-1400-2", "E": "29.10.2026", "F": "12012",
         "G": "Свинина тушкована", "H": "20.10.2026", "I": "20.10.2026", "J": "",
-        "K": "1000.5", "L": "0.525", "M": "ТОВ «Постачальник», код ЄДРПОУ: 00123456", "N": "12345678",
+        "K": "1000.5", "L": "0.525", "M": "00123456", "N": "12345678",
     }
     assert isinstance(record["warnings"], list)
     assert isinstance(record["missing"], list)
@@ -103,13 +103,15 @@ def test_explicit_supplier_code_wins_and_ambiguous_manufacturer_remains_blank(cl
     payload = act_payload(manufacturer="Виробники: 11111111 та 22222222")
     payload["common"]["supplier"] = "ТОВ «Постачальник», код ЄДРПОУ: 87654321"
     record = preview(client, payload)[0]
-    assert record["values"]["M"] == "ТОВ «Постачальник», код ЄДРПОУ: 87654321"
+    assert record["values"]["M"] == "87654321"
     assert record["values"]["N"] == ""
     assert record["warnings"]
 
 
 def test_direct_act_preview_produces_xlsx_after_review_with_no_compliance_columns(client):
-    records = preview(client, act_payload())
+    payload = act_payload()
+    payload["common"]["supplier"] = "ТОВ «Тест», код ЄДРПОУ: 00001234"
+    records = preview(client, payload)
     unreviewed = client.post("/api/excel/generate", data={"payload": json.dumps({"records": records})})
     assert unreviewed.status_code == 422
     response = client.post("/api/excel/generate", data={
@@ -123,6 +125,8 @@ def test_direct_act_preview_produces_xlsx_after_review_with_no_compliance_column
         assert cell_text(sheet.find(".//s:c[@r='D2']", NS), []) == "№87-015-3000-1400-2"
         assert cell_text(sheet.find(".//s:c[@r='G2']", NS), []) == "Свинина тушкована"
         assert cell_text(sheet.find(".//s:c[@r='L2']", NS), []) == "0.525"
+        assert cell_text(sheet.find(".//s:c[@r='M2']", NS), []) == "00001234"
+        assert sheet.find(".//s:c[@r='M2']", NS).get("t") == "inlineStr"
         assert sheet.find(".//s:c[@r='E2']", NS).get("t") == "n"
         assert sheet.find(".//s:c[@r='O1']", NS) is None
         assert sheet.find(".//s:c[@r='P1']", NS) is None

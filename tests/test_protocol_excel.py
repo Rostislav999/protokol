@@ -172,7 +172,7 @@ def test_new_workbook_ends_n_dates_and_numbers_are_typed_and_text_is_not_formula
         assert cell_text(root.find(".//s:c[@r='L2']", NS), []) == "0.525"
         assert root.find(".//s:c[@r='E2']", NS).get("s") == "1"
         assert cell_text(root.find(".//s:c[@r='E2']", NS), []) == str((date(2026, 10, 29)-date(1899, 12, 30)).days)
-        assert cell_text(root.find(".//s:c[@r='M2']", NS), []) == "ТОВ «Постачальник», код ЄДРПОУ: 00123456"
+        assert cell_text(root.find(".//s:c[@r='M2']", NS), []) == "00123456"
         assert root.find(".//s:c[@r='O1']", NS) is None
         assert root.find(".//s:c[@r='P1']", NS) is None
 
@@ -246,3 +246,22 @@ def test_colored_generated_protocol_extracts_net_mass_from_weight_not_total():
     assert record.values["G"] == "Свинина тушкована"
     assert record.values["L"] == "0.525"
     assert record.values["M"] == "ТОВ «Тест», код ЄДРПОУ: 00123456"
+
+
+@pytest.mark.parametrize("supplier,expected", [
+    ("ТОВ «Тест», код ЄДРПОУ: 00123456", "00123456"),
+    ("00001234", "00001234"),
+    ("код ЄДРПОУ: 0012345678", "0012345678"),
+    ("ТОВ «Тест», телефон 0123456789.", ""),
+    ("код ЄДРПОУ: 00123456; код ЄДРПОУ: 87654321", ""),
+])
+def test_supplier_export_contains_only_code_as_text(supplier, expected):
+    record = extract_text(TEXT)
+    record.values["M"] = supplier
+    data, _ = write_excel_bytes(None, [record])
+    with ZipFile(BytesIO(data)) as archive:
+        root = xml(archive.read("xl/worksheets/sheet1.xml"))
+        cell = root.find(".//s:c[@r='M2']", NS)
+        assert cell_text(cell, []) == expected
+        if expected:
+            assert cell.get("t") == "inlineStr"

@@ -37,7 +37,7 @@ def import_record(client):
     return response.json()["records"][0]
 
 
-def test_original_excel_fields_stop_at_n_and_docx_zip_import_keeps_supplier_name_and_code(client):
+def test_original_excel_fields_stop_at_n_and_docx_zip_import_keeps_only_supplier_code(client):
     supplier = client.post("/api/settings/suppliers", json={"name": "ТОВ «Постачальник»", "code": "015", "edrpou": "00123456"})
     assert supplier.status_code == 200
     fields = client.get("/api/excel/fields").json()["fields"]
@@ -47,7 +47,7 @@ def test_original_excel_fields_stop_at_n_and_docx_zip_import_keeps_supplier_name
     assert set(record["values"]) == set("DEFGHIJKLMN")
     assert record["values"]["D"] == "№87-015-3000-1400-2"
     assert record["values"]["E"] == "29.10.2026"
-    assert record["values"]["M"] == "ТОВ «Постачальник», код ЄДРПОУ: 00123456"
+    assert record["values"]["M"] == "00123456"
     assert record["values"]["N"] == "12345678"
     assert record["values"]["L"] == "0.525"
     assert record["values"]["K"] == "1000.5"
@@ -55,6 +55,7 @@ def test_original_excel_fields_stop_at_n_and_docx_zip_import_keeps_supplier_name
 
 
 def test_excel_generate_download_is_valid_xlsx_with_dates_numbers_and_no_compliance(client):
+    client.post("/api/settings/suppliers", json={"name": "ТОВ «Постачальник»", "code": "015", "edrpou": "00123456"})
     record = import_record(client)
     payload = {"confirmed": True, "records": [record], "update_existing": True}
     result = client.post("/api/excel/generate", data={"payload": json.dumps(payload, ensure_ascii=False)})
@@ -70,6 +71,7 @@ def test_excel_generate_download_is_valid_xlsx_with_dates_numbers_and_no_complia
         assert cell_text(sheet.find(".//s:c[@r='L2']", NS), []) == "0.525"
         assert sheet.find(".//s:c[@r='E2']", NS).get("t") == "n"
         assert sheet.find(".//s:c[@r='M2']", NS).get("t") == "inlineStr"
+        assert cell_text(sheet.find(".//s:c[@r='M2']", NS), []) == "00123456"
 
 
 def test_existing_excel_updates_without_touching_last_two_columns(client):
