@@ -1,8 +1,11 @@
 """Verify installer inputs without pretending Linux can produce a Windows EXE."""
 from hashlib import sha256
 from io import BytesIO
+from email.errors import MessageError
+from importlib.metadata import Distribution
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,3 +73,32 @@ def test_windows_build_cannot_report_success_on_linux():
     with pytest.raises(SystemExit) as error:
         build.main([])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("metadata_file", ["METADATA", "PKG-INFO"])
+def test_license_collection_preserves_legacy_multiline_metadata(tmp_path, monkeypatch, metadata_file):
+    package = tmp_path / ("fixture.dist-info" if metadata_file == "METADATA" else "fixture.egg-info")
+    package.mkdir()
+    raw_metadata = (
+        "Metadata-Version: 2.1\nName: fixture-altgraph\nVersion: 1.0\n"
+        "Description: graph package\n        Project links\n        -------------\n"
+        "        * Documentation: https://example.invalid\n\n"
+    )
+    (package / metadata_file).write_text(raw_metadata, encoding="utf-8")
+    distribution = Distribution.at(package)
+    # This input reproduces the actual email-header failure from Windows CI.
+    with pytest.raises(MessageError):
+        str(distribution.metadata)
+    python = tmp_path / "python"
+    python.mkdir()
+    (python / "LICENSE.txt").write_text("Python license fixture", encoding="utf-8")
+    monkeypatch.setattr(build, "STAGE", tmp_path / "build")
+    monkeypatch.setattr(build, "sys", SimpleNamespace(base_prefix=str(python)))
+    monkeypatch.setattr(build.metadata, "distributions", lambda: [distribution])
+    monkeypatch.setattr(build.subprocess, "run", lambda *a, **k: None)
+
+    build.collect_licenses()
+
+    result = build.STAGE / "licenses/fixture-altgraph/METADATA.txt"
+    assert result.read_text(encoding="utf-8") == raw_metadata
+    assert (build.STAGE / "licenses/PYTHON-LICENSE.txt").read_text(encoding="utf-8") == "Python license fixture"

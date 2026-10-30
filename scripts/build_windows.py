@@ -105,7 +105,13 @@ def collect_licenses() -> None:
         safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
         directory = destination / safe_name
         directory.mkdir(exist_ok=True)
-        directory.joinpath("METADATA.txt").write_text(str(distribution.metadata), encoding="utf-8")
+        # Preserve the installed text instead of serializing email.Message:
+        # legacy metadata (e.g. altgraph) can have multiline Description headers
+        # that email's serializer rejects as an embedded-header injection.
+        package_metadata = distribution.read_text("METADATA") or distribution.read_text("PKG-INFO")
+        if package_metadata is None:
+            package_metadata = json.dumps(list(distribution.metadata.items()), ensure_ascii=False, indent=2)
+        directory.joinpath("METADATA.txt").write_text(package_metadata, encoding="utf-8")
         for entry in distribution.files or []:
             if not any(part.lower().startswith(("license", "licence", "copying", "notice", "copyright")) for part in entry.parts):
                 continue
