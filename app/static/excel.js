@@ -6,7 +6,12 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const uid = () => globalThis.crypto?.randomUUID?.() || `excel-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, busy:false, result:null, fileUrl:'', reportUrl:''};
+  const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, busy:false, result:null, fileUrl:'', reportUrl:'', templateRequired:false, templateWasSelected:false, templateName:''};
+  const changed = () => window.OZWorkspace?.changed('excel');
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const originText = source => source?.label || ({act:'З акта',protocol:'Із протоколу',manual:'Введено вручну',directory:'Із довідника',template:'Із шаблону',derived:'Обчислено з даних джерела'})[source?.kind] || 'Джерело не збережено';
+  const origin = (kind,label,source = '') => ({kind,label,source});
+  const recordSelector = record => `[data-excel-record="${CSS.escape(record.id)}"]`;
   const section = document.createElement('section');
   section.id = 'excel-view';
   section.hidden = true;
@@ -18,11 +23,11 @@
     <section id="excel-processing" class="panel processing" hidden aria-live="polite"><div class="spinner"></div><h2>Читаємо протоколи</h2><p>Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.</p></section>
     <div id="excel-warnings" class="notice warning" hidden></div>
     <fieldset id="excel-editor" style="border:0;padding:0;min-width:0;margin:0">
-      <section class="panel common-panel"><div class="panel-heading"><div><h2>Таблиця Excel</h2><p>Можна продовжити вашу таблицю або створити нову.</p></div></div><div class="form-grid"><label class="field wide"><span>Вихідна таблиця .xlsx (за потреби)</span><input id="excel-template" type="file" accept=".xlsx"><small>Без файлу буде створено нову таблицю з тими самими стовпцями D–N. Оригінал завантаженої таблиці не змінюється.</small></label><label class="confirmation"><input id="excel-update-existing" type="checkbox" checked><span>Оновлювати рядки з тим самим номером протоколу. Якщо дані не знайдено, зберігати попереднє значення клітинки.</span></label></div></section>
+      <section class="panel common-panel"><div class="panel-heading"><div><h2>Таблиця Excel</h2><p>Можна продовжити вашу таблицю або створити нову.</p></div></div><div class="form-grid"><label class="field wide"><span>Вихідна таблиця .xlsx (за потреби)</span><input id="excel-template" type="file" accept=".xlsx"><small>Без файлу буде створено нову таблицю з тими самими стовпцями D–N. Оригінал завантаженої таблиці не змінюється.</small></label><div id="excel-template-restore" class="notice warning wide" hidden><p></p><button id="excel-new-workbook" type="button" class="text-button">Створити нову таблицю замість попередньої</button></div><label class="confirmation"><input id="excel-update-existing" type="checkbox" checked><span>Оновлювати рядки з тим самим номером протоколу. Якщо дані не знайдено, зберігати попереднє значення клітинки.</span></label></div></section>
       <div class="section-heading"><div><h2>Протоколи <span id="excel-record-count" class="count-pill">0</span></h2><p>Перевірте назви, дати, масу в кг та коди організацій перед збереженням.</p></div></div>
       <div id="excel-records"></div>
       <div id="excel-empty" class="panel empty-state"><h3>Дані ще не додані</h3><p>Перенесіть дані кнопкою «Підготувати Excel за цим актом» або завантажте готові протоколи.</p></div>
-      <div class="notice soft">${icon('info')}<div>Партія (позначення) заповнюється датою виготовлення. Маса нетто одиниці — вага однієї упаковки, а не загальна вага зразка. Постачальник містить назву й ЄДРПОУ; виробник — код ЄДРПОУ виробника.</div></div>
+      <div class="notice soft">${icon('info')}<div>Партія (позначення) заповнюється датою виготовлення. Маса нетто одиниці — вага однієї упаковки, а не загальна вага зразка. Постачальник і виробник містять лише цифри коду ЄДРПОУ; початкові нулі зберігаються.</div></div>
       <section class="panel generation-panel"><div><label class="confirmation"><input id="excel-confirmed" type="checkbox"><span>Я перевірив(-ла) витягнуті дані та попередження.</span></label><p id="excel-generation-help" class="generation-help"></p></div><button id="excel-generate" type="button" class="button primary" disabled>${icon('download')}Створити Excel</button></section>
     </fieldset>
     <div id="excel-error" class="notice warning" role="alert" hidden></div>
@@ -54,6 +59,7 @@
       if (state[name]) URL.revokeObjectURL(state[name]);
       state[name] = '';
     }
+    changed();
   }
   async function load() {
     if (state.loaded) return true;
@@ -80,19 +86,43 @@
     return state.loading;
   }
   function numberKey(value) { return String(value || '').replace(/[\s№]/g,'').replace(/[–—]/g,'-'); }
-  function issues() {
+  function reviewIssues() {
     const result = [];
-    if (!state.loaded) result.push('завантаження структури таблиці');
-    if (!state.records.length) result.push('принаймні один протокол');
+    const add = (message,selector,level = 'error') => result.push({message,selector,level,section:'excel'});
+    if (!state.loaded) add('Не завантажено структуру таблиці Excel.','#excel-retry');
+    if (!state.records.length) add('Додайте принаймні один протокол або перенесіть дані акта.','#excel-upload');
+    if (state.templateRequired && !$('#excel-template').files[0]) add(`Повторно оберіть вихідну таблицю «${state.templateName || 'Excel'}» або явно створіть нову. Файл не зберігається в чернетці.`,'#excel-template');
     const seen = new Set();
     state.records.forEach((record,index) => {
+      const base = recordSelector(record);
+      const field = column => `${base} [data-excel-column="${column}"]`;
       const number = numberKey(record.values.D);
-      if (!number) result.push(`протокол ${index+1}: номер`);
-      else if (seen.has(number)) result.push(`повторний номер ${record.values.D}`);
+      if (!number) add(`Протокол ${index+1}: не вказано номер.`,field('D'));
+      else if (seen.has(number)) add(`Протокол ${index+1}: повторний номер ${record.values.D}.`,field('D'));
       seen.add(number);
+      state.fields.forEach(({column,label,type}) => {
+        const value = String(record.values[column] || '').trim();
+        if (!value) {
+          if (column !== 'D') add(`Протокол ${index+1}: не заповнено «${label}».`,field(column),'warning');
+          return;
+        }
+        if (type === 'date') {
+          const match = value.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+          const date = match && new Date(Date.UTC(Number(match[3]),Number(match[2])-1,Number(match[1])));
+          if (!match || date.getUTCFullYear() !== Number(match[3]) || date.getUTCMonth() !== Number(match[2])-1 || date.getUTCDate() !== Number(match[1])) add(`Протокол ${index+1}: «${label}» має бути справжньою датою ДД.ММ.РРРР.`,field(column));
+        } else if (type === 'number') {
+          const numberValue = Number(value.replace(/\s/g,'').replace(',','.'));
+          if (!Number.isFinite(numberValue) || numberValue < 0) add(`Протокол ${index+1}: «${label}» має бути невід’ємним числом.`,field(column));
+        } else if (column === 'M' && !/^\d{8}(?:\d{2})?$/.test(value) || column === 'N' && !/^\d{8}$/.test(value)) {
+          add(`Протокол ${index+1}: перевірте кількість цифр коду в полі «${label}».`,field(column));
+        }
+      });
+      (record.warnings || []).forEach(message => add(`Протокол ${index+1}, повідомлення джерела: ${message}`,base,'warning'));
     });
+    state.warnings.forEach(message => add(message,'#excel-warnings','warning'));
     return result;
   }
+  function issues() { return reviewIssues().filter(issue => issue.level === 'error').map(issue => issue.message); }
   function updateReadiness() {
     const missing = issues();
     $('#excel-upload').disabled = state.busy || !state.loaded;
@@ -102,6 +132,8 @@
     $('#excel-generate').innerHTML = state.busy ? 'Опрацьовуємо…' : `${icon('download')}Створити Excel`;
     $('#excel-generation-help').textContent = state.busy ? 'Дочекайтеся завершення операції.' : missing.length ? `Потрібно: ${missing.slice(0,3).join('; ')}.` : !$('#excel-confirmed').checked ? 'Підтвердьте перевірку даних.' : `До таблиці буде передано ${state.records.length} протоколів.`;
     $('#excel-generation-help').classList.toggle('ready', !state.busy && !missing.length && $('#excel-confirmed').checked);
+    $('#excel-template-restore').hidden = !state.templateRequired;
+    $('#excel-template-restore p').textContent = `Чернетка використовувала таблицю «${state.templateName || 'Excel'}». Оберіть цей файл повторно, щоб продовжити доповнення книги. У чернетці збережені лише значення полів.`;
   }
   function render() {
     $('#excel-record-count').textContent = state.records.length;
@@ -111,9 +143,26 @@
     $('#excel-warnings').innerHTML = `<strong>Повідомлення імпорту</strong><ul>${state.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul>`;
     $('#excel-records').innerHTML = state.records.map((record,index) => {
       const missing = state.fields.filter(field => !String(record.values[field.column] || '').trim()).map(field => field.label);
-      return `<article class="panel item-card" data-excel-record="${esc(record.id)}"><div class="item-heading"><div class="item-label"><span class="item-number">${index+1}</span><div><h3 class="item-title">${esc(record.values.G || 'Протокол без назви')}</h3><p class="item-subtitle" style="overflow-wrap:anywhere">${esc(record.source || 'Протокол')} · ${esc(record.values.D || 'номер не визначено')}</p></div></div><button type="button" class="icon-button danger excel-remove" aria-label="Видалити протокол ${index+1}">${icon('trash')}</button></div>${record.warnings?.length ? `<details class="notice warning"><summary>Попередження джерела: ${record.warnings.length}</summary><ul>${record.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul></details>` : ''}<div class="item-grid">${state.fields.map(field => `<label class="field ${['G','M'].includes(field.column) ? 'full' : ''}"><span>${esc(field.column)} · ${esc(field.label)}${field.column === 'D' ? ' *' : ''}</span><input data-excel-column="${esc(field.column)}" value="${esc(record.values[field.column] || '')}" ${field.type === 'number' ? 'inputmode="decimal"' : ''} placeholder="${field.type === 'date' ? 'ДД.ММ.РРРР' : field.column === 'N' ? 'Код ЄДРПОУ' : ''}" ${field.column === 'D' ? 'required' : ''}></label>`).join('')}</div><p class="item-footnote" data-excel-missing>${missing.length ? `Не заповнено: ${esc(missing.join('; '))}.` : 'Усі поля заповнені.'}</p></article>`;
+      return `<article class="panel item-card" data-excel-record="${esc(record.id)}"><div class="item-heading"><div class="item-label"><span class="item-number">${index+1}</span><div><h3 class="item-title">${esc(record.values.G || 'Протокол без назви')}</h3><p class="item-subtitle" style="overflow-wrap:anywhere">${esc(record.source || 'Протокол')} · ${esc(record.values.D || 'номер не визначено')}</p></div></div><button type="button" class="icon-button danger excel-remove" aria-label="Видалити протокол ${index+1}">${icon('trash')}</button></div>${record.warnings?.length ? `<details class="notice warning"><summary>Попередження джерела: ${record.warnings.length}</summary><ul>${record.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul></details>` : ''}<div class="item-grid">${state.fields.map(field => `<label class="field ${['G','M'].includes(field.column) ? 'full' : ''}"><span>${esc(field.column)} · ${esc(field.label)}${field.column === 'D' ? ' *' : ''}</span><input data-excel-column="${esc(field.column)}" value="${esc(record.values[field.column] || '')}" ${field.type === 'number' ? 'inputmode="decimal"' : ''} placeholder="${field.type === 'date' ? 'ДД.ММ.РРРР' : ['M','N'].includes(field.column) ? 'Код ЄДРПОУ' : ''}" ${field.column === 'D' ? 'required' : ''}><small class="field-source" data-excel-origin="${esc(field.column)}">Джерело: ${esc(originText(record.sources?.[field.column]))}</small></label>`).join('')}</div><p class="item-footnote" data-excel-missing>${missing.length ? `Не заповнено: ${esc(missing.join('; '))}.` : 'Усі поля заповнені.'}</p></article>`;
     }).join('');
     updateReadiness();
+  }
+  function importedRecord(record, kind = 'protocol', source = '') {
+    const filename = record.source || source || (kind === 'act' ? 'Акт відбору' : 'Протокол');
+    const sources = Object.fromEntries(state.fields.map(field => [field.column,
+      record.sources?.[field.column] || origin(kind,`${kind === 'act' ? 'З акта' : 'Із протоколу'}: ${filename}`,filename)]));
+    // Older servers cannot distinguish directory enrichment from document data.
+    if (record.values?.M && !record.sources?.M) sources.M = origin('derived',`Код із джерела або довідника: ${filename}`,filename);
+    return {id:uid(),source:filename,values:{...(record.values || {})},warnings:Array.isArray(record.warnings) ? record.warnings : [],sources};
+  }
+  function actOrigins(record, item, detail) {
+    const mapping = {D:'protocol_number',E:'protocol_date',F:'catalog_number',G:'product_name',H:'manufacture_date',I:'manufacture_date',J:'manufacture_date',K:'batch_size',L:'sample_weight',N:'manufacturer'};
+    Object.entries(mapping).forEach(([column,key]) => {
+      const source = detail.provenance?.items?.[item?.id]?.[key];
+      if (source) record.sources[column] = clone(source);
+    });
+    const supplier = detail.provenance?.common?.supplier;
+    if (supplier && record.sources.M?.kind !== 'directory') record.sources.M = clone(supplier);
   }
   async function importFiles(files) {
     if (state.busy || !files.length || !await load()) return;
@@ -131,12 +180,13 @@
       const form = new FormData();
       files.forEach(file => form.append('files',file));
       const data = await (await api('/api/excel/import',{method:'POST',body:form})).json();
-      const imported = (data.records || []).map(record => ({...record,id:uid(),values:{...(record.values || {})},warnings:record.warnings || []}));
+      const imported = (data.records || []).map(record => importedRecord(record));
       if (state.records.length + imported.length > 100) throw new Error('Список містить більше 100 протоколів. Створіть окремий комплект.');
       state.records.push(...imported);
       state.warnings.push(...(data.warnings || []));
       if (!imported.length && !(data.warnings || []).length) throw new Error('У файлах не знайдено протоколів для імпорту.');
       render();
+      changed();
     } catch (error) { showError(error); }
     finally { state.busy=false; $('#excel-processing').hidden=true; updateReadiness(); }
   }
@@ -161,7 +211,11 @@
       const data = await (await api('/api/excel/from-act', {
         method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(detail)
       })).json();
-      const imported = (data.records || []).map(record => ({...record,id:uid(),values:{...(record.values || {})},warnings:record.warnings || []}));
+      const imported = (data.records || []).map((value,index) => {
+        const record = importedRecord(value,'act',detail.source);
+        actOrigins(record,detail.items[index],detail);
+        return record;
+      });
       if (!imported.length) throw new Error('В акті не знайдено позицій для таблиці Excel.');
       if (imported.length > 100) throw new Error('Список містить більше 100 позицій. Створіть окремі таблиці.');
       // Keep the existing preview and its downloads until the replacement succeeds.
@@ -169,6 +223,7 @@
       state.records = imported;
       state.warnings = data.warnings || [];
       render();
+      changed();
     } catch (error) { showError(error); }
     finally { state.busy=false; $('#excel-processing').hidden=true; updateReadiness(); }
   }
@@ -176,7 +231,7 @@
   $('#excel-files').addEventListener('change',async event => { const files=[...event.target.files]; event.target.value=''; await importFiles(files); });
   $('#excel-clear').addEventListener('click',() => {
     if (state.busy || state.records.length && !window.confirm('Очистити список протоколів для Excel?')) return;
-    state.records=[]; state.warnings=[]; $('#excel-template').value=''; invalidate(); render();
+    state.records=[]; state.warnings=[]; state.templateRequired=false; state.templateWasSelected=false; state.templateName=''; $('#excel-template').value=''; invalidate(); render();
   });
   $('#excel-records').addEventListener('input',event => {
     const column=event.target.dataset.excelColumn;
@@ -185,6 +240,10 @@
     const record=state.records.find(value => value.id === card?.dataset.excelRecord);
     if (!record) return;
     record.values[column]=event.target.value;
+    record.sources ||= {};
+    record.sources[column] = origin('manual','Введено вручну');
+    const originNode = $(`[data-excel-origin="${column}"]`,card);
+    if (originNode) originNode.textContent = 'Джерело: введено вручну';
     if (column === 'G') $('.item-title',card).textContent=event.target.value || 'Протокол без назви';
     const missing=state.fields.filter(field => !String(record.values[field.column] || '').trim()).map(field => field.label);
     $('[data-excel-missing]',card).textContent=missing.length ? `Не заповнено: ${missing.join('; ')}.` : 'Усі поля заповнені.';
@@ -197,7 +256,18 @@
     state.records=state.records.filter(value => value.id !== card.dataset.excelRecord);
     invalidate(); render();
   });
-  ['#excel-template','#excel-update-existing'].forEach(selector => $(selector).addEventListener('change',() => { invalidate(); updateReadiness(); }));
+  $('#excel-template').addEventListener('change',() => {
+    const file = $('#excel-template').files[0];
+    if (file) { state.templateRequired=false; state.templateWasSelected=true; state.templateName=file.name; }
+    else if (!state.templateRequired) { state.templateWasSelected=false; state.templateName=''; }
+    invalidate(); updateReadiness();
+  });
+  $('#excel-update-existing').addEventListener('change',() => { invalidate(); updateReadiness(); });
+  $('#excel-new-workbook').addEventListener('click',() => {
+    if (!window.confirm('Створити нову таблицю? Попередню вихідну книгу не буде доповнено.')) return;
+    state.templateRequired=false; state.templateWasSelected=false; state.templateName=''; $('#excel-template').value='';
+    invalidate(); updateReadiness();
+  });
   $('#excel-confirmed').addEventListener('change',updateReadiness);
   $('#excel-retry').addEventListener('click',load);
   $('#excel-generate').addEventListener('click',async () => {
@@ -235,5 +305,36 @@
     await importFiles(event.detail?.files || []);
   });
   document.addEventListener('protokol:excel-from-act',event => importAct(event.detail));
+  window.OZWorkspace?.register('excel',{
+    title:'Таблиця Excel',
+    hasData:() => state.records.length > 0 || state.templateWasSelected || state.templateRequired,
+    snapshot:() => state.records.length || state.templateWasSelected || state.templateRequired ? ({records:clone(state.records),warnings:clone(state.warnings),updateExisting:$('#excel-update-existing').checked,
+      templateWasSelected:!!($('#excel-template').files[0] || state.templateWasSelected || state.templateRequired),
+      templateName:$('#excel-template').files[0]?.name || state.templateName}) : null,
+    restore:async data => {
+      if (state.busy) throw new Error('Дочекайтеся завершення поточної операції Excel.');
+      if (!await load()) throw new Error('Не вдалося завантажити структуру Excel для відновлення чернетки.');
+      const fields = new Set(state.fields.map(field => field.column));
+      state.records = (Array.isArray(data.records) ? data.records : []).slice(0,100).map(saved => ({
+        id:typeof saved.id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(saved.id) ? saved.id : uid(),
+        source:String(saved.source || 'Джерело чернетки').slice(0,1000),
+        values:Object.fromEntries(Object.entries(saved.values || {}).filter(([key]) => fields.has(key)).map(([key,value]) => [key,String(value ?? '').slice(0,4000)])),
+        warnings:Array.isArray(saved.warnings) ? saved.warnings.map(value => String(value).slice(0,5000)).slice(0,200) : [],
+        sources:saved.sources && typeof saved.sources === 'object' ? clone(saved.sources) : {}
+      }));
+      state.warnings = Array.isArray(data.warnings) ? data.warnings.map(String).slice(0,200) : [];
+      $('#excel-template').value='';
+      state.templateWasSelected=!!data.templateWasSelected;
+      state.templateRequired=!!data.templateWasSelected;
+      state.templateName=String(data.templateName || '').slice(0,1000);
+      $('#excel-update-existing').checked=data.updateExisting !== false;
+      invalidate(); render();
+    },
+    issues:reviewIssues,
+    reveal:issue => {
+      document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));
+      requestAnimationFrame(() => { const node=$(issue.selector); node?.scrollIntoView({block:'center',behavior:'smooth'}); node?.focus({preventScroll:true}); });
+    }
+  });
   render();
 })();

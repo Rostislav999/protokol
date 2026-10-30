@@ -128,7 +128,11 @@ def records_from_act(payload: ActExcelInput, suppliers: list[dict]) -> dict:
         v["N"] = next(iter(manufacturer_codes)) if len(manufacturer_codes) == 1 else ""
         if item.manufacturer.strip() and not v["N"]:
             record.warnings.append("Виробник: не знайдено однозначний код ЄДРПОУ з 8 цифр.")
-        records.append({"id": uuid4().hex, "source": record.source[:1000], "values": v,
+        sources = {column: {"kind": "act", "label": "Із форми акта", "source": payload.source}
+                   for column, value in v.items() if value}
+        if v["M"] and not supplier_code(payload.common.supplier):
+            sources["M"] = {"kind": "directory", "label": "Довідник постачальників", "original": payload.common.supplier}
+        records.append({"id": uuid4().hex, "source": record.source[:1000], "values": v, "sources": sources,
                         "warnings": record.warnings, "missing": record.missing()})
     return {"records": records, "warnings": [
         "Дані перенесено з поточної форми акта. Перевірте номер і дату протоколу та решту полів перед збереженням Excel."
@@ -167,8 +171,13 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
             return
         try:
             record = _read_record(data, filename)
-            record.values["M"] = supplier_code(supplier_with_code(record.values.get("M", ""), suppliers))
-            records.append({"id": uuid4().hex, "source": record.source, "values": record.values,
+            raw_supplier = record.values.get("M", "")
+            record.values["M"] = supplier_code(supplier_with_code(raw_supplier, suppliers))
+            sources = {column: {"kind": "protocol", "label": "Із протоколу", "source": record.source}
+                       for column, value in record.values.items() if value}
+            if record.values["M"] and not supplier_code(raw_supplier):
+                sources["M"] = {"kind": "directory", "label": "Довідник постачальників", "source": record.source, "original": raw_supplier}
+            records.append({"id": uuid4().hex, "source": record.source, "values": record.values, "sources": sources,
                             "warnings": record.warnings, "missing": record.missing()})
         except ValueError as exc:
             warnings.append(filename + ": " + str(exc))

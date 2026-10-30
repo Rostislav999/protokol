@@ -222,7 +222,112 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
             child.show()
             return page
 
-    window = QMainWindow()
+    class MainWindow(QMainWindow):
+        """Keep the server alive until the last debounced edits reach disk."""
+
+        def __init__(self):
+            super().__init__()
+            self._close_allowed = smoke_workbook is not None
+            self._close_waiting = False
+            self._close_attempt = 0
+            self._close_polling = False
+            self._close_deadline = 0.0
+            self._close_timer = QTimer(self)
+            self._close_timer.setInterval(100)
+            self._close_timer.timeout.connect(self._poll_close_save)
+
+        def allow_immediate_close(self):
+            self._close_allowed = True
+            self._close_waiting = False
+            self._close_timer.stop()
+
+        def closeEvent(self, event):
+            if self._close_allowed:
+                event.accept()
+                return
+            event.ignore()
+            if self._close_waiting:
+                return
+            self._close_waiting = True
+            self._close_polling = False
+            self._close_attempt += 1
+            self._close_deadline = time.monotonic() + 15
+            self.centralWidget().setEnabled(False)
+            self.statusBar().showMessage("Зберігаємо останні зміни перед закриттям…")
+            # QWebEngine cannot return a JavaScript Promise to Python. Store a
+            # small result object and poll it while Qt keeps its event loop alive.
+            page.runJavaScript("""(() => {
+              const result = {attempt: %d, state: 'saving'};
+              window.__ozNativeClose = result;
+              const workspace = window.OZWorkspace;
+              if (!workspace || !workspace.pending) { result.state = 'done'; return; }
+              Promise.resolve().then(() => workspace.flush()).then(() => {
+                if (workspace.pending) throw new Error('Залишилися незбережені зміни.');
+                result.state = 'done';
+              }).catch(error => {
+                result.state = 'error';
+                result.message = String(error && error.message || error || 'Не вдалося зберегти чернетку.');
+              });
+            })()""" % self._close_attempt)
+            self._close_timer.start()
+
+        def _poll_close_save(self):
+            if not self._close_waiting:
+                return
+            if time.monotonic() >= self._close_deadline:
+                self._close_failed("Збереження не завершилося за 15 секунд. Перевірте стан програми й спробуйте ще раз.")
+                return
+            if self._close_polling:
+                return
+            self._close_polling = True
+            attempt = self._close_attempt
+
+            def received(result):
+                if not self._close_waiting or attempt != self._close_attempt:
+                    return
+                self._close_polling = False
+                try:
+                    result = json.loads(result) if isinstance(result, str) else None
+                except ValueError:
+                    return
+                if not isinstance(result, dict) or result.get("attempt") != attempt:
+                    return
+                if result.get("state") == "done":
+                    self.allow_immediate_close()
+                    self.close()
+                elif result.get("state") == "error":
+                    self._close_failed(str(result.get("message") or "Не вдалося зберегти чернетку."))
+
+            # Serialize explicitly: PySide6 versions differ in how a returned
+            # JavaScript object is converted, while strings are consistent.
+            page.runJavaScript("JSON.stringify(window.__ozNativeClose || null)", received)
+
+        def _close_failed(self, message):
+            self._close_timer.stop()
+            self._close_waiting = False
+            self.centralWidget().setEnabled(True)
+            LOG.warning("Draft save before close failed: %s", message)
+            question = QMessageBox(self)
+            question.setWindowTitle("ОЗтаУСЯ — незбережені зміни")
+            question.setIcon(QMessageBox.Icon.Warning)
+            question.setTextFormat(Qt.TextFormat.PlainText)
+            question.setText("Останні зміни не вдалося зберегти.\n\n" + message[:1200])
+            retry = question.addButton("Спробувати ще раз", QMessageBox.ButtonRole.AcceptRole)
+            discard = question.addButton("Закрити без збереження", QMessageBox.ButtonRole.DestructiveRole)
+            stay = question.addButton("Залишитися в програмі", QMessageBox.ButtonRole.RejectRole)
+            question.setDefaultButton(stay)
+            question.setEscapeButton(stay)
+            question.exec()
+            chosen = question.clickedButton()
+            if chosen == retry:
+                self.close()
+            elif chosen == discard:
+                self.allow_immediate_close()
+                self.close()
+            else:
+                self.statusBar().showMessage("Є незбережені зміни. Виправте помилку або збережіть чернетку повторно.")
+
+    window = MainWindow()
     window.setWindowTitle("ОЗтаУСЯ")
     window.resize(1280, 900)
     window.setMinimumSize(900, 650)
@@ -307,6 +412,7 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
         return code if smoke_workbook is None else (0 if smoke["success"] else 1)
     finally:
         # Pages must be destroyed before their profile, including popup previews.
+        window.allow_immediate_close()
         for child in list(children):
             child.close()
         window.close()

@@ -48,6 +48,7 @@ def test_original_excel_fields_stop_at_n_and_docx_zip_import_keeps_only_supplier
     assert record["values"]["D"] == "№87-015-3000-1400-2"
     assert record["values"]["E"] == "29.10.2026"
     assert record["values"]["M"] == "00123456"
+    assert record["sources"]["M"]["kind"] == "protocol"
     assert record["values"]["N"] == "12345678"
     assert record["values"]["L"] == "0.525"
     assert record["values"]["K"] == "1000.5"

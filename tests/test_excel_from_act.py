@@ -57,6 +57,7 @@ def test_edited_act_fields_map_directly_without_word_requirements(client):
     }
     assert isinstance(record["warnings"], list)
     assert isinstance(record["missing"], list)
+    assert record["sources"]["M"]["kind"] == "directory"
 
 
 @pytest.mark.parametrize("protocol_date", ["2026-10-29", "29.10.2026", "29 жовтня 2026 року"])
@@ -104,6 +105,7 @@ def test_explicit_supplier_code_wins_and_ambiguous_manufacturer_remains_blank(cl
     payload["common"]["supplier"] = "ТОВ «Постачальник», код ЄДРПОУ: 87654321"
     record = preview(client, payload)[0]
     assert record["values"]["M"] == "87654321"
+    assert record["sources"]["M"]["kind"] == "act"
     assert record["values"]["N"] == ""
     assert record["warnings"]
 

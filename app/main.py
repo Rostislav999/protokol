@@ -28,6 +28,10 @@ from .printing import printing_status
 from .sample_details import first_seal_number, sample_weight_value
 from .supplier_details import supplier_with_code
 from .excel_api import excel_router
+from .backups import backup_router, create_automatic_backup
+from .workspace import DraftStore, WorkspaceError, workspace_router
+from .storage_lock import DataAccessMiddleware, data_guard
+from .assignment_library import AssignmentLibrary
 
 MAX_UPLOAD = 25 * 1024 * 1024
 local_tessdata = ROOT / ".local/tessdata"
@@ -104,11 +108,14 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="ОЗтаУСЯ", version="1.0.1")
+    app = FastAPI(title="ОЗтаУСЯ", version="1.1.0")
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
-    library = Library(directory / "templates")
-    settings = SettingsStore(directory)
+    with data_guard(directory):
+        create_automatic_backup(directory, "1.1.0")
+        library = Library(directory / "templates")
+        settings = SettingsStore(directory)
     app.state.library = library
+    app.add_middleware(DataAccessMiddleware, directory=directory)
 
     def public_template(entry: dict) -> dict:
         return {**entry, "inferred_subcategory": infer_subcategory(entry.get("product_name") or entry["name"])}
@@ -257,7 +264,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     app.include_router(settings_router(settings))
     app.include_router(excel_router(settings))
-    app.include_router(assignments_router(directory, settings))
+    with data_guard(directory):
+        app.include_router(assignments_router(directory, settings))
+    app.include_router(workspace_router(directory))
+
+    def validate_restored(stage: Path):
+        try:
+            previous_revisions = DraftStore(directory).all()["revisions"]
+        except WorkspaceError:
+            previous_revisions = {}
+        DraftStore(stage).rebase_after_restore(previous_revisions)
+        # Complete supported migrations on the staging copy, preserving deleted
+        # templates through the existing seed ledgers before committing restore.
+        Library(stage / "templates")
+        AssignmentLibrary(stage / "assignment_templates")
+        SettingsStore(stage).all()
+
+    app.include_router(backup_router(directory, version="1.1.0", validate_staged=validate_restored))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app

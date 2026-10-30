@@ -9,7 +9,7 @@
   const subgroupLabels = {legumes: 'Бобові', cereals: 'Круп’яні', potatoes: 'Картопляні', other: 'Інші другі страви'};
   const subgroupOf = (template) => template.subcategory || template.inferred_subcategory || '';
   const subgroupLabel = (template) => subgroupLabels[subgroupOf(template)] || '';
-  const state = {templates: [], common: {}, items: [], text: '', source: '', sourceUrl: '', busy: false, editingTemplate: null, libraryLoaded: false, sequenceEnabled:false};
+  const state = {templates: [], common: {}, items: [], text: '', source: '', sourceUrl: '', busy: false, editingTemplate: null, libraryLoaded: false, sequenceEnabled:false, sources:{common:{},items:{}}, method:'', warnings:[]};
   const commonFields = [
     ['customer', 'Замовник', true, 'Наприклад, ТОВ «Назва підприємства»'],
     ['supplier', 'Постачальник', false, 'Назва, код ЄДРПОУ'],
@@ -31,6 +31,46 @@
     ['manufacture_date', 'Дата виготовлення / вжити до', false, 'Як зазначено в акті', ''],
     ['batch_size', 'Розмір партії', false, 'Наприклад, 500,0 кг', 'two']
   ];
+
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const sourceLabels = {act:'Акт', manual:'Введено вручну', directory:'Довідник', template:'Шаблон', derived:'Обчислено з інших полів', unknown:'Джерело не визначено'};
+  function sourceRecord(kind, value, label = '', source = '') {
+    return {kind, label:label || sourceLabels[kind] || sourceLabels.unknown, source, original:String(value ?? '')};
+  }
+  function itemSources(item) {
+    if (!Object.prototype.hasOwnProperty.call(state.sources.items,item.id)) Object.defineProperty(state.sources.items,item.id,{value:{},writable:true,enumerable:true,configurable:true});
+    return state.sources.items[item.id];
+  }
+  function markManual(sources, key, value) {
+    const previous = sources[key];
+    sources[key] = {...sourceRecord('manual', value), original:previous?.original ?? String(value ?? ''), previous:previous?.kind === 'manual' ? previous.previous : previous?.label || ''};
+  }
+  function sourceDescription(source) {
+    if (!source) return sourceLabels.unknown;
+    return `${source.label || sourceLabels[source.kind] || sourceLabels.unknown}${source.source ? ` · ${source.source}` : ''}`;
+  }
+  function sourceBadge(key, source, value) {
+    const title = source ? [sourceDescription(source), source.original ? `Початкове значення: ${source.original}` : '', source.previous ? `Попереднє джерело: ${source.previous}` : ''].filter(Boolean).join('\n') : sourceLabels.unknown;
+    return `<small class="field-source" data-source-field="${escape(key)}" title="${escape(title)}" ${!source && !String(value || '').trim() ? 'hidden' : ''}>Джерело: ${escape(sourceDescription(source))}</small>`;
+  }
+  function refreshSources() {
+    $$('#common-fields [data-source-field]').forEach(node => {
+      const key = node.dataset.sourceField;
+      node.outerHTML = sourceBadge(key, state.sources.common[key], state.common[key]);
+    });
+    $$('#items-list [data-item]').forEach(card => {
+      const item = state.items.find(value => String(value.id) === card.dataset.item);
+      if (!item) return;
+      $$('[data-source-field]',card).forEach(node => {
+        const key = node.dataset.sourceField;
+        node.outerHTML = sourceBadge(key, itemSources(item)[key], item[key]);
+      });
+    });
+  }
+  function workspaceChanged() {
+    refreshSources();
+    window.OZWorkspace?.changed('acts');
+  }
 
   function toast(message, error = false) {
     const node = document.createElement('div');
@@ -77,11 +117,12 @@
   const supplierDirectory = createSupplierDirectory({api,jsonPost,escape,icon,onSelect:supplier => {
     if (supplier) {
       state.common.supplier = supplierLine(supplier);
+      state.sources.common.supplier = sourceRecord('directory',state.common.supplier,'Довідник постачальників',supplier.name);
       const supplierInput = $('[data-common="supplier"]');
       if (supplierInput) supplierInput.value = state.common.supplier;
       state.items.forEach(item => {
         const parts = protocolParts(item.protocol_number,true);
-        if (parts) { parts[1] = supplier.code; item.protocol_number = parts.join('-'); }
+        if (parts) { parts[1] = supplier.code; item.protocol_number = parts.join('-'); itemSources(item).protocol_number = sourceRecord('derived',item.protocol_number,'Номер зі спільними частинами та кодом довідника',supplier.name); }
       });
     }
     applyProtocolDefaults();
@@ -92,6 +133,7 @@
     const customer = event.detail?.customer;
     if (customer) {
       state.common.customer = customer.name;
+      state.sources.common.customer = sourceRecord('directory',customer.name,'Довідник замовників',customer.name);
       const input = $('[data-common="customer"]');
       if (input) input.value = customer.name;
     }
@@ -119,7 +161,7 @@
   document.addEventListener('protokol:navigate', event => switchView(event.detail.name));
   $('#prepare-assignments').addEventListener('click', () => {
     if (!state.items.length) { toast('Спочатку додайте позиції акта.', true); return; }
-    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: JSON.parse(JSON.stringify(state.items)), text: state.text, source: state.source}}));
+    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: clone(state.items), text: state.text, source: state.source, provenance:clone(state.sources)}}));
   });
   $('#prepare-excel-from-act').addEventListener('click', () => {
     if (state.busy) { toast('Дочекайтеся завершення поточної операції.', true); return; }
@@ -127,7 +169,8 @@
     document.dispatchEvent(new CustomEvent('protokol:excel-from-act', {detail: {
       common: JSON.parse(JSON.stringify(state.common)),
       items: JSON.parse(JSON.stringify(state.items)),
-      source: state.source
+      source: state.source,
+      provenance: clone(state.sources)
     }}));
   });
 
@@ -313,6 +356,8 @@
     if (item._sample_weight_manual || item._sample_weight_source === 'act') return;
     const template = state.templates.find(value => String(value.id) === String(item.template_id));
     item.sample_weight = String(template?.sample_weight || '');
+    if (item.sample_weight) itemSources(item).sample_weight = sourceRecord('template',item.sample_weight,'Обраний шаблон протоколу',template.name || template.filename || '');
+    else if (itemSources(item).sample_weight?.kind === 'template') delete itemSources(item).sample_weight;
   }
   function weightHint(item) {
     if (item._sample_weight_manual) return item.sample_weight.trim() ? 'Значення змінено вручну.' : 'Поле очищено вручну: у протоколі буде «[НЕ ЗАПОВНЕНО]».';
@@ -374,6 +419,7 @@
       const dateReset = $('[data-inherit-date]',card);
       if (dateReset) dateReset.hidden = !index || !item._protocol_date_manual;
     });
+    refreshSources();
   }
 
   function applyProtocolDefaults() {
@@ -384,9 +430,14 @@
     if (parts && supplierCode) {
       parts[1] = supplierCode;
       first.protocol_number = parts.join('-');
+      if (supplierDirectory.selected()) itemSources(first).protocol_number = sourceRecord('derived',first.protocol_number,'Номер із кодом постачальника з довідника',supplierDirectory.selected().name);
     }
     state.items.forEach((item,index) => {
-      if (index && !item._protocol_date_manual) item.protocol_date = first.protocol_date;
+      if (index && !item._protocol_date_manual) {
+        item.protocol_date = first.protocol_date;
+        if (item.protocol_date) itemSources(item).protocol_date = sourceRecord('derived',item.protocol_date,'Дата першої позиції',state.source);
+        else delete itemSources(item).protocol_date;
+      }
       item._protocol_number_overflow = false;
       if (!index || !parts || !state.sequenceEnabled) return;
       const number = [...parts];
@@ -401,6 +452,7 @@
         number[3] = individual > 9999 ? '' : String(individual).padStart(4,'0');
       }
       item.protocol_number = number.join('-');
+      itemSources(item).protocol_number = sourceRecord('derived',item.protocol_number,item._protocol_number_manual ? 'Спільні частини першої позиції; індивідуальну частину змінено вручну' : 'Послідовність від номера першої позиції',state.source);
     });
     updateProtocolControls();
   }
@@ -408,6 +460,14 @@
   function applyExtraction(data, source) {
     state.common = Object.fromEntries(commonFields.map(([key]) => [key, data.common?.[key] || '']));
     state.items = (data.items || []).map(item => ({...blankItem(), ...item, id: item.id || uid(), template_id: item.template_id || '', matches: item.matches || []}));
+    state.source = source;
+    state.method = data.method || 'text';
+    state.warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    state.sources = {common:{},items:{}};
+    const origin = state.method === 'manual' ? 'manual' : 'act';
+    const label = origin === 'manual' ? 'Введено вручну' : state.method === 'reparse' ? 'Розбір виправленого тексту акта' : 'Розпізнано з акта';
+    commonFields.forEach(([key]) => { if (String(state.common[key] || '').trim()) state.sources.common[key] = sourceRecord(origin,state.common[key],label,source); });
+    state.items.forEach(item => itemFields.forEach(([key]) => { if (String(item[key] || '').trim()) itemSources(item)[key] = sourceRecord(origin,item[key],label,source); }));
     state.sequenceEnabled = false;
     state.items.forEach((item,index) => {
       item._protocol_date_manual = !!(index && item.protocol_date.trim() && item.protocol_date !== state.items[0].protocol_date);
@@ -418,7 +478,6 @@
     supplierDirectory.syncName(state.common.supplier);
     applyProtocolDefaults();
     state.text = data.text || '';
-    state.source = source;
     $('#raw-text').value = state.text;
     $('#review-confirmed').checked = false;
     $('#download-success').hidden = true;
@@ -430,6 +489,7 @@
     document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:state.common.customer}}));
     renderItems();
     showStage('review');
+    workspaceChanged();
   }
 
   function renderWarnings(warnings) {
@@ -439,7 +499,7 @@
   }
 
   function renderCommon() {
-    $('#common-fields').innerHTML = commonFields.map(([key, label, required, placeholder]) => `<label class="field ${key === 'sampling_description' ? 'wide' : ''}"><span>${escape(label)}${required ? ' *' : ''}</span>${key === 'sampling_description' || key === 'contract' ? `<textarea data-common="${key}" rows="${key === 'sampling_description' ? 3 : 2}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>${escape(state.common[key])}</textarea>` : `<input data-common="${key}" value="${escape(state.common[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>`}</label>`).join('');
+    $('#common-fields').innerHTML = commonFields.map(([key, label, required, placeholder]) => `<label class="field ${key === 'sampling_description' ? 'wide' : ''}"><span>${escape(label)}${required ? ' *' : ''}</span>${key === 'sampling_description' || key === 'contract' ? `<textarea data-common="${key}" rows="${key === 'sampling_description' ? 3 : 2}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>${escape(state.common[key])}</textarea>` : `<input data-common="${key}" value="${escape(state.common[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>`}${sourceBadge(key,state.sources.common[key],state.common[key])}</label>`).join('');
   }
 
   function templateOptions(selected) {
@@ -459,14 +519,15 @@
   }
 
   function renderItemField(item,index,[key,label,required,placeholder,width]) {
-    if (key === 'sample_weight') return `<div class="field ${width}"><label for="protocol-row-${index}-sample_weight">${escape(label)}</label><input id="protocol-row-${index}-sample_weight" data-field="sample_weight" value="${escape(item.sample_weight)}" placeholder="${escape(placeholder)}"><small data-protocol-weight-hint>${escape(weightHint(item))}</small><button type="button" class="text-button" data-protocol-weight-reset>Взяти з шаблону</button></div>`;
+    const source = sourceBadge(key,itemSources(item)[key],item[key]);
+    if (key === 'sample_weight') return `<div class="field ${width}"><label for="protocol-row-${index}-sample_weight">${escape(label)}</label><input id="protocol-row-${index}-sample_weight" data-field="sample_weight" value="${escape(item.sample_weight)}" placeholder="${escape(placeholder)}"><small data-protocol-weight-hint>${escape(weightHint(item))}</small>${source}<button type="button" class="text-button" data-protocol-weight-reset>Взяти з шаблону</button></div>`;
     if (key === 'protocol_number' || key === 'protocol_date') {
       const number = key === 'protocol_number';
       const manual = number ? item._protocol_number_manual : item._protocol_date_manual;
       const hint = number ? protocolNumberHint(item,index) : !index ? 'Дата застосовується до решти позицій, доки її не змінено вручну.' : manual ? 'Дата змінена вручну для цієї позиції.' : 'Дата автоматично береться з першої позиції.';
-      return `<div class="field ${width}"><label for="protocol-row-${index}-${key}">${escape(label)}${required ? ' *' : ''}</label><input id="protocol-row-${index}-${key}" data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}><small ${number ? 'data-protocol-number-hint' : 'data-protocol-date-hint'}>${escape(hint)}</small><button type="button" class="text-button" ${number ? 'data-inherit-number' : 'data-inherit-date'} ${index && manual ? '' : 'hidden'}>${number ? 'Повернути номер до черги' : 'Взяти дату першої позиції'}</button></div>`;
+      return `<div class="field ${width}"><label for="protocol-row-${index}-${key}">${escape(label)}${required ? ' *' : ''}</label><input id="protocol-row-${index}-${key}" data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}><small ${number ? 'data-protocol-number-hint' : 'data-protocol-date-hint'}>${escape(hint)}</small>${source}<button type="button" class="text-button" ${number ? 'data-inherit-number' : 'data-inherit-date'} ${index && manual ? '' : 'hidden'}>${number ? 'Повернути номер до черги' : 'Взяти дату першої позиції'}</button></div>`;
     }
-    return `<label class="field ${width}"><span>${escape(label)}${required ? ' *' : ''}</span>${key === 'manufacturer' ? `<textarea rows="2" data-field="${key}" placeholder="${escape(placeholder)}">${escape(item[key])}</textarea>` : `<input data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>`}</label>`;
+    return `<label class="field ${width}"><span>${escape(label)}${required ? ' *' : ''}</span>${key === 'manufacturer' ? `<textarea rows="2" data-field="${key}" placeholder="${escape(placeholder)}">${escape(item[key])}</textarea>` : `<input data-field="${key}" value="${escape(item[key])}" placeholder="${escape(placeholder)}" ${required ? 'required' : ''}>`}${source}</label>`;
   }
 
   function renderItems() {
@@ -479,7 +540,7 @@
       return `<article class="panel item-card" data-item="${escape(item.id)}">
         <div class="item-heading"><div class="item-label"><span class="item-number">${String(index + 1).padStart(2, '0')}</span><div><h3 class="item-title">${escape(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Окремий протокол випробувань</p></div></div><button type="button" class="icon-button danger remove-item" aria-label="Видалити позицію ${index + 1}" title="Видалити позицію">${icon('trash')}</button></div>
         <div class="item-grid">${itemFields.map(field => renderItemField(item,index,field)).join('')}</div>
-        <div class="template-selection"><label class="field"><span>Шаблон протоколу *</span><select data-field="template_id" required>${templateOptions(item.template_id)}</select></label><p class="match-summary ${!matches.length ? 'no-match' : ''}">${matches.length ? 'Пропозиції за найменуванням. Перевірте відповідність продукту перед вибором.' : 'Шаблон ще не підібрано. Оберіть його вручну або знайдіть за назвою.'}</p><div class="match-actions"><button type="button" class="text-button find-matches">Знайти за найменуванням</button>${matches.map(renderMatchChip).join('')}</div></div><p class="item-footnote">Незаповнені необов’язкові поля не успадковують дані з попереднього протоколу.</p>
+        <div class="template-selection"><label class="field"><span>Шаблон протоколу *</span><select data-field="template_id" required>${templateOptions(item.template_id)}</select>${sourceBadge('template_id',itemSources(item).template_id,item.template_id)}</label><p class="match-summary ${!matches.length ? 'no-match' : ''}">${matches.length ? 'Пропозиції за найменуванням. Перевірте відповідність продукту перед вибором.' : 'Шаблон ще не підібрано. Оберіть його вручну або знайдіть за назвою.'}</p><div class="match-actions"><button type="button" class="text-button find-matches">Знайти за найменуванням</button>${matches.map(renderMatchChip).join('')}</div></div><p class="item-footnote">Незаповнені необов’язкові поля не успадковують дані з попереднього протоколу.</p>
       </article>`;
     }).join('');
     updateGeneration();
@@ -491,11 +552,13 @@
     $('#step-download').classList.remove('current', 'complete');
     $('#step-review').classList.add('current');
     $('#step-review').classList.remove('complete');
+    workspaceChanged();
   }
 
   $('#common-fields').addEventListener('input', event => {
     if (!event.target.dataset.common) return;
     state.common[event.target.dataset.common] = event.target.value;
+    markManual(state.sources.common,event.target.dataset.common,event.target.value);
     if (event.target.dataset.common === 'supplier' && supplierLine(supplierDirectory.selected()) !== event.target.value) supplierDirectory.clearSelection();
     event.target.closest('.field').classList.remove('invalid');
     invalidateReview();
@@ -508,11 +571,16 @@
     const item = state.items.find(v => String(v.id) === card.dataset.item);
     if (!item) return;
     item[input.dataset.field] = input.value;
+    markManual(itemSources(item),input.dataset.field,input.value);
     if (input.dataset.field === 'sample_weight') {
       item._sample_weight_manual = true;
       updateWeightControl(item,card);
     }
     if (input.dataset.field === 'template_id') updateWeightControl(item,card);
+    if (input.dataset.field === 'template_id') {
+      const selected = state.templates.find(value => String(value.id) === String(item.template_id));
+      itemSources(item).template_id = sourceRecord('manual',item.template_id,'Шаблон обрано вручну',selected?.name || '');
+    }
     const first = state.items[0] === item;
     if (input.dataset.field === 'protocol_date') {
       if (!first) item._protocol_date_manual = true;
@@ -527,6 +595,7 @@
       $('.item-title', card).textContent = input.value || 'Новий зразок';
       item.matches = [];
       item.template_id = '';
+      markManual(itemSources(item),'template_id','');
       $('select[data-field="template_id"]', card).value = '';
       $$('.match-chip', card).forEach(node => node.remove());
       $('.match-summary', card).textContent = 'Назву змінено. Знайдіть шаблон знову або оберіть його вручну.';
@@ -571,12 +640,15 @@
     if (event.target.closest('.remove-item')) {
       if (item.product_name && !window.confirm(`Видалити позицію «${item.product_name}»?`)) return;
       state.items = state.items.filter(v => v !== item);
+      delete state.sources.items[item.id];
       invalidateReview();
       renderItems();
     }
     const matchButton = event.target.closest('[data-match]');
     if (matchButton) {
       item.template_id = matchButton.dataset.match;
+      const selected = state.templates.find(value => String(value.id) === String(item.template_id));
+      itemSources(item).template_id = sourceRecord('manual',item.template_id,'Підказку шаблону обрано вручну',selected?.name || '');
       updateWeightControl(item,card);
       $('select[data-field="template_id"]', card).value = item.template_id;
       $('select[data-field="template_id"]', card).closest('.field').classList.remove('invalid');
@@ -619,11 +691,13 @@
     if (!window.confirm('Почати новий акт? Поточні незавантажені дані буде очищено.')) return;
     revokeSourceUrl();
     state.items = []; state.common = {}; state.text = ''; state.source = ''; state.sequenceEnabled = false;
+    state.sources = {common:{},items:{}}; state.method = ''; state.warnings = [];
     supplierDirectory.clearSelection();
     document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:''}}));
     $('#review-confirmed').checked = false;
     $('#download-success').hidden = true;
     showStage('upload');
+    workspaceChanged();
     window.scrollTo({top: 0, behavior: 'smooth'});
   });
   $('#reparse').addEventListener('click', async () => {
@@ -636,26 +710,69 @@
       const response = await jsonPost('/api/parse', {text});
       const data = await response.json();
       if (!data.text) data.text = text;
+      data.method = 'reparse';
       applyExtraction(data, state.source || 'Введений текст акта');
       toast('Текст розібрано. Перевірте оновлені поля.');
     } catch (error) { toast(error.message, true); }
     finally { button.disabled = false; button.textContent = 'Повторно розібрати текст'; }
   });
 
-  function missingFields() {
-    const missing = [];
+  $('#raw-text').addEventListener('input',event => {
+    state.text = event.target.value;
+    invalidateReview();
+  });
+
+  function validDate(value) {
+    const months = ['січня','лютого','березня','квітня','травня','червня','липня','серпня','вересня','жовтня','листопада','грудня'];
+    const text = String(value || '').trim().replace(/\.$/,'').trim();
+    let match, day, month, year;
+    if ((match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/))) [,year,month,day] = match.map(Number);
+    else if ((match = text.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/))) [,day,month,year] = match.map(Number);
+    else if ((match = text.toLocaleLowerCase('uk').match(/^[«"']?(\d{1,2})[»"']?\s+([а-яіїєґ]+)\s+(\d{4})\s+року$/))) { day=Number(match[1]); month=months.indexOf(match[2])+1; year=Number(match[3]); }
+    else return false;
+    if (!day || !month || !year || year > 9999) return false;
+    const date = new Date(0); date.setUTCFullYear(year,month-1,day); date.setUTCHours(0,0,0,0);
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month-1 && date.getUTCDate() === day;
+  }
+  function itemSelector(item, field) {
+    return `#items-list [data-item="${CSS.escape(String(item.id))}"] [data-field="${CSS.escape(field)}"]`;
+  }
+  function formIssues(includeWarnings = true) {
+    if (!state.items.length) return [];
+    const issues = [];
+    const add = (message,selector,level='error',field='') => issues.push({message,selector,level,field,section:'acts'});
+    if (state.items.length > 100) add('За один раз можна створити не більше 100 протоколів. Розділіть позиції на кілька актів.','#items-list');
     const numbers = new Set();
-    commonFields.forEach(([key, label, required]) => { if (required && !String(state.common[key] || '').trim()) missing.push(label); });
+    commonFields.forEach(([key, label, required]) => { if (required && !String(state.common[key] || '').trim()) add(label,`[data-common="${key}"]`,'error',key); });
     state.items.forEach((item, index) => {
-      itemFields.forEach(([key, label, required]) => { if (required && !String(item[key] || '').trim()) missing.push(`Позиція ${index + 1}: ${label.toLocaleLowerCase('uk')}`); });
+      itemFields.forEach(([key, label, required]) => { if (required && !String(item[key] || '').trim()) add(`Позиція ${index + 1}: ${label.toLocaleLowerCase('uk')}`,itemSelector(item,key),'error',key); });
       const number = String(item.protocol_number || '').trim().replace(/^№\s*/, '').replace(/[‐‑‒–—−]/g, '-').replace(/\s+/g, '');
       const parts = number.split('-');
-      if ((parts.length === 5 && parts.every(part => /^\d*$/.test(part)) && !protocolParts(number)) || (!index && state.sequenceEnabled && !protocolParts(number))) missing.push(`Позиція ${index + 1}: повний номер у форматі 87-015-3000-1305-2`);
-      if (number && numbers.has(number)) missing.push(`Позиція ${index + 1}: номер протоколу повторюється`);
+      if ((parts.length === 5 && parts.every(part => /^\d*$/.test(part)) && !protocolParts(number)) || (!index && state.sequenceEnabled && !protocolParts(number))) add(`Позиція ${index + 1}: повний номер у форматі 87-015-3000-1305-2`,itemSelector(item,'protocol_number'),'error','protocol_number');
+      if (number && numbers.has(number)) add(`Позиція ${index + 1}: номер протоколу повторюється`,itemSelector(item,'protocol_number'),'error','protocol_number');
       numbers.add(number);
-      if (!item.template_id || !state.templates.some(t => String(t.id) === String(item.template_id))) missing.push(`Позиція ${index + 1}: шаблон`);
+      if (String(item.protocol_date || '').trim() && !validDate(item.protocol_date)) add(`Позиція ${index + 1}: некоректна дата протоколу; вкажіть справжню дату ДД.ММ.РРРР`,itemSelector(item,'protocol_date'),'error','protocol_date');
+      if (!item.template_id || !state.templates.some(t => String(t.id) === String(item.template_id))) add(`Позиція ${index + 1}: шаблон`,itemSelector(item,'template_id'),'error','template_id');
+      if (includeWarnings) {
+        const manufacturer = String(item.manufacturer || '').trim();
+        const codes = new Set(manufacturer.match(/(?<!\d)\d{8}(?!\d)/g) || []);
+        if (codes.size !== 1) add(`Excel, позиція ${index + 1}: ${codes.size > 1 ? 'знайдено кілька кодів виробника' : 'код ЄДРПОУ виробника відсутній'}; перевірте поле перед експортом`,itemSelector(item,'manufacturer'),'warning','manufacturer');
+        const dates = String(item.manufacture_date || '').match(/\d{1,2}[./]\d{1,2}[./]\d{4}|\d{4}-\d{2}-\d{2}/g) || [];
+        if (dates.some(value => !validDate(value))) add(`Позиція ${index + 1}: перевірте дату виготовлення або термін придатності`,itemSelector(item,'manufacture_date'),'warning','manufacture_date');
+      }
     });
-    return missing;
+    if (includeWarnings) {
+      const supplier = String(state.common.supplier || '');
+      const explicit = [...supplier.matchAll(/(?:код\s*)?[ЄЕ]ДРПОУ\s*:?\s*(\d{8}(?:\d{2})?)(?!\d)/ig)].map(value => value[1]);
+      const codes = new Set(explicit.length ? explicit : /^\d{8}(?:\d{2})?$/.test(supplier.trim()) ? [supplier.trim()] : supplier.match(/(?<!\d)\d{8}(?!\d)/g) || []);
+      const knownCode = supplierDirectory.selected()?.edrpou;
+      if (codes.size > 1 || !codes.size && !/^\d{8}(?:\d{2})?$/.test(String(knownCode || ''))) add(`Excel: ${codes.size > 1 ? 'код постачальника неоднозначний' : 'код ЄДРПОУ постачальника відсутній'}; клітинка залишиться порожньою без однозначного коду`,`[data-common="supplier"]`,'warning','supplier');
+      state.warnings.forEach(message => add(String(message),'#raw-text','warning','text'));
+    }
+    return issues;
+  }
+  function missingFields() {
+    return formIssues(false).map(issue => issue.message);
   }
   function updateGeneration() {
     const missing = missingFields();
@@ -671,7 +788,10 @@
   }
   $('#review-confirmed').addEventListener('change', updateGeneration);
   $('#generate').addEventListener('click', async () => {
-    if (missingFields().length || !state.items.length || !$('#review-confirmed').checked || state.busy) return;
+    if (missingFields().length || !state.items.length || !$('#review-confirmed').checked || state.busy) {
+      if (!state.busy) window.OZWorkspace?.review('acts');
+      return;
+    }
     const button = $('#generate');
     state.busy = true;
     button.disabled = true;
@@ -859,9 +979,90 @@
     };
   }
 
-  loadTemplates();
-  supplierDirectory.load().then(() => {
+  const templatesReady = loadTemplates();
+  const suppliersReady = supplierDirectory.load().then(() => {
     supplierDirectory.syncName(state.common.supplier);
     applyProtocolDefaults();
   }).catch(error => toast(`Довідник постачальників: ${error.message}`,true));
+
+  function snapshotAct() {
+    if (!state.items.length && !state.text && !Object.values(state.common).some(value => String(value || '').trim())) return null;
+    return clone({common:state.common,items:state.items,text:state.text,source:state.source,method:state.method,warnings:state.warnings,sequenceEnabled:state.sequenceEnabled,sources:state.sources});
+  }
+  function restoredSource(value) {
+    if (!value || typeof value !== 'object' || !Object.hasOwn(sourceLabels,value.kind)) return null;
+    return {
+      kind:value.kind,
+      label:String(value.label || sourceLabels[value.kind]).slice(0,500),
+      source:String(value.source || '').slice(0,1000),
+      original:String(value.original || '').slice(0,15000),
+      previous:String(value.previous || '').slice(0,500)
+    };
+  }
+  async function restoreAct(data) {
+    if (!data || typeof data !== 'object' || !Array.isArray(data.items) || data.items.length > 500) throw new Error('Не вдалося прочитати позиції з чернетки акта.');
+    if (state.busy) throw new Error('Дочекайтеся завершення поточної операції перед відновленням чернетки.');
+    await Promise.all([templatesReady,suppliersReady]);
+    revokeSourceUrl();
+    state.common = Object.fromEntries(commonFields.map(([key]) => [key, typeof data.common?.[key] === 'string' ? data.common[key] : '']));
+    state.sources = {common:{},items:{}};
+    commonFields.forEach(([key]) => {
+      const source = restoredSource(data.sources?.common?.[key]);
+      if (source) state.sources.common[key] = source;
+    });
+    const seen = new Set();
+    let missingTemplates = 0;
+    state.items = data.items.filter(item => item && typeof item === 'object').map(value => {
+      const item = blankItem();
+      const previousId = String(value.id || '');
+      item.id = previousId && !seen.has(previousId) ? previousId : uid(); seen.add(item.id);
+      itemFields.forEach(([key]) => { item[key] = typeof value[key] === 'string' ? value[key] : ''; });
+      item.template_id = typeof value.template_id === 'string' ? value.template_id : '';
+      item.matches = Array.isArray(value.matches) ? value.matches.filter(match => match && typeof match === 'object').slice(0,5) : [];
+      item._protocol_date_manual = !!value._protocol_date_manual;
+      item._protocol_number_manual = !!value._protocol_number_manual;
+      item._sample_weight_manual = !!value._sample_weight_manual;
+      item._sample_weight_source = value._sample_weight_source === 'act' || value._sample_weight_source === 'template' ? value._sample_weight_source : item.sample_weight ? 'act' : 'template';
+      [...itemFields.map(([key]) => key),'template_id'].forEach(key => {
+        const source = restoredSource(data.sources?.items?.[previousId]?.[key]);
+        if (source) itemSources(item)[key] = source;
+      });
+      if (state.libraryLoaded && item.template_id && !state.templates.some(template => String(template.id) === item.template_id)) {
+        item.template_id = ''; missingTemplates += 1;
+        delete itemSources(item).template_id;
+      }
+      return item;
+    });
+    state.text = typeof data.text === 'string' ? data.text : '';
+    state.source = typeof data.source === 'string' ? data.source : '';
+    state.method = typeof data.method === 'string' ? data.method : '';
+    state.warnings = Array.isArray(data.warnings) ? data.warnings.filter(value => typeof value === 'string') : [];
+    state.sequenceEnabled = !!data.sequenceEnabled;
+    supplierDirectory.syncName(state.common.supplier);
+    $('#raw-text').value = state.text;
+    $('#review-confirmed').checked = false;
+    $('#download-success').hidden = true;
+    const previewNote = state.method === 'manual' ? '' : '<small>Оригінальний файл не зберігається в чернетці. Для звірки відкрийте його на комп’ютері.</small>';
+    $('#source-banner').innerHTML = `${icon('file')}<div><strong>${escape(state.source || 'Відновлена чернетка акта')}</strong><small>Чернетку відновлено · Позицій: ${state.items.length}</small>${previewNote}</div>`;
+    renderWarnings(state.warnings);
+    renderCommon(); renderItems();
+    showStage(state.items.length || state.text || Object.values(state.common).some(Boolean) ? 'review' : 'upload');
+    document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:state.common.customer}}));
+    if (missingTemplates) toast(`У чернетці ${missingTemplates} вибраних шаблонів уже немає в бібліотеці. Оберіть їх повторно.`,true);
+    toast('Чернетку акта відновлено. Перед створенням документів перевірте дані повторно.');
+  }
+  function revealActIssue(issue) {
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
+    const target = issue.selector ? $(issue.selector) : $('#items-list');
+    if (!target) return;
+    const details = target.closest('details');
+    if (details) details.open = true;
+    target.closest('.field')?.classList.add('invalid');
+    target.scrollIntoView({behavior:'smooth',block:'center'});
+    target.focus?.({preventScroll:true});
+  }
+  window.OZWorkspace?.register('acts',{
+    title:'Акт і протоколи', snapshot:snapshotAct, restore:restoreAct,
+    issues:() => formIssues(), reveal:revealActIssue,
+  });
 })();
