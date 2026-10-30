@@ -269,3 +269,12 @@ def test_browser_opens_after_server_readiness(monkeypatch):
     monkeypatch.setattr(launch, "open_app", lambda *a, **k: events.append(("browser", True)))
     assert launch.serve(Path("python"), {}) == 0
     assert events == [("ready", False), ("ready", False), ("ready", True), ("browser", True)]
+
+
+
+def test_fresh_install_uses_bundled_models_without_network(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare_ocr.urllib.request, "urlopen", lambda *a, **k: pytest.fail("Network used"))
+    prepare_ocr.prepare_models(tmp_path)
+    for language, checksum in prepare_ocr.CHECKSUMS.items():
+        assert sha256((tmp_path / f"{language}.traineddata").read_bytes()).hexdigest() == checksum
+    prepare_ocr.prepare_models(tmp_path, download=False)

@@ -15,6 +15,7 @@ CHECKSUMS = {
     "eng": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
 }
 MAX_MODEL_BYTES = 30 * 1024 * 1024
+BUNDLED_DIRECTORY = Path(__file__).resolve().parents[1] / "assets/tessdata"
 DEFAULT_DIRECTORY = Path(__file__).resolve().parents[1] / ".local/tessdata"
 
 
@@ -32,9 +33,21 @@ def prepare_models(directory: Path = DEFAULT_DIRECTORY, *, download: bool = True
         if not download:
             raise RuntimeError(f"Модель OCR {language} отсутствует или повреждена. Запустите START_WINDOWS.bat для установки.")
         url = f"https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/{COMMIT}/{language}.traineddata"
-        print(f"Загрузка языковой модели {language}…")
-        with urllib.request.urlopen(url, timeout=60) as response:
-            data = response.read(MAX_MODEL_BYTES + 1)
+        bundled = BUNDLED_DIRECTORY / f"{language}.traineddata"
+        data = bundled.read_bytes() if bundled.is_file() else b""
+        if sha256(data).hexdigest() == expected:
+            print(f"OCR {language}: установка из комплекта программы…")
+        else:
+            print(f"Загрузка языковой модели {language}…")
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    data = response.read(MAX_MODEL_BYTES + 1)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Не удалось получить модель OCR {language}. Распакуйте ZIP программы целиком, "
+                    "включая assets/tessdata. Если модели нет в архиве, проверьте Интернет и DNS "
+                    f"для raw.githubusercontent.com и повторите запуск. Причина: {exc}"
+                ) from exc
         if len(data) > MAX_MODEL_BYTES or sha256(data).hexdigest() != expected:
             raise RuntimeError(f"Неверная контрольная сумма модели OCR {language}. Файл не установлен; повторите загрузку позже.")
         directory.mkdir(parents=True, exist_ok=True)
