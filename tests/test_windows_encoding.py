@@ -14,6 +14,13 @@ from app.documents import inspect_template
 
 def test_cp1251_default_supports_startup_restart_and_unicode_documents(tmp_path, monkeypatch):
     original_open = io.open
+    original_text_encoding = io.text_encoding
+
+    def legacy_text_encoding(encoding, stacklevel=2):
+        # Path.read_text resolves None before calling io.open. Under
+        # PYTHONUTF8=1 it becomes "utf-8", bypassing our legacy-default mock.
+        # Simulate the locale default while retaining all explicit encodings.
+        return "locale" if encoding is None else original_text_encoding(encoding, stacklevel)
 
     def cp1251_open(file, mode="r", buffering=-1, encoding=None, errors=None,
                     newline=None, closefd=True, opener=None):
@@ -23,6 +30,7 @@ def test_cp1251_default_supports_startup_restart_and_unicode_documents(tmp_path,
 
     monkeypatch.setattr(io, "open", cp1251_open)
     monkeypatch.setattr(builtins, "open", cp1251_open)
+    monkeypatch.setattr(io, "text_encoding", legacy_text_encoding)
     root = Path(__file__).resolve().parents[1]
     # Prove the simulated default reproduces the user's actual decoding failure.
     with pytest.raises(UnicodeDecodeError):
