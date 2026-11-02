@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timedelta
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 import re
@@ -50,6 +51,23 @@ class LetterRecord(BaseModel):
         return value
 
 
+class LetterContent(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_max_length=12000)
+    recipients: list[str] = Field(min_length=1, max_length=10)
+    body: list[str] = Field(min_length=1, max_length=100)
+    attachments: list[str] = Field(default_factory=list, max_length=400)
+    position: str = Field(min_length=1, max_length=1000)
+    signer: str = Field(min_length=1, max_length=500)
+    contact: str = Field(default='', max_length=500)
+
+    @field_validator('recipients', 'body')
+    @classmethod
+    def not_blank(cls, value):
+        if not any(line.strip() for line in value):
+            raise ValueError('Заповніть адресата та основний текст листа.')
+        return value
+
+
 class LetterBatch(BaseModel):
     records: list[LetterRecord] = Field(min_length=1, max_length=100)
     confirmed: bool = False
@@ -60,6 +78,7 @@ class LetterBatch(BaseModel):
     contact: str = Field(default='', max_length=500)
     extra_attachments: str = Field(default='', max_length=3000)
     include_excel: bool = True
+    edits: dict[str, LetterContent] = Field(default_factory=dict, max_length=101)
 
 
 def workbook_records(data):
@@ -247,11 +266,33 @@ def _attachment_paragraph(source, value):
     return paragraph
 
 
-def render_letter(records, batch, general):
+def _default_content(records, batch, general, paragraphs):
+    introduction = next(p for p in paragraphs if _paragraph_text(p).startswith('Надсилаю на Вашу адресу'))
+    recipients = [_paragraph_text(p) for p in paragraphs[:paragraphs.index(introduction)] if _paragraph_text(p)]
+    text = _paragraph_text(introduction)
+    if general:
+        pairs = list(dict.fromkeys((r.supplier, r.code) for r in records))
+        suppliers = ', '.join('постачальника ' + name + (' – код постачальника ' + code if code else '')
+                              for name, code in pairs)
+        text = text.split(', постачальника', 1)[0] + ', ' + suppliers + '.'
+    else:
+        recipients = [records[0].supplier]
+    attachments = [f'Протокол випробувань №{r.number} від {r.date} року — на {r.pages} арк. в 1 прим.' for r in records]
+    if general:
+        attachments += [s.strip() for s in batch.extra_attachments.splitlines() if s.strip()]
+        if batch.include_excel:
+            attachments.append('Зведена таблиця у форматі Excel «Зведена інформація щодо протоколів випробувань».')
+    return LetterContent(recipients=recipients, body=[text], attachments=attachments,
+                         position=batch.general_position if general else batch.company_position,
+                         signer=batch.general_signer if general else batch.company_signer, contact=batch.contact)
+
+
+def render_letter(records, batch, general, content=None):
     parts, infos = _parts((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
     root = xml(parts['word/document.xml'])
     body = root.find('w:body', WN)
     paragraphs = body.findall('w:p', WN)
+    content = content or _default_content(records, batch, general, paragraphs)
     introduction = next(p for p in paragraphs if _paragraph_text(p).startswith('Надсилаю на Вашу адресу'))
     first = next(p for p in paragraphs if _paragraph_text(p).startswith('Додаток:'))
     start = paragraphs.index(first)
@@ -269,39 +310,39 @@ def render_letter(records, batch, general):
     stamp = body.find('w:tbl', WN)
     email = next(p for p in stamp.findall('.//w:p', WN) if 'E-mail:' in _paragraph_text(p))
     _fill_text(email.getnext(), 'Код ЄДРПОУ 26614722')
-    if general:
-        pairs = list(dict.fromkeys((r.supplier, r.code) for r in records))
-        suppliers = ', '.join('постачальника ' + name + (' – код постачальника ' + code if code else '')
-                              for name, code in pairs)
-        text = _paragraph_text(introduction).split(', постачальника', 1)[0]
-        _fill_text(introduction, text + ', ' + suppliers + '.')
-    else:
-        recipient = next(p for p in paragraphs[:paragraphs.index(introduction)] if _paragraph_text(p))
-        _fill_text(recipient, records[0].supplier)
+    recipients = [p for p in paragraphs[:paragraphs.index(introduction)] if _paragraph_text(p)]
+    for i, paragraph in enumerate(recipients):
+        _fill_text(paragraph, content.recipients[i] if i < len(content.recipients) else '')
+    insert_at = body.index(recipients[-1]) + 1
+    for i, value in enumerate(content.recipients[len(recipients):]):
+        body.insert(insert_at + i, _attachment_paragraph(recipients[-1], value))
+    _fill_text(introduction, content.body[0])
+    insert_at = body.index(introduction) + 1
+    for i, value in enumerate(content.body[1:]):
+        body.insert(insert_at + i, _attachment_paragraph(introduction, value))
 
-    items = [(first if i == 0 else continuation,
-              f'Протокол випробувань №{r.number} від {r.date} року — на {r.pages} арк. в 1 прим.')
-             for i, r in enumerate(records)]
+    styles = [first if i == 0 else continuation for i in range(len(records))]
     if general:
-        items += [(extra, s.strip()) for s in batch.extra_attachments.splitlines() if s.strip()]
+        styles += [extra for s in batch.extra_attachments.splitlines() if s.strip()]
         if batch.include_excel:
-            items.append((excel, 'Зведена таблиця у форматі Excel «Зведена інформація щодо протоколів випробувань».'))
+            styles.append(excel)
     # Rebuild only the variable list, cloning its first/continuation styles.
     # Include any bookmarks between those paragraphs in the replaced range.
     insert_at, end = body.index(first), body.index(attachments[-1])
     for child in list(body)[insert_at:end + 1]:
         body.remove(child)
-    for i, (source, text) in enumerate(items, 1):
+    for i, text in enumerate(content.attachments, 1):
+        source = first if i == 1 else styles[i - 1] if i <= len(styles) else continuation
         value = ('Додаток: ' if i == 1 else '') + f'{i}. ' + text
         body.insert(insert_at + i - 1, _attachment_paragraph(source, value))
 
     position, signer, contact = [p for p in paragraphs[start + len(attachments):] if _paragraph_text(p)]
-    _fill_text(position, batch.general_position if general else batch.company_position)
+    _fill_text(position, content.position)
     section = body.find('w:sectPr', WN)
     margins = section.find('w:pgMar', WN)
     text_width = (int(section.find('w:pgSz', WN).get(Q('w')))
                   - int(margins.get(Q('left'))) - int(margins.get(Q('right'))))
-    _fill_signer(signer, batch.general_signer if general else batch.company_signer, text_width)
+    _fill_signer(signer, content.signer, text_width)
     # Let Word paginate a long list without separating the position and signature.
     for paragraph in (position, signer):
         properties = paragraph.find('w:pPr', WN)
@@ -309,7 +350,7 @@ def render_letter(records, batch, general):
             properties.insert(0, E.Element(Q('keepLines')))
         if paragraph is position and properties.find('w:keepNext', WN) is None:
             properties.insert(0, E.Element(Q('keepNext')))
-    _fill_text(contact, batch.contact)
+    _fill_text(contact, content.contact)
     parts['word/document.xml'] = E.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
     out = BytesIO()
     with ZipFile(out, 'w', ZIP_DEFLATED) as z:
@@ -318,8 +359,7 @@ def render_letter(records, batch, general):
     return out.getvalue()
 
 
-def generate(batch):
-    if not batch.confirmed: raise ValueError('Підтвердьте перевірку реквізитів і кількості аркушів.')
+def _letter_jobs(batch):
     numbers=[protocol_key(r.number) for r in batch.records]
     if any(not re.fullmatch(r'\d+(?:-\d+){2,}', n) for n in numbers) or len(numbers)!=len(set(numbers)):
         raise ValueError('Номери протоколів мають бути коректними й унікальними.')
@@ -327,17 +367,47 @@ def generate(batch):
     for r,n in zip(batch.records,numbers):
         r.number=n
         groups.setdefault(' '.join(r.supplier.casefold().split()),[]).append(r)
-    out=BytesIO()
-    with ZipFile(out,'w',ZIP_DEFLATED) as z:
-        z.writestr('Загальна_супровідна.docx',render_letter(batch.records,batch,True))
-        for i,records in enumerate(groups.values(),1):
-            name=re.sub(r'[^\w .«»()-]','_',records[0].supplier)[:100].strip(' .')
-            z.writestr(f'{i:02d}_Супровід_{name}.docx',render_letter(records,batch,False))
+    jobs = [('general', 'Загальна супровідна', 'Загальна_супровідна.docx', batch.records, True)]
+    for i, (key, records) in enumerate(groups.items(), 1):
+        name = re.sub(r'[^\w .«»()-]', '_', records[0].supplier)[:100].strip(' .')
+        identity = 'company-' + sha256(key.encode('utf-8')).hexdigest()[:20]
+        jobs.append((identity, records[0].supplier, f'{i:02d}_Супровід_{name}.docx', records, False))
+    if set(batch.edits) - {job[0] for job in jobs}:
+        raise ValueError('Склад фірм змінився. Оновіть листи для редагування перед завантаженням.')
+    return jobs
+
+
+def preview(batch):
+    letters = []
+    for identity, title, filename, records, general in _letter_jobs(batch):
+        parts, _ = _parts((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
+        paragraphs = xml(parts['word/document.xml']).findall('w:body/w:p', WN)
+        content = batch.edits.get(identity) or _default_content(records, batch, general, paragraphs)
+        letters.append(dict(id=identity, title=title, filename=filename, content=content.model_dump()))
+    return dict(letters=letters)
+
+
+def generate(batch):
+    if not batch.confirmed: raise ValueError('Підтвердьте перевірку реквізитів і кількості аркушів.')
+    out = BytesIO()
+    with ZipFile(out, 'w', ZIP_DEFLATED) as z:
+        for identity, title, filename, records, general in _letter_jobs(batch):
+            z.writestr(filename, render_letter(records, batch, general, batch.edits.get(identity)))
     return out.getvalue()
 
 
 def cover_letters_router(settings):
     router=APIRouter(prefix='/api/cover-letters',tags=['cover-letters'])
+
+    @router.post('/preview')
+    async def edit_preview(payload: str = Form(...)):
+        try:
+            if len(payload) > 3*1024*1024:
+                raise ValueError('Дані комплекту завеликі.')
+            batch = LetterBatch.model_validate_json(payload)
+            return await run_in_threadpool(preview, batch)
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @router.post('/import')
     async def read(files: list[UploadFile]=File(...)):

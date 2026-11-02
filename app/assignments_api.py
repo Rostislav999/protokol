@@ -218,10 +218,9 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
                 if template["department"] != department:
                     raise HTTPException(422, f"Позиція {index}: шаблон належить іншому відділенню.")
                 exact_ids = {c["id"] for c in candidates["departments"][department]}
-                review_ids = {c["id"] for c in candidates.get("review_departments", {}).get(department, [])}
                 if template["id"] not in exact_ids:
-                    if template["id"] not in review_ids or not selection.allow_standard_override:
-                        raise HTTPException(422, f"Позиція {index}: шаблон не відповідає продукту та НД. Відмінний НД потребує окремого підтвердження.")
+                    if not selection.allow_standard_override:
+                        raise HTTPException(422, f"Позиція {index}: шаблон не знайдено автоматично. Підтвердьте ручний вибір шаблону; у завданні залишаться його НД та методи.")
                 selected.append((index - 1, department, template, selection))
         today = kyiv_today()
 
@@ -250,6 +249,7 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
                     filename = f"{numbers[item_index]} {department_name} {safe_name}.docx"
                     bundle.writestr(filename, data)
                     summary.extend([filename, "НД з акта: " + item.standard, "НД завдання: " + template["standard"],
+                                    "Вибір шаблону: " + ("ручний, підтверджений" if selection.allow_standard_override else "за рекомендацією"),
                                     "Вага: " + (weight or "[НЕ ЗАПОВНЕНО]"), ""])
                 bundle.writestr("ПЕРЕВІРИТИ.txt", "\n".join(summary))
                 bundle.writestr("НУМЕРАЦІЯ.json", json.dumps({"issue_date": today, "issuer": issuer, "samples": [

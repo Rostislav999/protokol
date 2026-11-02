@@ -30,7 +30,26 @@ SCRIPT = r'''void (async () => {try {
     const templates=(await(await fetch('/api/assignments/templates')).json()).templates;
     const template=templates.find(value=>value.sample_weight && value.standard && value.product_name);
     assert(template,'Missing assignment fixture');
-    await providers.assignments.restore({source:'act.pdf',text:'Текст акта',initialNumber:'1400',items:[{id:'saved-assignment',product_name:template.product_name,standard:template.standard,departments:{[template.department]:{enabled:true,template_id:template.id,sample_weight:'7 кг',weight_edited:true}}}]});
+    await providers.assignments.restore({source:'act.pdf',text:'Текст акта',initialNumber:'1400',items:[{id:'saved-assignment',product_name:'Назва, яку автоматичний підбір не впізнав',standard:'НД з акта для ручного вибору',departments:{[template.department]:{enabled:true,template_id:template.id,sample_weight:'7 кг',weight_edited:true}}}]});
+    const templateSelect=document.querySelector(`[data-dept-template="${template.department}"]`);
+    assert(templateSelect.value===template.id,'Manual template outside recommendations was lost');
+    assert(templateSelect.options.length===templates.filter(t=>t.department===template.department).length+1,'Full template library is not available');
+    input(`[data-dept-search="${template.department}"]`,template.filename);
+    assert(templateSelect.value===template.id,'Template search cleared the selected value');
+    const protocol=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true,common:{customer:'Замовник',supplier:'ТОВ «Приклад»',sampling_description:'Одеса'},items:[{id:'cover-fixture',protocol_number:'87-015-3000-1400-2',protocol_date:'02.11.2026',product_name:'Свинина тушкована',template_id:'sample-1053'}]})});
+    assert(protocol.ok,'Cover letter protocol fixture failed');
+    const files=new DataTransfer(); files.items.add(new File([await protocol.arrayBuffer()],'protocols.zip',{type:'application/zip'}));
+    const upload=document.querySelector('[data-files]'); upload.files=files.files; upload.dispatchEvent(new Event('change',{bubbles:true}));
+    document.querySelector('[data-import]').click();
+    await wait(()=>document.querySelector('[data-records] [data-key="pages"]'));
+    input('[data-records] [data-key="supplier"]','ТОВ «Приклад»');
+    input('[data-records] [data-key="pages"]','3');
+    await wait(()=>!document.querySelector('[data-preview]').disabled);
+    document.querySelector('[data-preview]').click();
+    await wait(()=>document.querySelectorAll('[data-letter]').length===2);
+    input('[data-letter="general"] [data-letter-field="body"]','Текст, відредагований перед завантаженням.\nДругий абзац.');
+    assert(!document.querySelector('[data-confirm]').checked,'Edited letter kept its old approval');
+    assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value.includes('Другий абзац.'),'Letter editor lost paragraphs');
     await window.OZWorkspace.flush();
     const saved=await(await fetch('/api/workspace/drafts')).json();
     assert(Object.keys(saved.sections).length===3,'All three drafts were not saved');
@@ -53,6 +72,9 @@ SCRIPT = r'''void (async () => {try {
     assert(providers.excel.issues().some(issue=>issue.selector==='#excel-template' && issue.level==='error'),'Missing source workbook did not block export');
     const selection=Object.values(providers.assignments.snapshot().items[0].departments).find(value=>value.enabled);
     assert(selection.sample_weight==='7 кг' && selection.weight_edited,'Manual assignment weight did not restore');
+    assert(selection.template_id,'Manual template choice did not restore');
+    const manualReview=document.querySelector('[data-dept-override]');
+    assert(manualReview && !manualReview.checked,'Manual choice review was not reset on restore');
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
     input('[data-field="protocol_date"]','31.02.2026');
     document.querySelector('#workspace-review').click();
@@ -62,7 +84,7 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(document.activeElement.dataset.field==='protocol_date','Review link did not focus the incorrect date');
     await window.OZWorkspace.flush();
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['three durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','linked date review']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['three durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','cover letter editor before download','linked date review']}));
   }
 } catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error)}));}})();'''
 

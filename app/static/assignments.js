@@ -479,21 +479,37 @@
     finally { button.disabled = false; }
   });
 
+  function templateOptions(item, departmentId, query = '') {
+    const matches = new Set((item.matches[departmentId] || []).map(t => t.id));
+    const reviews = new Set((item.reviewMatches[departmentId] || []).map(t => t.id));
+    const selected = item.departments[departmentId].template_id;
+    const terms = query.toLocaleLowerCase('uk').trim().split(/\s+/).filter(Boolean);
+    const templates = state.templates.filter(t => t.department === departmentId && (t.id === selected ||
+      terms.every(term => [t.name,t.product_name,t.standard,t.filename,...(t.aliases || [])].join(' ').toLocaleLowerCase('uk').includes(term))));
+    const groups = [
+      ['Назва та НД збігаються', templates.filter(t => matches.has(t.id))],
+      ['Рекомендації з іншим НД', templates.filter(t => !matches.has(t.id) && reviews.has(t.id))],
+      ['Вся база відділення — ручний вибір', templates.filter(t => !matches.has(t.id) && !reviews.has(t.id))]
+    ];
+    return `<option value="">Оберіть шаблон з усієї бази відділення</option>` + groups.map(([label,entries]) => entries.length
+      ? `<optgroup label="${label}">${entries.map(t => `<option value="${esc(t.id)}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)} · ${esc(t.filename)}</option>`).join('')}</optgroup>` : '').join('');
+  }
+  function needsManualReview(item, departmentId) {
+    const id = item.departments[departmentId].template_id;
+    return !!id && !(item.matches[departmentId] || []).some(t => t.id === id);
+  }
   function renderDepartment(item, department) {
     const selection = item.departments[department.id];
     const matches = (item.matches[department.id] || []).filter(m => state.templates.some(t => t.id === m.id));
-    const reviewMatches = (item.reviewMatches[department.id] || []).filter(m => state.templates.some(t => t.id === m.id) && !matches.some(v => v.id === m.id));
-    const offered = new Set(matches.map(m => String(m.id)));
-    const options = state.templates.filter(t => t.department === department.id && offered.has(String(t.id)));
-    const reviewOptions = state.templates.filter(t => t.department === department.id && reviewMatches.some(m => m.id === t.id));
     const selectedTemplate = state.templates.find(t => t.id === selection.template_id);
-    const needsOverride = reviewMatches.some(m => m.id === selection.template_id);
+    const needsOverride = needsManualReview(item, department.id);
     return `<section class="assignment-department ${selection.enabled ? 'enabled' : ''}" data-department="${department.id}">
       <label class="assignment-dept-toggle"><input type="checkbox" data-dept-enabled="${department.id}" ${selection.enabled ? 'checked' : ''}><strong>${department.name}</strong></label>
-      <div class="assignment-dept-fields" ${selection.enabled ? '' : 'hidden'}><label class="field"><span>Шаблон завдання *</span><select data-dept-template="${department.id}"><option value="">Оберіть відповідний шаблон</option>${options.length ? `<optgroup label="Назва та НД збігаються">${options.map(t => `<option value="${esc(t.id)}" ${t.id === selection.template_id ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)}</option>`).join('')}</optgroup>` : ''}${reviewOptions.length ? `<optgroup label="Інший НД — потрібна перевірка">${reviewOptions.map(t => `<option value="${esc(t.id)}" ${t.id === selection.template_id ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)}</option>`).join('')}</optgroup>` : ''}</select></label>
-      ${needsOverride ? `<div class="assignment-standard-warning"><strong>Нормативні документи відрізняються</strong><br>В акті: ${esc(item.standard)}<br>У шаблоні: ${esc(selectedTemplate?.standard || 'не зазначено')}<br>У завданні залишаться НД та методи саме цього шаблону.<label><input type="checkbox" data-dept-override="${department.id}" ${selection.allow_standard_override ? 'checked' : ''}><span>Підтверджую застосування НД цього шаблону</span></label></div>` : ''}
+      <div class="assignment-dept-fields" ${selection.enabled ? '' : 'hidden'}><label class="field"><span>Пошук у всій базі відділення</span><input type="search" data-dept-search="${department.id}" placeholder="Назва, НД, синонім або ім’я файла"></label><label class="field"><span>Шаблон завдання *</span><select data-dept-template="${department.id}">${templateOptions(item,department.id)}</select></label>
+      ${selectedTemplate ? `<a class="text-button" href="/api/assignments/templates/${encodeURIComponent(selectedTemplate.id)}/download" download>Переглянути Word-шаблон</a>` : ''}
+      ${needsOverride ? `<div class="assignment-standard-warning"><strong>Шаблон обрано вручну з усієї бази</strong><br>Зразок: ${esc(item.product_name)}<br>В акті: ${esc(item.standard)}<br>У шаблоні: ${esc(selectedTemplate?.standard || 'не зазначено')}<br>У завданні залишаться НД та методи саме цього шаблону.<label><input type="checkbox" data-dept-override="${department.id}" ${selection.allow_standard_override ? 'checked' : ''}><span>Підтверджую ручний вибір і застосування цього шаблону</span></label></div>` : ''}
       <label class="field"><span>Вага та кількість для відділення</span><input data-dept-weight="${department.id}" value="${esc(selection.sample_weight)}" placeholder="Вага з шаблону або власне значення"><small data-dept-weight-hint="${department.id}">${esc(departmentWeightHint(item, department.id))}</small></label><button type="button" class="text-button" data-dept-weight-reset="${department.id}" ${selection.weight_edited || defaultDepartmentWeight(item, department.id).source === 'common' ? '' : 'hidden'} ${selectedTemplate ? '' : 'disabled'}>Взяти з шаблону</button></div>
-      <p class="assignment-dept-hint ${!matches.length ? 'no-match' : ''}">${!item.product_name.trim() || !item.standard.trim() ? 'Для підбору вкажіть назву та НД зразка.' : !matches.length ? reviewMatches.length ? `Точного збігу НД немає. Є ${reviewMatches.length} варіант(и) з іншим НД: увімкніть відділення та перевірте їх перед вибором.` : 'Для цієї назви та НД шаблону не знайдено. Додайте його в бібліотеку.' : `Відповідних шаблонів: ${matches.length}. Перевірте та оберіть потрібний.`}</p>
+      <p class="assignment-dept-hint ${!matches.length ? 'no-match' : ''}">${!item.product_name.trim() || !item.standard.trim() ? 'Для автоматичного підбору вкажіть назву та НД зразка. Шаблон можна обрати вручну з усієї бази.' : !matches.length ? 'Автоматичного збігу немає. Увімкніть відділення та оберіть потрібний шаблон з усієї бази вручну.' : `Відповідних шаблонів: ${matches.length}. Також доступна вся база відділення для ручного вибору.`}</p>
       ${selection.enabled && matches.length ? `<div class="match-actions">${matches.slice(0,2).map(m => `<button type="button" class="match-chip" data-assignment-match="${esc(m.id)}" data-match-department="${department.id}" title="${esc(m.reason || 'Перевірте відповідність шаблону')}"><span>${esc(m.name)}</span><small>Схожість ${Math.round(Number(m.score) * 100)}%</small></button>`).join('')}</div>` : ''}
       </section>`;
   }
@@ -522,7 +538,7 @@
       for (const department of DEPTS) {
         const selection = item.departments[department.id];
         const matches = item.matches[department.id] || [];
-        const stillAvailable = matches.some(match => match.id === selection.template_id) || (item.reviewMatches[department.id] || []).some(match => match.id === selection.template_id);
+        const stillAvailable = state.templates.some(template => template.id === selection.template_id && template.department === department.id);
         if (!stillAvailable) selectDepartmentTemplate(item, department.id, '');
         syncDepartmentWeight(item, department.id);
         selection.enabled = matches.length > 0 || !!selection.template_id;
@@ -541,6 +557,10 @@
     if (!card) return;
     const item = state.items.find(v => v.id === card.dataset.assignmentItem);
     if (!item) return;
+    if (input.dataset.deptSearch) {
+      $(`[data-dept-template="${input.dataset.deptSearch}"]`,card).innerHTML = templateOptions(item,input.dataset.deptSearch,input.value);
+      return;
+    }
     if (input.dataset.assignmentField) {
       const key = input.dataset.assignmentField;
       item[key] = input.value;
@@ -550,15 +570,9 @@
       if (originNode) originNode.textContent = 'Джерело: введено вручну';
       if (key === 'product_name' || key === 'standard') {
         item.matches = {}; item.reviewMatches = {}; item.matched = false;
-        DEPTS.forEach(d => { selectDepartmentTemplate(item, d.id, ''); item.departments[d.id].enabled = false; });
+        DEPTS.forEach(d => { item.departments[d.id].allow_standard_override = false; });
         $('.item-title',card).textContent = item.product_name || 'Новий зразок';
-        $$('.assignment-department',card).forEach(node => {
-          node.classList.remove('enabled');
-          $('input[type="checkbox"]',node).checked = false;
-          $('.assignment-dept-fields',node).hidden = true;
-          $('.assignment-dept-hint',node).textContent = 'Дані змінено. Виконайте підбір за назвою та НД знову.';
-          $$('.match-actions',node).forEach(n => n.remove());
-        });
+        $('.assignment-departments',card).innerHTML = DEPTS.map(d => renderDepartment(item,d)).join('');
       } else if (key === 'sample_weight') {
         DEPTS.forEach(department => {
           syncDepartmentWeight(item, department.id);
@@ -665,7 +679,7 @@
       selected.forEach(d => {
         const id = item.departments[d.id].template_id;
         if (!id || !state.templates.some(t => t.id === id && t.department === d.id)) issues.push(`зразок ${index + 1}: шаблон (${d.short})`);
-        if ((item.reviewMatches[d.id] || []).some(m => m.id === id) && !item.departments[d.id].allow_standard_override) issues.push(`зразок ${index + 1}: підтвердження іншого НД (${d.short})`);
+        if (needsManualReview(item,d.id) && !item.departments[d.id].allow_standard_override) issues.push(`зразок ${index + 1}: підтвердження ручного вибору (${d.short})`);
         count++;
       });
     });
@@ -698,7 +712,7 @@
         const selection = item.departments[department.id];
         const selector = `${base} [data-dept-template="${department.id}"]`;
         if (!selection.template_id || !state.templates.some(template => template.id === selection.template_id && template.department === department.id)) add(`Зразок ${index+1}: оберіть наявний шаблон (${department.short}).`,selector);
-        if ((item.reviewMatches[department.id] || []).some(match => match.id === selection.template_id) && !selection.allow_standard_override) add(`Зразок ${index+1}: підтвердьте застосування іншого НД (${department.short}).`,`${base} [data-dept-override="${department.id}"]`);
+        if (needsManualReview(item,department.id) && !selection.allow_standard_override) add(`Зразок ${index+1}: підтвердьте ручний вибір шаблону (${department.short}).`,`${base} [data-dept-override="${department.id}"]`);
         if (!selection.sample_weight.trim()) add(`Зразок ${index+1}: не заповнено вагу й кількість (${department.short}); буде позначка «[НЕ ЗАПОВНЕНО]».`,`${base} [data-dept-weight="${department.id}"]`,'warning');
       });
     });
@@ -869,11 +883,9 @@
           const saved=savedDepartments[department.id] || {};
           const selection=item.departments[department.id];
           selection.enabled=!!saved.enabled;
-          const offered=[...(item.matches[department.id] || []),...(item.reviewMatches[department.id] || [])];
-          const valid=state.templates.some(template => template.id === saved.template_id && template.department === department.id)
-            && offered.some(match => match.id === saved.template_id);
+          const valid=state.templates.some(template => template.id === saved.template_id && template.department === department.id);
           selectDepartmentTemplate(item,department.id,valid ? saved.template_id : '');
-          if (saved.template_id && !valid) warnings.push(`Зразок «${item.product_name || 'без назви'}»: перевірте шаблон (${department.short}) — збережений варіант більше не підходить або відсутній.`);
+          if (saved.template_id && !valid) warnings.push(`Зразок «${item.product_name || 'без назви'}»: збережений шаблон (${department.short}) відсутній або належить іншому відділенню.`);
           selection.weight_edited=!!saved.weight_edited;
           selection.weight_from_template=!!saved.weight_from_template;
           if (selection.weight_edited) {

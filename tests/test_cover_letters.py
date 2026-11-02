@@ -105,5 +105,58 @@ class CoverLettersTests(unittest.TestCase):
         self.assertIn('/static/cover-letters.js',self.client.get('/').text)
         self.assertEqual(self.client.get('/static/cover-letters.js').status_code,200)
 
+    def test_preview_and_independent_letter_edits_preserve_word_layout(self):
+        payload={'records':self.records,'confirmed':False}
+        response=self.client.post('/api/cover-letters/preview',data={'payload':json.dumps(payload)})
+        self.assertEqual(response.status_code,200,response.text)
+        letters=response.json()['letters']
+        self.assertEqual(len(letters),3)
+        self.assertEqual(letters[0]['id'],'general')
+        general=letters[0]['content']
+        general.update(recipients=['Перший адресат','Другий адресат','Третій адресат'],
+                       body=['Виправлений абзац & <текст>.','','Ще один абзац.'],
+                       attachments=['Лише потрібний додаток на 2 арк.'],
+                       position='Начальник установи',signer='підполковник Ірина ПРИКЛАД',contact='Контакт 00 000')
+        company=letters[1]['content']
+        company.update(recipients=['Інший адресат фірми'],body=['Окремий текст для фірми.'],attachments=[])
+        payload['edits']={letters[0]['id']:general,letters[1]['id']:company}
+        # Previewing and editing never substitutes for final confirmation.
+        self.assertEqual(self.client.post('/api/cover-letters/generate',data={'payload':json.dumps(payload)}).status_code,422)
+        payload['confirmed']=True
+        result=self.client.post('/api/cover-letters/generate',data={'payload':json.dumps(payload)})
+        self.assertEqual(result.status_code,200,result.text if result.status_code!=200 else '')
+        with ZipFile(BytesIO(result.content)) as archive:
+            general_data=archive.read(letters[0]['filename'])
+            generated=self.text(general_data)
+            for expected in ('Перший адресат','Третій адресат','Виправлений абзац & <текст>.',
+                             'Ще один абзац.','Додаток: 1. Лише потрібний додаток','Контакт 00 000'):
+                self.assertIn(expected,generated)
+            self.assertNotIn('Надсилаю на Вашу адресу',generated)
+            company_text=self.text(archive.read(letters[1]['filename']))
+            self.assertIn('Окремий текст для фірми.',company_text)
+            self.assertNotIn('Додаток:',company_text)
+            self.assertNotIn('Виправлений абзац',company_text)
+            untouched=self.text(archive.read(letters[2]['filename']))
+            self.assertIn(self.records[1]['number'],untouched)
+            self.assertNotIn('Окремий текст для фірми.',untouched)
+        with ZipFile(BytesIO(general_data)) as archive:
+            root=E.fromstring(archive.read('word/document.xml'))
+            paragraphs=root.findall('.//{'+W+'}body/{'+W+'}p')
+            opening=next(p for p in paragraphs if ''.join(p.itertext()).startswith('Виправлений абзац'))
+            self.assertEqual(opening.find('{'+W+'}pPr/{'+W+'}ind').get('{'+W+'}firstLine'),'284')
+            self.assertEqual(''.join(opening.getnext().itertext()),'')
+            margins=root.find('{'+W+'}body/{'+W+'}sectPr/{'+W+'}pgMar')
+            self.assertEqual(margins.get('{'+W+'}left'),'1701')
+            self.assertEqual(margins.get('{'+W+'}right'),'567')
+
+    def test_rejects_stale_edits_and_empty_letter_text(self):
+        payload={'records':self.records,'confirmed':True}
+        letter=self.client.post('/api/cover-letters/preview',data={'payload':json.dumps(payload)}).json()['letters'][0]
+        for edits in ({'deleted-company':letter['content']},
+                      {'general':{**letter['content'],'body':[' ']}},
+                      {'general':{**letter['content'],'recipients':['']}}):
+            response=self.client.post('/api/cover-letters/generate',data={'payload':json.dumps({**payload,'edits':edits})})
+            self.assertEqual(response.status_code,422,response.text)
+
 
 if __name__=='__main__': unittest.main()

@@ -133,6 +133,41 @@ def test_different_standard_requires_explicit_review_and_preserves_template_stan
                 assert inspect_assignment_template(archive.read(name))["standard"] == "ДСТУ 4450:2005"
 
 
+@pytest.mark.parametrize('standard', ['ДСТУ 4450:2005', 'НД, введений вручну'])
+def test_manual_selection_from_whole_library_when_product_has_no_matches(client, standard):
+    payload = request_data(client)
+    item = payload['items'][0]
+    item.update(product_name='Назва з акта, яку програма не впізнала', standard=standard)
+    matches = client.post('/api/assignments/match', json={
+        'product_name': item['product_name'], 'standard': standard,
+    }).json()
+    assert not any(matches['departments'].values())
+    assert not any(matches['review_departments'].values())
+    assert client.post('/api/assignments/generate', json=payload).status_code == 422
+    assert client.get('/api/assignments/numbering').json()['next_number'] is None
+    for selection in item['departments'].values():
+        selection['allow_standard_override'] = True
+    result = client.post('/api/assignments/generate', json=payload)
+    assert result.status_code == 200, result.text
+    with ZipFile(io.BytesIO(result.content)) as archive:
+        documents = [n for n in archive.namelist() if n.endswith('.docx')]
+        assert len(documents) == 3
+        for name in documents:
+            info = inspect_assignment_template(archive.read(name))
+            assert info['fields']['product_name'] == item['product_name']
+            assert info['standard'] == 'ДСТУ 4450:2005'
+        assert 'ручний, підтверджений' in archive.read('ПЕРЕВІРИТИ.txt').decode()
+
+
+def test_manual_selection_still_requires_correct_department_and_final_confirmation(client):
+    payload = request_data(client)
+    selected = payload['items'][0]['departments']
+    selected['vet']['allow_standard_override'] = True
+    selected['vet']['template_id'] = selected['chemistry']['template_id']
+    assert client.post('/api/assignments/generate', json=payload).status_code == 422
+    assert client.get('/api/assignments/numbering').json()['next_number'] is None
+
+
 def test_assignment_library_upload_edit_delete_persists(client):
     template = client.get("/api/assignments/templates").json()["templates"][0]
     original = client.get("/api/assignments/templates/" + template["id"] + "/download").content
