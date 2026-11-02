@@ -74,7 +74,19 @@ def test_every_original_fills_both_form_layouts_without_changing_methods_or_styl
     with ZipFile(BytesIO(source)) as old, ZipFile(BytesIO(output)) as new:
         assert old.namelist() == new.namelist()
         for name in old.namelist():
-            if name != "word/document.xml":
+            if name == 'word/footer1.xml':
+                before, after = ET.fromstring(old.read(name)), ET.fromstring(new.read(name))
+                assert ''.join(before.itertext()) == ''.join(after.itertext())
+                assert [f.get('{'+NS['w']+'}instr') for f in after.findall('.//w:fldSimple', NS)] == ['PAGE', 'NUMPAGES']
+            elif name == 'word/settings.xml':
+                before, after = ET.fromstring(old.read(name)), ET.fromstring(new.read(name))
+                assert after.find('w:updateFields', NS).get('{'+NS['w']+'}val') == 'true'
+                for root in (before, after):
+                    update = root.find('w:updateFields', NS)
+                    if update is not None:
+                        root.remove(update)
+                assert ET.tostring(before) == ET.tostring(after)
+            elif name != "word/document.xml":
                 assert old.read(name) == new.read(name)
 
 

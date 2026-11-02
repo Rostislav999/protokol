@@ -2,7 +2,7 @@
 
 Both supplied layouts are supported: labelled paragraphs and label/value table
 rows. Five sample fields and an explicitly selected issuing person are editable.
-Other ZIP parts and all unrelated XML are retained verbatim.
+Page counts in headers/footers become live Word fields; unrelated parts stay intact.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from xml.sax.saxutils import escape
 from zipfile import BadZipFile, ZipFile
 
 from .documents import MISSING_VALUE, TemplateError, _Paragraph, _Text, _replace_range, _tag_end, _text_offsets
+from .word_pagination import pagination_updates
 
 FIELD_LABELS = {
     "sample_number": "Реєстраційний/ідентифікаційний номер зразка",
@@ -364,6 +365,9 @@ def render_assignment(data: bytes, fields: dict[str, str]) -> bytes:
     output = BytesIO()
     with ZipFile(BytesIO(data)) as original, ZipFile(output, "w") as target:
         target.comment = original.comment
+        parts = {member.filename: original.read(member) for member in original.infolist()}
+        updates = pagination_updates(parts)
+        updates['word/document.xml'] = xml
         for member in original.infolist():
-            target.writestr(member, xml if member.filename == "word/document.xml" else original.read(member.filename))
+            target.writestr(member, updates.get(member.filename, parts[member.filename]))
     return output.getvalue()

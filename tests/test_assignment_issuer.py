@@ -50,7 +50,19 @@ def test_selected_issuer_replaces_both_supplied_layouts_without_touching_receive
     with ZipFile(BytesIO(source)) as original, ZipFile(BytesIO(output)) as generated:
         assert original.namelist() == generated.namelist()
         for name in original.namelist():
-            if name != "word/document.xml":
+            if name == 'word/footer1.xml':
+                before, after = ET.fromstring(original.read(name)), ET.fromstring(generated.read(name))
+                assert ''.join(before.itertext()) == ''.join(after.itertext())
+                assert [f.get('{'+NS['w']+'}instr') for f in after.findall('.//w:fldSimple', NS)] == ['PAGE', 'NUMPAGES']
+            elif name == 'word/settings.xml':
+                before, after = ET.fromstring(original.read(name)), ET.fromstring(generated.read(name))
+                assert after.find('w:updateFields', NS).get('{'+NS['w']+'}val') == 'true'
+                for root in (before, after):
+                    update = root.find('w:updateFields', NS)
+                    if update is not None:
+                        root.remove(update)
+                assert ET.tostring(before) == ET.tostring(after)
+            elif name != "word/document.xml":
                 assert original.read(name) == generated.read(name)
 
 
