@@ -157,62 +157,164 @@ def prepare(files, suppliers):
     return dict(records=records, warnings=warnings, has_excel=bool(books))
 
 
-def paragraph(text='', *, size=28, bold=False, align=None):
-    p = E.Element(Q('p')); pr = E.SubElement(p,Q('pPr'))
-    E.SubElement(pr,Q('spacing'),{Q('after'):'0'})
-    if align:
-        E.SubElement(pr,Q('jc'),{Q('val'):align})
-    r=E.SubElement(p,Q('r')); rp=E.SubElement(r,Q('rPr'))
-    E.SubElement(rp,Q('rFonts'),{Q('ascii'):'Times New Roman',Q('hAnsi'):'Times New Roman',Q('cs'):'Times New Roman'})
-    E.SubElement(rp,Q('sz'),{Q('val'):str(size)})
-    if bold: E.SubElement(rp,Q('b'))
-    E.SubElement(r,Q('t'),{'{http://www.w3.org/XML/1998/namespace}space':'preserve'}).text=text
-    return p
+def _paragraph_text(paragraph):
+    return ''.join(paragraph.xpath('.//w:t/text()', namespaces=WN))
+
+
+def _replace_text_range(paragraph, start, end, value):
+    """Edit text across Word runs without removing their formatting or tabs."""
+    nodes = paragraph.findall('.//w:t', WN)
+    if not nodes:
+        run = E.SubElement(paragraph, Q('r'))
+        properties = paragraph.find('w:pPr/w:rPr', WN)
+        if properties is not None:
+            run.append(deepcopy(properties))
+        nodes = [E.SubElement(run, Q('t'))]
+    offset = 0
+    inserted = False
+    for node in nodes:
+        old = node.text or ''
+        node_start, node_end = offset, offset + len(old)
+        offset = node_end
+        if start == end:
+            if inserted or not node_start <= start <= node_end:
+                continue
+        elif node_end <= start or node_start >= end:
+            continue
+        left, right = max(0, start - node_start), min(len(old), end - node_start)
+        node.text = old[:left] + (value if not inserted else '') + old[right:]
+        if node.text[:1].isspace() or node.text[-1:].isspace():
+            node.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        inserted = True
+
+
+def _fill_text(paragraph, value):
+    """Keep unchanged prefixes/suffixes in their original runs."""
+    old = _paragraph_text(paragraph)
+    if old == value:
+        return
+    left = 0
+    while left < min(len(old), len(value)) and old[left] == value[left]:
+        left += 1
+    right = 0
+    while (right < min(len(old), len(value)) - left
+           and old[len(old) - right - 1] == value[len(value) - right - 1]):
+        right += 1
+    _replace_text_range(paragraph, left, len(old) - right, value[left:len(value) - right])
+
+
+def _fill_signer(paragraph, value, text_width):
+    # Leave the supplied signature intact; edited ranks/names need a real tab
+    # stop instead of a fixed number of spaces, which can wrap a longer name.
+    if ' '.join(_paragraph_text(paragraph).split()) == ' '.join(value.split()):
+        return
+    new = re.fullmatch(r'(.+?)\s+([A-ZА-ЯІЇЄҐ].*)', value.strip())
+    if new is None:
+        new = re.fullmatch(r'(\S+)\s+(.+)', value.strip())
+    if new is None:
+        _fill_text(paragraph, value)
+        return
+    runs = paragraph.findall('w:r', WN)
+    first_properties, last_properties = runs[0].find('w:rPr', WN), runs[-1].find('w:rPr', WN)
+    for run in runs:
+        paragraph.remove(run)
+    for i, (text, properties) in enumerate(zip(new.groups(), (first_properties, last_properties))):
+        run = E.SubElement(paragraph, Q('r'))
+        if properties is not None:
+            run.append(deepcopy(properties))
+        E.SubElement(run, Q('t')).text = text
+        if i == 0:
+            E.SubElement(run, Q('tab'))
+    properties = paragraph.find('w:pPr', WN)
+    tabs = properties.find('w:tabs', WN)
+    if tabs is None:
+        tabs = E.Element(Q('tabs'))
+        properties.insert(0, tabs)
+    else:
+        for tab in list(tabs):
+            tabs.remove(tab)
+    E.SubElement(tabs, Q('tab'), {Q('val'): 'right', Q('pos'): str(text_width)})
+
+
+def _attachment_paragraph(source, value):
+    paragraph = deepcopy(source)
+    # IDs and editing bookmarks belong to the source paragraph, not its copies.
+    for key in ('paraId', 'textId'):
+        paragraph.attrib.pop('{http://schemas.microsoft.com/office/word/2010/wordml}' + key, None)
+    for bookmark in paragraph.xpath('.//w:bookmarkStart | .//w:bookmarkEnd', namespaces=WN):
+        bookmark.getparent().remove(bookmark)
+    _fill_text(paragraph, value)
+    return paragraph
 
 
 def render_letter(records, batch, general):
-    parts, _ = _parts((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
-    root=xml(parts['word/document.xml']); body=root.find('w:body', WN)
-    drawing=root.find('.//w:drawing', WN)
-    emblem=deepcopy(drawing) if drawing is not None else None
-    section=deepcopy(body.find('w:sectPr', WN))
-    for child in list(body): body.remove(child)
-    # Inline two-column header keeps the stamp at the left and recipients at the right.
-    table=E.SubElement(body,Q('tbl')); tp=E.SubElement(table,Q('tblPr'))
-    E.SubElement(tp,Q('tblW'),{Q('w'):'0',Q('type'):'auto'})
-    grid=E.SubElement(table,Q('tblGrid'))
-    for width in (4800,4500): E.SubElement(grid,Q('gridCol'),{Q('w'):str(width)})
-    row=E.SubElement(table,Q('tr'))
-    left=E.SubElement(row,Q('tc')); right=E.SubElement(row,Q('tc'))
-    for cell,width in ((left,4800),(right,4500)):
-        pr=E.SubElement(cell,Q('tcPr')); E.SubElement(pr,Q('tcW'),{Q('w'):str(width),Q('type'):'dxa'})
-    if emblem is not None:
-        p=paragraph(align='center'); E.SubElement(p,Q('r')).append(emblem); left.append(p)
-    for line in ('МІНІСТЕРСТВО ОБОРОНИ','УКРАЇНИ','ВІЙСЬКОВА ЧАСТИНА А0873','E-mail: a0873@mod.gov.ua','Код ЄДРПОУ 26614722','«____»________________20____','№________________________'):
-        left.append(paragraph(line,size=22,bold=True,align='center'))
-    recipients=['ДП МОУ «Агенція оборонних закупівель»','Управління безпечності харчових продуктів та ветеринарної медицини'] if general else [records[0].supplier]
-    for text in recipients:
-        right.append(paragraph(text)); right.append(paragraph())
-    body.append(paragraph())
-    text='Надсилаю на Вашу адресу протоколи випробувань на зразки, перевірені в межах випробувальних спроможностей лабораторії безпечності харчових продуктів військової частини А0873'
+    parts, infos = _parts((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
+    root = xml(parts['word/document.xml'])
+    body = root.find('w:body', WN)
+    paragraphs = body.findall('w:p', WN)
+    introduction = next(p for p in paragraphs if _paragraph_text(p).startswith('Надсилаю на Вашу адресу'))
+    first = next(p for p in paragraphs if _paragraph_text(p).startswith('Додаток:'))
+    start = paragraphs.index(first)
+    attachments = []
+    for p in paragraphs[start:]:
+        if not re.match(r'^(?:Додаток:\s*)?\d+\.\s', _paragraph_text(p)):
+            break
+        attachments.append(p)
+    continuation = attachments[1]
+    extra = next((p for p in attachments if 'Інформація про харчові продукти' in _paragraph_text(p)), continuation)
+    excel = next((p for p in attachments if 'Зведена таблиця' in _paragraph_text(p)), continuation)
+
+    # Keep the entire stationery, including the floating stamp, recipient
+    # placement, blank paragraphs, section margins, and original run properties.
+    stamp = body.find('w:tbl', WN)
+    email = next(p for p in stamp.findall('.//w:p', WN) if 'E-mail:' in _paragraph_text(p))
+    _fill_text(email.getnext(), 'Код ЄДРПОУ 26614722')
     if general:
-        pairs=list(dict.fromkeys((r.supplier,r.code) for r in records))
-        text+=', '+', '.join('постачальника '+name+(' – код постачальника '+code if code else '') for name,code in pairs)
-    body.append(paragraph(text+'.'))
-    body.append(paragraph())
-    attachments=[f'Протокол випробувань №{r.number} від {r.date} року — на {r.pages} арк. в 1 прим.' for r in records]
+        pairs = list(dict.fromkeys((r.supplier, r.code) for r in records))
+        suppliers = ', '.join('постачальника ' + name + (' – код постачальника ' + code if code else '')
+                              for name, code in pairs)
+        text = _paragraph_text(introduction).split(', постачальника', 1)[0]
+        _fill_text(introduction, text + ', ' + suppliers + '.')
+    else:
+        recipient = next(p for p in paragraphs[:paragraphs.index(introduction)] if _paragraph_text(p))
+        _fill_text(recipient, records[0].supplier)
+
+    items = [(first if i == 0 else continuation,
+              f'Протокол випробувань №{r.number} від {r.date} року — на {r.pages} арк. в 1 прим.')
+             for i, r in enumerate(records)]
     if general:
-        attachments += [s.strip() for s in batch.extra_attachments.splitlines() if s.strip()]
-        if batch.include_excel: attachments.append('Зведена таблиця у форматі Excel «Зведена інформація щодо протоколів випробувань».')
-    for i,text in enumerate(attachments,1): body.append(paragraph(('Додаток: ' if i==1 else '')+f'{i}. '+text))
-    body.append(paragraph());body.append(paragraph(batch.general_position if general else batch.company_position))
-    body.append(paragraph(batch.general_signer if general else batch.company_signer))
-    body.append(paragraph());body.append(paragraph(batch.contact,size=20))
-    body.append(section)
-    parts['word/document.xml']=E.tostring(root,xml_declaration=True,encoding='UTF-8',standalone=True)
-    out=BytesIO()
-    with ZipFile(out,'w',ZIP_DEFLATED) as z:
-        for name,data in parts.items(): z.writestr(name,data)
+        items += [(extra, s.strip()) for s in batch.extra_attachments.splitlines() if s.strip()]
+        if batch.include_excel:
+            items.append((excel, 'Зведена таблиця у форматі Excel «Зведена інформація щодо протоколів випробувань».'))
+    # Rebuild only the variable list, cloning its first/continuation styles.
+    # Include any bookmarks between those paragraphs in the replaced range.
+    insert_at, end = body.index(first), body.index(attachments[-1])
+    for child in list(body)[insert_at:end + 1]:
+        body.remove(child)
+    for i, (source, text) in enumerate(items, 1):
+        value = ('Додаток: ' if i == 1 else '') + f'{i}. ' + text
+        body.insert(insert_at + i - 1, _attachment_paragraph(source, value))
+
+    position, signer, contact = [p for p in paragraphs[start + len(attachments):] if _paragraph_text(p)]
+    _fill_text(position, batch.general_position if general else batch.company_position)
+    section = body.find('w:sectPr', WN)
+    margins = section.find('w:pgMar', WN)
+    text_width = (int(section.find('w:pgSz', WN).get(Q('w')))
+                  - int(margins.get(Q('left'))) - int(margins.get(Q('right'))))
+    _fill_signer(signer, batch.general_signer if general else batch.company_signer, text_width)
+    # Let Word paginate a long list without separating the position and signature.
+    for paragraph in (position, signer):
+        properties = paragraph.find('w:pPr', WN)
+        if properties.find('w:keepLines', WN) is None:
+            properties.insert(0, E.Element(Q('keepLines')))
+        if paragraph is position and properties.find('w:keepNext', WN) is None:
+            properties.insert(0, E.Element(Q('keepNext')))
+    _fill_text(contact, batch.contact)
+    parts['word/document.xml'] = E.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
+    out = BytesIO()
+    with ZipFile(out, 'w', ZIP_DEFLATED) as z:
+        for info in infos:
+            z.writestr(info, parts[info.filename])
     return out.getvalue()
 
 

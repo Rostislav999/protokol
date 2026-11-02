@@ -1,0 +1,166 @@
+"""Cover letters must retain the supplied Word stationery and paragraph layout."""
+from io import BytesIO
+from copy import deepcopy
+from zipfile import ZipFile
+
+from lxml import etree as E
+import pytest
+
+from app.cover_letters import ASSETS, LetterBatch, render_letter
+from app.protocol_excel import W
+
+
+NS = {'w': W}
+
+
+def document(data):
+    with ZipFile(BytesIO(data)) as archive:
+        return E.fromstring(archive.read('word/document.xml'))
+
+
+def text(node):
+    return ''.join(node.xpath('.//w:t/text()', namespaces=NS))
+
+
+def structure(node):
+    if node is None:
+        return None
+    return node.tag, sorted(node.attrib.items()), node.text, [structure(c) for c in node]
+
+
+def without_pagination(node):
+    node = deepcopy(node)
+    for flag in node.xpath('.//w:keepNext | .//w:keepLines', namespaces=NS):
+        flag.getparent().remove(flag)
+    return node
+
+
+def batch(count=3, **changes):
+    return LetterBatch(records=[
+        dict(number=f'87-015-2920-{2000+i}-2', date='02.11.2026',
+             supplier='ТОВ «Нова фірма & партнери»', code='015', pages=i+1)
+        for i in range(count)
+    ], confirmed=True, **changes)
+
+
+@pytest.mark.parametrize('general', [True, False])
+def test_retains_page_stamp_and_all_other_docx_parts(general):
+    template = (ASSETS / ('general.docx' if general else 'company.docx')).read_bytes()
+    payload = batch()
+    result = render_letter(payload.records, payload, general)
+    original, rendered = document(template), document(result)
+    assert structure(rendered.find('w:body/w:sectPr', NS)) == structure(original.find('w:body/w:sectPr', NS))
+    # The positioned, nested stamp tables and emblem must not be rebuilt.
+    stamp, original_stamp = rendered.find('w:body/w:tbl', NS), original.find('w:body/w:tbl', NS)
+    for tag in ('tblPr', 'tblGrid', 'trPr', 'tcPr', 'pPr', 'drawing'):
+        assert [structure(n) for n in stamp.findall('.//w:' + tag, NS)] == [
+            structure(n) for n in original_stamp.findall('.//w:' + tag, NS)
+        ]
+    assert 'Код ЄДРПОУ 26614722' in text(stamp)
+    assert 'E-mail: a0873@mod.gov.ua' in text(stamp)
+    assert '«_____»____________________20____' in text(stamp)
+    assert '№____________________________' in text(stamp)
+    with ZipFile(BytesIO(template)) as before, ZipFile(BytesIO(result)) as after:
+        assert after.namelist() == before.namelist()
+        for name in before.namelist():
+            if name != 'word/document.xml':
+                assert after.read(name) == before.read(name), name
+
+
+@pytest.mark.parametrize('general', [True, False])
+def test_keeps_paragraph_spacing_fonts_blank_lines_and_signature_gap(general):
+    original = document((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
+    payload = batch(contact='Ірина Приклад 00 000')
+    rendered = document(render_letter(payload.records, payload, general))
+    # Only the variable attachment list changes the number of body paragraphs.
+    def fixed_paragraphs(root):
+        return [p for p in root.findall('w:body/w:p', NS)
+                if not text(p).startswith('Додаток:') and not text(p)[:1].isdigit()]
+    before, after = fixed_paragraphs(original), fixed_paragraphs(rendered)
+    assert len(after) == len(before)
+    for p, q in zip(before, after):
+        assert structure(without_pagination(q.find('w:pPr', NS))) == structure(p.find('w:pPr', NS))
+        assert [structure(r) for r in q.findall('.//w:rPr', NS)] == [
+            structure(r) for r in p.findall('.//w:rPr', NS)
+        ]
+        if not text(p):
+            assert structure(q) == structure(p)
+    rank = 'полковник' if general else 'майор'
+    signature = next(p for p in before if text(p).startswith(rank))
+    filled = next(p for p in after if text(p).startswith(rank))
+    assert structure(without_pagination(filled)) == structure(signature)
+    assert filled.find('w:pPr/w:keepLines', NS) is not None
+    position = after[after.index(filled) - 1]
+    assert position.find('w:pPr/w:keepLines', NS) is not None
+    assert position.find('w:pPr/w:keepNext', NS) is not None
+    assert 'Ірина Приклад 00 000' in text(rendered)
+    assert 'ГРАНД КОНСАЛТ' not in text(rendered)
+    assert 'Катерина Сержант-Міщенко' not in text(rendered)
+    assert '42 029' not in text(rendered)
+
+
+@pytest.mark.parametrize('general', [True, False])
+@pytest.mark.parametrize('count', [1, 9, 12, 100])
+def test_variable_attachment_list_uses_template_indents_and_fonts(general, count):
+    original = document((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
+    payload = batch(count, include_excel=False)
+    rendered = document(render_letter(payload.records, payload, general))
+    prototypes = [p for p in original.findall('w:body/w:p', NS) if 'Протокол випробувань №' in text(p)]
+    attachments = [p for p in rendered.findall('w:body/w:p', NS) if 'Протокол випробувань №' in text(p)]
+    assert len(attachments) == count
+    for i, p in enumerate(attachments):
+        source = prototypes[0 if i == 0 else 1]
+        assert structure(p.find('w:pPr', NS)) == structure(source.find('w:pPr', NS))
+        assert [structure(r) for r in p.findall('w:r/w:rPr', NS)] == [
+            structure(r) for r in source.findall('w:r/w:rPr', NS)
+        ]
+        assert payload.records[i].number in text(p)
+        assert f'на {i+1} арк.' in text(p)
+        assert text(p).startswith(('Додаток: ' if i == 0 else '') + f'{i+1}. ')
+    assert '87-024-2948-' not in text(rendered)
+    assert 'Інформація про харчові продукти, що не відповідають' not in text(rendered)
+    assert 'Зведена таблиця' not in text(rendered)
+    # Cloned paragraphs must not duplicate Word paragraph/bookmark identifiers.
+    ids = rendered.xpath('//@w14:paraId', namespaces={'w14': 'http://schemas.microsoft.com/office/word/2010/wordml'})
+    assert len(ids) == len(set(ids))
+    starts = rendered.xpath('.//w:bookmarkStart/@w:id', namespaces=NS)
+    ends = rendered.xpath('.//w:bookmarkEnd/@w:id', namespaces=NS)
+    assert sorted(starts) == sorted(ends)
+    assert len(starts) == len(set(starts))
+
+
+def test_extra_attachments_and_custom_signers_keep_their_layout():
+    payload = batch(12, extra_attachments='Інший документ на 2 арк.\nЩе один документ на 1 арк.',
+                    general_position='Начальник установи', general_signer='підполковник Ірина ПРИКЛАД',
+                    company_position='Виконувач обов’язків начальника',
+                    company_signer='старший лейтенант Іван ПРИКЛАД')
+    for general in (True, False):
+        original = document((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
+        rendered = document(render_letter(payload.records, payload, general))
+        paragraphs = rendered.findall('w:body/w:p', NS)
+        rank, name = ('підполковник', 'Ірина ПРИКЛАД') if general else ('старший лейтенант', 'Іван ПРИКЛАД')
+        signature = next(p for p in paragraphs if text(p).startswith(rank))
+        old_rank = 'полковник' if general else 'майор'
+        old_signature = next(p for p in original.findall('w:body/w:p', NS) if text(p).startswith(old_rank))
+        runs = signature.findall('w:r', NS)
+        assert text(runs[0]) == rank
+        assert text(runs[1]) == name
+        assert len(signature.findall('.//w:r/w:tab', NS)) == 1
+        assert signature.find('w:pPr/w:tabs/w:tab', NS).attrib == {
+            '{'+W+'}val': 'right', '{'+W+'}pos': '9638',
+        }
+        properties = signature.find('w:pPr', NS)
+        properties.remove(properties.find('w:tabs', NS))
+        assert structure(without_pagination(properties)) == structure(old_signature.find('w:pPr', NS))
+        if general:
+            additions = [p for p in paragraphs if text(p).startswith(('13. ', '14. ', '15. '))]
+            assert len(additions) == 3
+            assert 'Інший документ' in text(additions[0])
+            assert 'Ще один документ' in text(additions[1])
+            assert 'Зведена таблиця' in text(additions[2])
+            prototypes = [p for p in original.findall('w:body/w:p', NS) if text(p).startswith(('10. ', '11. '))]
+            for p, source in zip(additions, [prototypes[0], prototypes[0], prototypes[1]]):
+                assert structure(p.find('w:pPr', NS)) == structure(source.find('w:pPr', NS))
+        else:
+            assert 'Інший документ' not in text(rendered)
+            assert 'Зведена таблиця' not in text(rendered)

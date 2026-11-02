@@ -30,7 +30,8 @@ class CoverLettersTests(unittest.TestCase):
         with ZipFile(BytesIO(data)) as z:
             root = E.fromstring(z.read('word/document.xml'))
             self.assertEqual(len(root.findall('.//{'+W+'}drawing')),1)
-            return '\n'.join(root.itertext())
+            # Word may split a single word across several formatting runs.
+            return '\n'.join(''.join(p.itertext()) for p in root.findall('.//{'+W+'}p'))
 
     def protocol(self):
         response=self.client.post('/api/generate',json={
