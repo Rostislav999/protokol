@@ -19,7 +19,8 @@
   panel.querySelector('[data-generate]').disabled = true;
   const $ = s => panel.querySelector(s);
   const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  let records = [], letters = [], busy = false, url = '';
+  let records = [], letters = [], busy = false, url = '', settingsEdited = false;
+  const changed = () => window.OZWorkspace?.changed('cover_letters');
   const signers = {
     general_position:['Посада підписанта загального листа','Командир військової частини А0873'],
     general_signer:['Звання та ім’я підписанта загального листа','полковник Олександр КАЛЮЖНИЙ'],
@@ -52,36 +53,46 @@
     editor.hidden=true;
     $('[data-generate]').disabled=true;
   }
+  panel.addEventListener('focusin',()=>document.dispatchEvent(new CustomEvent('protokol:workspace-section',{detail:{name:'cover_letters'}})));
   panel.addEventListener('input',e=>{
-    if (e.target.matches('[data-confirm]')) return;
+    if (e.target.matches('[data-confirm],[data-files]')) return;
+    settingsEdited=true;
     invalidate();
     if (!e.target.matches('[data-letter-field]')) clearLetters();
+    changed();
   });
   $('[data-files]').addEventListener('change',()=>{
-    records=[]; $('[data-review]').hidden=true; invalidate(); clearLetters();
+    invalidate();
   });
   $('[data-import]').addEventListener('click',async()=>{
     if (busy) return;
     const files=[...$('[data-files]').files];
     if (!files.length) return error(new Error('Оберіть протоколи та, за потреби, Excel.'));
+    if ((records.length || letters.length) && !window.confirm('Замінити поточний комплект супровідних новими файлами?')) return;
     lock(true); $('[data-error]').hidden=true; $('[data-status]').textContent='Читаємо комплект…';
-    records=[]; $('[data-review]').hidden=true; invalidate(); clearLetters();
+    invalidate();
     try {
       const form=new FormData(); files.forEach(f=>form.append('files',f));
       const data=await (await request('import',form)).json(); records=data.records;
+      clearLetters();
       $('[data-warnings]').textContent=(data.warnings||[]).join('\n');
       $('[data-warnings]').style.whiteSpace='pre-line';
       $('[data-warnings]').hidden=!(data.warnings||[]).length;
       $('[data-excel]').checked=data.has_excel;
-      $('[data-records]').innerHTML=records.map((r,i)=>`<article class="panel"><h3>${i+1}. ${esc(r.source)}</h3><div class="form-grid">${[['number','Номер протоколу'],['date','Дата протоколу'],['supplier','Назва фірми'],['code','Код постачальника'],['pages','Кількість аркушів']].map(([key,label])=>`<label class="field"><span>${label}</span><input data-index="${i}" data-key="${key}" value="${esc(r[key])}" ${key==='pages'?'type="number" min="1" max="10000" step="1"':'type="text"'}></label>`).join('')}</div></article>`).join('');
+      renderRecords();
       $('[data-review]').hidden=false;
       $('[data-status]').textContent=`Прочитано протоколів: ${records.length}. Перевірте реквізити нижче.`;
+      changed();
     } catch(e) { error(e); $('[data-status]').textContent=''; }
     finally { lock(false); }
   });
-  function payload() {
-    panel.querySelectorAll('[data-key]').forEach(n=>records[Number(n.dataset.index)][n.dataset.key]=n.dataset.key==='pages'?Number(n.value):n.value);
-    const result={records,confirmed:$('[data-confirm]').checked,include_excel:$('[data-excel]').checked,contact:$('[data-contact]').value,extra_attachments:$('[data-extra]').value};
+  function renderRecords() {
+    $('[data-records]').innerHTML=records.map((r,i)=>`<article class="panel"><h3>${i+1}. ${esc(r.source)}</h3><div class="form-grid">${[['number','Номер протоколу'],['date','Дата протоколу'],['supplier','Назва фірми'],['code','Код постачальника'],['pages','Кількість аркушів']].map(([key,label])=>`<label class="field"><span>${label}</span><input data-index="${i}" data-key="${key}" value="${esc(r[key])}" ${key==='pages'?'type="number" min="1" max="10000" step="1"':'type="text"'}></label>`).join('')}</div></article>`).join('');
+  }
+  function payload(numericPages = true) {
+    const values=records.map(record=>({...record}));
+    panel.querySelectorAll('[data-key]').forEach(n=>values[Number(n.dataset.index)][n.dataset.key]=n.dataset.key==='pages' && numericPages?Number(n.value):n.value);
+    const result={records:values,confirmed:$('[data-confirm]').checked,include_excel:$('[data-excel]').checked,contact:$('[data-contact]').value,extra_attachments:$('[data-extra]').value};
     panel.querySelectorAll('[data-signer]').forEach(n=>result[n.dataset.signer]=n.value);
     return result;
   }
@@ -91,6 +102,11 @@
     ['attachments','Додатки (кожен з нового рядка, без нумерації)',6],
     ['position','Посада підписанта',3],['signer','Звання та ім’я підписанта',1],['contact','Виконавець і телефон',1]
   ];
+  function renderLetters() {
+    editor.innerHTML=letters.length?'<h3>Редактор супровідних</h3><p>Змініть текст кожного листа перед завантаженням. Оформлення Word-зразка збережеться. Після зміни реквізитів комплекту сформуйте листи заново.</p>'+letters.map((letter,i)=>`<details class="panel" data-letter="${esc(letter.id)}" ${i===0?'open':''}><summary><strong>${esc(letter.title)}</strong></summary><div class="details-body">${fields.map(([key,label,rows])=>`<label class="field"><span>${label}</span><textarea rows="${rows}" data-letter-field="${key}">${esc(Array.isArray(letter.content[key])?letter.content[key].join('\n'):letter.content[key])}</textarea></label>`).join('')}</div></details>`).join(''):'';
+    editor.hidden=!letters.length;
+    $('[data-generate]').disabled=!letters.length;
+  }
   $('[data-preview]').addEventListener('click',async()=>{
     if (busy) return;
     if (letters.length && !window.confirm('Сформувати листи заново з реквізитів? Ручні зміни тексту буде замінено.')) return;
@@ -101,9 +117,9 @@
     try {
       const form=new FormData(); form.append('payload',JSON.stringify(values));
       letters=(await (await request('preview',form)).json()).letters;
-      editor.innerHTML='<h3>Редактор супровідних</h3><p>Змініть текст кожного листа перед завантаженням. Оформлення Word-зразка збережеться. Після зміни реквізитів комплекту сформуйте листи заново.</p>'+letters.map((letter,i)=>`<details class="panel" data-letter="${esc(letter.id)}" ${i===0?'open':''}><summary><strong>${esc(letter.title)}</strong></summary><div class="details-body">${fields.map(([key,label,rows])=>`<label class="field"><span>${label}</span><textarea rows="${rows}" data-letter-field="${key}">${esc(Array.isArray(letter.content[key])?letter.content[key].join('\n'):letter.content[key])}</textarea></label>`).join('')}</div></details>`).join('');
-      editor.hidden=false;
+      renderLetters();
       $('[data-status]').textContent=`Листів для редагування: ${letters.length}. Перевірте текст і підтвердьте завантаження нижче.`;
+      changed();
     } catch(e) { error(e); $('[data-status]').textContent=''; }
     finally { lock(false); }
   });
@@ -132,5 +148,41 @@
       const link=$('[data-download]'); link.href=url; link.hidden=false; link.click();
       $('[data-status]').textContent='Супровідні готові. ZIP містить Word-документи; вихідні протоколи та Excel до нього не копіюються.';
     } catch(e) { error(e); } finally { lock(false); }
+  });
+  window.OZWorkspace?.register('cover_letters',{
+    title:'Супровідні листи',navigationSection:'excel',
+    hasData:()=>!!records.length || !!letters.length || settingsEdited,
+    snapshot:()=>{
+      if (!records.length && !letters.length && !settingsEdited) return null;
+      const edits=editedLetters();
+      return {...payload(false),confirmed:false,warnings:$('[data-warnings]').textContent,
+        letters:letters.map(letter=>({...letter,content:edits[letter.id]}))};
+    },
+    restore:async data=>{
+      if (busy) throw new Error('Дочекайтеся завершення обробки супровідних.');
+      records=(Array.isArray(data.records)?data.records:[]).slice(0,100).map(record=>Object.fromEntries(
+        ['source','number','date','supplier','code','pages'].map(key=>[key,String(record?.[key]??'').slice(0,2000)])));
+      letters=(Array.isArray(data.letters)?data.letters:[]).slice(0,101).filter(letter=>letter && typeof letter.id==='string' && letter.content && typeof letter.content==='object').map(letter=>({
+        id:letter.id.slice(0,100),title:String(letter.title||'Супровідна').slice(0,1000),filename:String(letter.filename||'').slice(0,1000),
+        content:Object.fromEntries(fields.map(([key])=>[key,['recipients','body','attachments'].includes(key)
+          ? (Array.isArray(letter.content[key])?letter.content[key]:[]).slice(0,key==='attachments'?400:100).map(line=>String(line).slice(0,12000))
+          : String(letter.content[key]??'').slice(0,2000)]))
+      }));
+      panel.querySelectorAll('[data-signer]').forEach(node=>{node.value=String(data[node.dataset.signer]??signers[node.dataset.signer][1]);});
+      $('[data-contact]').value=String(data.contact??'');
+      $('[data-extra]').value=String(data.extra_attachments??'');
+      $('[data-excel]').checked=!!data.include_excel;
+      $('[data-files]').value='';
+      $('[data-warnings]').textContent=String(data.warnings??'');
+      $('[data-warnings]').style.whiteSpace='pre-line';
+      $('[data-warnings]').hidden=!data.warnings;
+      $('[data-review]').hidden=!records.length;
+      $('[data-error]').hidden=true;
+      settingsEdited=true;
+      invalidate();renderRecords();renderLetters();
+      $('[data-status]').textContent='Чернетку супровідних відновлено. Перевірте реквізити й текст перед завантаженням.';
+    },
+    issues:()=>[],
+    reveal:()=>{document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));panel.scrollIntoView({block:'start'});}
   });
 })();

@@ -158,5 +158,27 @@ class CoverLettersTests(unittest.TestCase):
             response=self.client.post('/api/cover-letters/generate',data={'payload':json.dumps({**payload,'edits':edits})})
             self.assertEqual(response.status_code,422,response.text)
 
+    def test_autosaved_letter_draft_survives_restart_and_generates_edited_documents(self):
+        payload={'records':self.records,'confirmed':True,'contact':'Контакт 00 000'}
+        letters=self.client.post('/api/cover-letters/preview',data={'payload':json.dumps(payload)}).json()['letters']
+        letters[0]['content']['body']=['Збережений текст Ω.','','Новий абзац після відновлення.']
+        saved=self.client.put('/api/workspace/drafts/cover_letters',json={
+            'expected_revision':0,'data':{**payload,'letters':letters},
+        })
+        self.assertEqual(saved.status_code,200,saved.text)
+        self.assertFalse(saved.json()['data']['confirmed'])
+        with TestClient(create_app(Path(self.temp.name))) as restarted:
+            restored=restarted.get('/api/workspace/drafts').json()['sections']['cover_letters']['data']
+            self.assertEqual(restored['records'][0]['code'],'015')
+            self.assertEqual(restored['contact'],'Контакт 00 000')
+            self.assertEqual(restored['letters'][0]['content']['body'],letters[0]['content']['body'])
+            edits={letter['id']:letter['content'] for letter in restored.pop('letters')}
+            result=restarted.post('/api/cover-letters/generate',data={'payload':json.dumps({**restored,'edits':edits,'confirmed':True})})
+            self.assertEqual(result.status_code,200,result.text if result.status_code!=200 else '')
+            with ZipFile(BytesIO(result.content)) as archive:
+                generated=self.text(archive.read('Загальна_супровідна.docx'))
+                self.assertIn('Збережений текст Ω.',generated)
+                self.assertIn('Новий абзац після відновлення.',generated)
+
 
 if __name__=='__main__': unittest.main()

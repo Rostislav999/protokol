@@ -50,6 +50,16 @@ def test_saved_approvals_are_reset_at_every_level(tmp_path):
     assert store.all()["sections"]["excel"] == saved
 
 
+def test_incomplete_cover_letter_inputs_are_saved_without_losing_empty_values(tmp_path):
+    draft={'records':[{'number':'87-015-001-002-2','pages':'','code':'015'}],
+           'letters':[{'id':'general','content':{'body':['Незавершений абзац','']}}],
+           'general_signer':'підполковник Ірина ПРИКЛАД','confirmed':True}
+    saved=DraftStore(tmp_path).save('cover_letters',draft,0)
+    restored=DraftStore(tmp_path).all()['sections']['cover_letters']['data']
+    assert restored=={**draft,'confirmed':False}
+    assert saved['revision']==1
+
+
 def test_stale_window_cannot_overwrite_or_delete_newer_work(tmp_path):
     with client_for(tmp_path) as client:
         first = client.put("/api/workspace/drafts/acts", json={"data": {"text": "перша"}, "expected_revision": 0})

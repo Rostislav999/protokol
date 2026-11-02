@@ -61,7 +61,7 @@
   async function load() {
     try {
       const saved = await request('/api/workspace/drafts');
-      for (const section of ['acts', 'assignments', 'excel']) {
+      for (const section of ['acts', 'assignments', 'excel', 'cover_letters']) {
         const current = state(section);
         current.revision = saved.revisions?.[section] ?? saved.sections?.[section]?.revision ?? 0;
         current.entry = saved.sections?.[section] || null;
@@ -130,14 +130,15 @@
     if (!item.entry || !provider || restoring.has(section)) return;
     if (item.dirty && !confirm('Замінити поточні незбережені дані збереженою чернеткою?')) return;
     clearTimeout(item.timer); restoring.add(section); renderDrafts();
-    const pane = document.getElementById(section + '-view');
+    const navigationSection = provider.navigationSection || section;
+    const pane = document.getElementById(navigationSection + '-view');
     if (pane) { pane.inert = true; pane.setAttribute('aria-busy', 'true'); }
     try {
       await provider.restore(JSON.parse(JSON.stringify(item.entry.data)));
       item.pending = false; item.dirty = false;
       status('Чернетку відновлено. Перед експортом перевірте дані й підтвердьте їх повторно.');
       renderDrafts();
-      document.dispatchEvent(new CustomEvent('protokol:navigate', {detail: {name: section}}));
+      document.dispatchEvent(new CustomEvent('protokol:navigate', {detail: {name: navigationSection}}));
     } catch (error) { status(`Не вдалося відновити чернетку: ${errorMessage(error)}`, true); }
     finally {
       if (pane) { pane.inert = false; pane.removeAttribute('aria-busy'); }
@@ -164,6 +165,9 @@
     } catch (error) { status(errorMessage(error), true); }
   });
   document.addEventListener('protokol:view', event => { if (['acts', 'assignments', 'excel'].includes(event.detail?.name)) activeSection = event.detail.name; });
+  document.addEventListener('protokol:workspace-section', event => {
+    if (providers.has(event.detail?.name)) activeSection = event.detail.name;
+  });
   window.addEventListener('beforeunload', event => {
     if ([...drafts.values()].some(item => item.dirty || item.flight)) { event.preventDefault(); event.returnValue = ''; }
   });
@@ -188,8 +192,8 @@
   }
   async function reveal(issue) {
     reviewDialog.close();
-    document.dispatchEvent(new CustomEvent('protokol:navigate', {detail: {name: issue.section}}));
     const provider = providers.get(issue.section);
+    document.dispatchEvent(new CustomEvent('protokol:navigate', {detail: {name: provider?.navigationSection || issue.section}}));
     if (provider?.reveal) await provider.reveal(issue);
     else if (issue.selector) {
       const node = document.querySelector(issue.selector);

@@ -16,9 +16,9 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = 1
-SECTIONS = frozenset({"acts", "assignments", "excel"})
+SECTIONS = frozenset({"acts", "assignments", "excel", "cover_letters"})
 MAX_SECTION_BYTES = 4 * 1024 * 1024
-MAX_FILE_BYTES = 12 * 1024 * 1024 + 65536
+MAX_FILE_BYTES = 16 * 1024 * 1024 + 65536
 MAX_ROWS = 100
 MAX_DEPTH = 40
 MAX_REVISION = 9007199254740991  # JavaScript's largest exact integer.

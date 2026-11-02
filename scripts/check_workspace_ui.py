@@ -15,7 +15,7 @@ SCRIPT = r'''void (async () => {try {
   const assert=(value,message)=>{if(!value)throw new Error(message);};
   const wait=async fn=>{for(let i=0;i<400;i++){if(fn())return;await new Promise(r=>setTimeout(r,50));}throw new Error('UI readiness timeout');};
   const input=(selector,value,event='input')=>{const field=document.querySelector(selector);assert(field,'Missing field: '+selector);field.value=value;field.dispatchEvent(new Event(event,{bubbles:true}));};
-  await wait(()=>window.__providers?.acts && window.__providers?.excel && window.__providers?.assignments && !document.querySelector('#workspace-save-status').textContent.includes('Завантажуємо'));
+  await wait(()=>window.__providers?.acts && window.__providers?.excel && window.__providers?.assignments && window.__providers?.cover_letters && !document.querySelector('#workspace-save-status').textContent.includes('Завантажуємо'));
   const providers=window.__providers;
   if (!__RESTORE_PHASE__) {
     await wait(()=>document.querySelector('#nav-template-count').textContent==='22');
@@ -50,15 +50,27 @@ SCRIPT = r'''void (async () => {try {
     input('[data-letter="general"] [data-letter-field="body"]','Текст, відредагований перед завантаженням.\nДругий абзац.');
     assert(!document.querySelector('[data-confirm]').checked,'Edited letter kept its old approval');
     assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value.includes('Другий абзац.'),'Letter editor lost paragraphs');
+    document.querySelector('[data-confirm]').checked=true;
+    let automaticCoverDraft=null;
+    for(let i=0;i<100;i++) {
+      const drafts=await(await fetch('/api/workspace/drafts')).json();
+      automaticCoverDraft=drafts.sections.cover_letters?.data;
+      if(automaticCoverDraft?.letters?.find(letter=>letter.id==='general')?.content?.body?.[1]==='Другий абзац.')break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert(automaticCoverDraft?.letters?.find(letter=>letter.id==='general')?.content?.body?.[1]==='Другий абзац.','Cover letter did not autosave without clicking Save');
     await window.OZWorkspace.flush();
     const saved=await(await fetch('/api/workspace/drafts')).json();
-    assert(Object.keys(saved.sections).length===3,'All three drafts were not saved');
+    assert(Object.keys(saved.sections).length===4,'All four drafts were not saved');
     assert(saved.sections.acts.data.common.customer==='Замовник Ω','Act edits were not saved');
     assert(saved.sections.excel.data.records[0].values.M==='00001234','Leading zeroes were lost');
+    const coverDraft=saved.sections.cover_letters.data;
+    assert(coverDraft.letters.find(letter=>letter.id==='general').content.body[1]==='Другий абзац.','Edited cover letter was not saved');
+    assert(!coverDraft.confirmed,'Cover letter approval was persisted');
     console.log('OZ_WORKSPACE_RELOAD');
   } else {
-    await wait(()=>document.querySelectorAll('.workspace-draft').length===3);
-    for (let i=0;i<3;i++) {
+    await wait(()=>document.querySelectorAll('.workspace-draft').length===4);
+    for (let i=0;i<4;i++) {
       const count=document.querySelectorAll('.workspace-draft').length;
       document.querySelector('.workspace-draft button').click();
       await wait(()=>document.querySelectorAll('.workspace-draft').length===count-1);
@@ -75,6 +87,10 @@ SCRIPT = r'''void (async () => {try {
     assert(selection.template_id,'Manual template choice did not restore');
     const manualReview=document.querySelector('[data-dept-override]');
     assert(manualReview && !manualReview.checked,'Manual choice review was not reset on restore');
+    assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value==='Текст, відредагований перед завантаженням.\nДругий абзац.','Cover letter edits did not restore');
+    assert(document.querySelector('[data-records] [data-key="pages"]').value==='3','Cover letter pages did not restore');
+    assert(!document.querySelector('[data-confirm]').checked,'Cover letter approval survived restore');
+    assert(document.querySelector('[data-files]').files.length===0,'Source file input should be empty after reload');
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
     input('[data-field="protocol_date"]','31.02.2026');
     document.querySelector('#workspace-review').click();
@@ -84,7 +100,7 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(document.activeElement.dataset.field==='protocol_date','Review link did not focus the incorrect date');
     await window.OZWorkspace.flush();
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['three durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','cover letter editor before download','linked date review']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','cover letter editor before download','cover letter autosave and restore','linked date review']}));
   }
 } catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error)}));}})();'''
 
