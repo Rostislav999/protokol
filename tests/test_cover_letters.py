@@ -158,6 +158,22 @@ class CoverLettersTests(unittest.TestCase):
             response=self.client.post('/api/cover-letters/generate',data={'payload':json.dumps({**payload,'edits':edits})})
             self.assertEqual(response.status_code,422,response.text)
 
+    def test_document_preview_renders_current_letter_without_final_confirmation(self):
+        payload={'records':self.records,'confirmed':False}
+        letters=self.client.post('/api/cover-letters/preview',data={'payload':json.dumps(payload)}).json()['letters']
+        content={**letters[0]['content'],'body':['Текст попереднього перегляду & Ω.']}
+        response=self.client.post('/api/cover-letters/preview-document',data={
+            'payload':json.dumps({**payload,'edits':{'general':content}}),'letter_id':'general',
+        })
+        self.assertEqual(response.status_code,200)
+        self.assertIn('wordprocessingml.document',response.headers['content-type'])
+        self.assertEqual(response.headers['cache-control'],'no-store')
+        self.assertIn('Текст попереднього перегляду & Ω.',self.text(response.content))
+        missing=self.client.post('/api/cover-letters/preview-document',data={
+            'payload':json.dumps(payload),'letter_id':'deleted-company',
+        })
+        self.assertEqual(missing.status_code,422)
+
     def test_autosaved_letter_draft_survives_restart_and_generates_edited_documents(self):
         payload={'records':self.records,'confirmed':True,'contact':'Контакт 00 000'}
         letters=self.client.post('/api/cover-letters/preview',data={'payload':json.dumps(payload)}).json()['letters']

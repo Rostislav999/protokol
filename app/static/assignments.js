@@ -492,7 +492,7 @@
       ['Вся база відділення — ручний вибір', templates.filter(t => !matches.has(t.id) && !reviews.has(t.id))]
     ];
     return `<option value="">Оберіть шаблон з усієї бази відділення</option>` + groups.map(([label,entries]) => entries.length
-      ? `<optgroup label="${label}">${entries.map(t => `<option value="${esc(t.id)}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)} · ${esc(t.filename)}</option>`).join('')}</optgroup>` : '').join('');
+      ? `<optgroup label="${label}">${entries.map(t => `<option value="${esc(t.id)}" data-template-name="${esc(t.name)}" data-template-standard="${esc(t.standard)}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)} · ${esc(t.standard)} · ${esc(t.filename)}</option>`).join('')}</optgroup>` : '').join('');
   }
   function needsManualReview(item, departmentId) {
     const id = item.departments[departmentId].template_id;
@@ -606,6 +606,18 @@
       item.departments[input.dataset.deptOverride].allow_standard_override = input.checked;
       invalidate(); updateReadiness();
     }
+  });
+  $('#assignment-items').addEventListener('protokol:choose-template',event=>{
+    const select=event.target,card=select.closest('[data-assignment-item]');
+    const item=state.items.find(value=>value.id===card?.dataset.assignmentItem),department=select.dataset.deptTemplate;
+    if(!item)return;
+    window.OZTemplatePicker.open({title:`Шаблони: ${deptName(department)}`,subtitle:item.product_name||'Ручний вибір із бази відділення',
+      templates:state.templates.filter(t=>t.department===department).map(t=>({...t,group:deptName(t.department)})),
+      selectedId:item.departments[department].template_id,recommendedIds:(item.matches[department]||[]).map(t=>t.id),
+      downloadUrl:t=>`/api/assignments/templates/${encodeURIComponent(t.id)}/download`,
+      focusSelector:`${itemSelector(item)} [data-dept-template="${department}"]`,
+      onSelect:id=>{select.value=id;select.dispatchEvent(new Event('change',{bubbles:true}));}
+    });
   });
   $('#assignment-items').addEventListener('click', async event => {
     const card = event.target.closest('[data-assignment-item]');
@@ -913,7 +925,8 @@
     reveal:issue => {
       navigate(); switchTab(false);
       requestAnimationFrame(() => {
-        const node=$(issue.selector);
+        const field=$(issue.selector);
+        const node=window.OZTemplatePicker?.control(field)||field;
         const details=node?.closest('details'); if (details) details.open=true;
         node?.scrollIntoView({block:'center',behavior:'smooth'}); node?.focus({preventScroll:true});
       });

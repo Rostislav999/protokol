@@ -1,25 +1,30 @@
 'use strict';
 (() => {
-  const host = document.querySelector('#excel-view');
+  const host = document.querySelector('.main-content');
   if (!host) return;
   const panel = document.createElement('section');
-  panel.className = 'panel common-panel';
-  panel.innerHTML = `<h2>Супровідні листи</h2><p>Завантажте разом протоколи DOCX/PDF (або ZIP) та вашу таблицю XLSX. Буде створено одну загальну супровідну на Агенцію оборонних закупівель і Управління безпечності харчових продуктів та ветеринарної медицини, а також окрему на кожну фірму.</p><label class="field"><span>Протоколи та Excel</span><input type="file" multiple accept=".docx,.pdf,.zip,.xlsx" data-files></label><button type="button" class="button secondary" data-import>Прочитати комплект</button><p role="status" data-status></p><div role="alert" class="notice warning" data-error hidden></div><div data-review hidden><div data-warnings class="notice warning"></div><div data-records></div><h3>Підписи та додатки</h3><p>Перевірте актуальність підписантів перед формуванням.</p><div data-signers class="form-grid"></div><label class="field"><span>Виконавець і телефон</span><input data-contact></label><label class="field"><span>Інші додатки до загального листа (кожен з нового рядка)</span><textarea data-extra placeholder="Вкажіть назву документа, кількість аркушів та примірників лише для додатків, які справді надсилаєте."></textarea></label><label class="confirmation"><input type="checkbox" data-excel><span>Додати до переліку додатків загального листа зведену таблицю Excel</span></label><label class="confirmation"><input type="checkbox" data-confirm><span>Перевірено фірми, номери, дати, кількість аркушів, підписи та перелік додатків.</span></label><button type="button" class="button primary" data-generate>Завантажити супровідні ZIP</button><a data-download hidden class="button secondary" download="Супровідні.zip">Завантажити ZIP повторно</a></div>`;
+  panel.id='cover_letters-view';panel.hidden=true;panel.className='cover-page';
+  panel.setAttribute('aria-labelledby','cover-title');
+  panel.innerHTML = `
+    <div class="page-heading"><div><p class="eyebrow">ВІД ПРОТОКОЛІВ ДО ГОТОВОГО ЛИСТА</p><h1 id="cover-title">Супровідні листи</h1><p class="subtitle">Один комплект протоколів. Окремий лист для кожної фірми.</p></div><span class="autosave-label">Автозбереження увімкнено</span></div>
+    <ol class="cover-steps" aria-label="Етапи підготовки супровідних"><li data-cover-step="1" class="current"><span>1</span>Комплект протоколів</li><li data-cover-step="2"><span>2</span>Текст і вигляд листів</li><li data-cover-step="3"><span>3</span>Перевірка й завантаження</li></ol>
+    <details class="panel cover-batch" data-batch-details open><summary><strong>Комплект протоколів</strong><span data-batch-summary>Додайте файли для підготовки листів</span></summary><div class="details-body">
+      <p class="section-description">Додайте DOCX, PDF або ZIP із протоколами та, за потреби, таблицю XLSX. Буде підготовлено загальну супровідну й окремі листи фірмам.</p>
+      <div class="cover-import-row"><label class="field"><span>Протоколи та Excel *</span><input type="file" multiple accept=".docx,.pdf,.zip,.xlsx" data-files></label><button type="button" class="button secondary" data-import>Прочитати комплект</button></div>
+      <div data-review hidden><div data-warnings class="notice warning"></div><details class="cover-records" open><summary>Реквізити протоколів</summary><div data-records></div></details>
+        <details class="cover-common"><summary>Спільні підписи та додатки</summary><div class="details-body"><div data-signers class="form-grid"></div><label class="field"><span>Виконавець і телефон</span><input data-contact></label><label class="field"><span>Інші додатки до загального листа</span><textarea data-extra rows="3" placeholder="Кожен документ з нового рядка: назва, кількість аркушів і примірників."></textarea></label><label class="confirmation"><input type="checkbox" data-excel><span>Додати до переліку зведену таблицю Excel</span></label></div></details>
+        <div class="cover-prepare"><p>Перевірте реквізити й перейдіть до редагування кожного листа.</p><button type="button" class="button primary" data-preview>Переглянути й відредагувати листи</button></div>
+      </div>
+    </div></details>
+    <p role="status" class="cover-status" data-status></p><div role="alert" class="notice warning" data-error hidden></div>
+    <section data-letters hidden aria-label="Редактор супровідних"></section>
+    <section class="panel generation-panel cover-generation" data-cover-generation hidden><div><label class="confirmation"><input type="checkbox" data-confirm><span>Перевірено фірми, номери, дати, кількість аркушів, підписи та текст листів.</span></label><a data-download hidden class="text-button" download="Супровідні.zip">Завантажити ZIP повторно</a></div><button type="button" class="button primary" data-generate disabled>Завантажити супровідні ZIP</button></section>`;
   host.append(panel);
-  const previewButton = document.createElement('button');
-  previewButton.type = 'button';
-  previewButton.className = 'button secondary';
-  previewButton.dataset.preview = '';
-  previewButton.textContent = 'Переглянути й відредагувати листи';
-  const editor = document.createElement('div');
-  editor.dataset.letters = '';
-  editor.hidden = true;
-  const confirmation = panel.querySelector('[data-confirm]').closest('label');
-  confirmation.before(previewButton,editor);
-  panel.querySelector('[data-generate]').disabled = true;
+  const editor=panel.querySelector('[data-letters]');
   const $ = s => panel.querySelector(s);
   const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let records = [], letters = [], busy = false, url = '', settingsEdited = false;
+  let selectedLetterId='',previewTimer=null,previewController=null,previewGeneration=0;
   const changed = () => window.OZWorkspace?.changed('cover_letters');
   const signers = {
     general_position:['Посада підписанта загального листа','Командир військової частини А0873'],
@@ -29,8 +34,8 @@
   };
   $('[data-signers]').innerHTML = Object.entries(signers).map(([key,[label,value]])=>`<label class="field"><span>${esc(label)}</span><input data-signer="${key}" value="${esc(value)}"></label>`).join('');
   function error(e) { $('[data-error]').textContent=e.message; $('[data-error]').hidden=false; }
-  async function request(path,body) {
-    const response = await fetch('/api/cover-letters/'+path,{method:'POST',body});
+  async function request(path,body,options={}) {
+    const response = await fetch('/api/cover-letters/'+path,{method:'POST',body,...options});
     if (!response.ok) {
       const data=await response.json();
       throw new Error(typeof data.detail==='string'?data.detail:(data.detail||[]).map(v=>v.msg).join('; ')||'Не вдалося обробити комплект.');
@@ -46,19 +51,26 @@
     if (url) URL.revokeObjectURL(url);
     url=''; $('[data-download]').hidden=true;
     $('[data-confirm]').checked=false;
+    updateSteps(letters.length?2:1);
   }
   function clearLetters() {
     letters=[];
+    selectedLetterId='';clearTimeout(previewTimer);previewController?.abort();previewGeneration++;
     editor.replaceChildren();
     editor.hidden=true;
     $('[data-generate]').disabled=true;
+    $('[data-cover-generation]').hidden=true;$('[data-batch-details]').open=true;
+    document.querySelector('#nav-letter-count').textContent='0';
+    updateSteps(1);
   }
   panel.addEventListener('focusin',()=>document.dispatchEvent(new CustomEvent('protokol:workspace-section',{detail:{name:'cover_letters'}})));
   panel.addEventListener('input',e=>{
-    if (e.target.matches('[data-confirm],[data-files]')) return;
+    if (e.target.matches('[data-confirm]')) {updateSteps(e.target.checked?3:2);return;}
+    if (e.target.matches('[data-files],[data-page-zoom]')) return;
     settingsEdited=true;
     invalidate();
     if (!e.target.matches('[data-letter-field]')) clearLetters();
+    else queuePreview();
     changed();
   });
   $('[data-files]').addEventListener('change',()=>{
@@ -82,6 +94,7 @@
       renderRecords();
       $('[data-review]').hidden=false;
       $('[data-status]').textContent=`Прочитано протоколів: ${records.length}. Перевірте реквізити нижче.`;
+      $('[data-batch-summary]').textContent=`Протоколів: ${records.length}`;
       changed();
     } catch(e) { error(e); $('[data-status]').textContent=''; }
     finally { lock(false); }
@@ -102,11 +115,71 @@
     ['attachments','Додатки (кожен з нового рядка, без нумерації)',6],
     ['position','Посада підписанта',3],['signer','Звання та ім’я підписанта',1],['contact','Виконавець і телефон',1]
   ];
+  function updateSteps(step) {
+    panel.querySelectorAll('[data-cover-step]').forEach(node=>{
+      node.classList.toggle('current',Number(node.dataset.coverStep)===step);
+      node.classList.toggle('complete',Number(node.dataset.coverStep)<step);
+    });
+  }
   function renderLetters() {
-    editor.innerHTML=letters.length?'<h3>Редактор супровідних</h3><p>Змініть текст кожного листа перед завантаженням. Оформлення Word-зразка збережеться. Після зміни реквізитів комплекту сформуйте листи заново.</p>'+letters.map((letter,i)=>`<details class="panel" data-letter="${esc(letter.id)}" ${i===0?'open':''}><summary><strong>${esc(letter.title)}</strong></summary><div class="details-body">${fields.map(([key,label,rows])=>`<label class="field"><span>${label}</span><textarea rows="${rows}" data-letter-field="${key}">${esc(Array.isArray(letter.content[key])?letter.content[key].join('\n'):letter.content[key])}</textarea></label>`).join('')}</div></details>`).join(''):'';
+    if(!letters.some(letter=>letter.id===selectedLetterId))selectedLetterId=letters[0]?.id||'';
+    editor.innerHTML=letters.length?`<div class="cover-workbench"><aside class="letter-sidebar"><div class="letter-list-heading"><h2>Листи</h2><span class="count-pill">${letters.length}</span></div><nav class="letter-list" aria-label="Листи комплекту">${letters.map(letter=>`<button type="button" class="letter-list-item" data-select-letter="${esc(letter.id)}"><span>${esc(letter.title)}</span><small>${letter.content.attachments?.length||0} додатків · Word</small></button>`).join('')}</nav></aside><section class="letter-document-area"><div class="letter-toolbar"><div><p class="eyebrow">РЕДАКТОР СУПРОВІДНОЇ</p><h2 data-letter-title></h2></div><div class="letter-mobile-tabs"><button type="button" class="button secondary active" data-editor-mode="split">Редагувати</button><button type="button" class="button secondary" data-editor-mode="preview">Перегляд</button></div></div><div class="letter-editor-layout" data-editor-layout data-mode="split"><div class="letter-fields">${letters.map(letter=>`<div data-letter="${esc(letter.id)}" ${letter.id===selectedLetterId?'':'hidden'}>${fields.map(([key,label,rows])=>`<label class="field"><span>${label}</span><textarea rows="${rows}" data-letter-field="${key}">${esc(Array.isArray(letter.content[key])?letter.content[key].join('\n'):letter.content[key])}</textarea></label>`).join('')}</div>`).join('')}</div><aside class="letter-preview"><div class="preview-heading"><span data-page-status role="status">Готуємо вигляд сторінки…</span><label><span class="sr-only">Масштаб сторінки</span><select data-page-zoom aria-label="Масштаб сторінки"><option value="fit">За шириною</option><option value="75">75%</option><option value="100">100%</option></select></label></div><div class="word-preview" data-page-preview></div><p class="preview-note">Попередній вигляд DOCX. Остаточна пагінація й друк — у Word.</p></aside></div></section></div>`:'';
     editor.hidden=!letters.length;
     $('[data-generate]').disabled=!letters.length;
+    $('[data-cover-generation]').hidden=!letters.length;
+    $('[data-batch-details]').open=!letters.length;
+    $('[data-batch-summary]').textContent=records.length?`Протоколів: ${records.length} · Листів: ${letters.length}`:'Додайте файли для підготовки листів';
+    document.querySelector('#nav-letter-count').textContent=String(letters.length);
+    updateSteps(letters.length?2:1);
+    if(letters.length)selectLetter(selectedLetterId,false);
   }
+  function selectLetter(id,save=true) {
+    selectedLetterId=id;
+    editor.querySelectorAll('[data-letter]').forEach(node=>node.hidden=node.dataset.letter!==id);
+    editor.querySelectorAll('[data-select-letter]').forEach(node=>{
+      node.classList.toggle('selected',node.dataset.selectLetter===id);
+      node.setAttribute('aria-pressed',String(node.dataset.selectLetter===id));
+    });
+    const letter=letters.find(value=>value.id===id);
+    $('[data-letter-title]').textContent=letter?.title||'Супровідна';
+    $('[data-page-preview]').replaceChildren();queuePreview(0);
+    if(save)changed();
+  }
+  function queuePreview(delay=500) {
+    clearTimeout(previewTimer);previewController?.abort();previewGeneration++;
+    const status=$('[data-page-status]');if(status)status.textContent='Оновлюємо сторінку…';
+    previewTimer=setTimeout(renderCurrentPreview,delay);
+  }
+  async function renderCurrentPreview() {
+    const target=$('[data-page-preview]'),status=$('[data-page-status]'),id=selectedLetterId;
+    if(!target || !id)return;
+    const current=++previewGeneration;
+    previewController=new AbortController();
+    target.setAttribute('aria-busy','true');
+    try {
+      const form=new FormData();
+      form.append('payload',JSON.stringify({...payload(),confirmed:false,edits:{[id]:editedLetters()[id]}}));
+      form.append('letter_id',id);
+      const response=await request('preview-document',form,{signal:previewController.signal});
+      const data=await response.arrayBuffer();if(current!==previewGeneration)return;
+      const count=await window.OZDocumentPreview.render(data,target,{className:'ozdoc-cover'});
+      if(current===previewGeneration)status.textContent=`А4 · ${count||1} стор.`;
+    }catch(error){
+      if(error.name!=='AbortError' && current===previewGeneration){
+        status.textContent='Перевірте текст листа';target.replaceChildren();
+        const message=document.createElement('p');message.className='preview-empty';message.textContent=error.message;target.append(message);
+      }
+    }finally{if(current===previewGeneration)target.removeAttribute('aria-busy');}
+  }
+  editor.addEventListener('click',event=>{
+    const item=event.target.closest('[data-select-letter]');if(item)selectLetter(item.dataset.selectLetter);
+    const mode=event.target.closest('[data-editor-mode]');
+    if(mode){$('[data-editor-layout]').dataset.mode=mode.dataset.editorMode;editor.querySelectorAll('[data-editor-mode]').forEach(button=>button.classList.toggle('active',button===mode));window.OZDocumentPreview.fit($('[data-page-preview]'),$('[data-page-zoom]').value);}
+  });
+  editor.addEventListener('change',event=>{
+    if(event.target.matches('[data-page-zoom]'))window.OZDocumentPreview.fit($('[data-page-preview]'),event.target.value);
+  });
+  document.addEventListener('protokol:view',event=>{if(event.detail.name==='cover_letters' && letters.length)queuePreview(0);});
   $('[data-preview]').addEventListener('click',async()=>{
     if (busy) return;
     if (letters.length && !window.confirm('Сформувати листи заново з реквізитів? Ручні зміни тексту буде замінено.')) return;
@@ -146,16 +219,38 @@
       const blob=await (await request('generate',form)).blob();
       if(url) URL.revokeObjectURL(url); url=URL.createObjectURL(blob);
       const link=$('[data-download]'); link.href=url; link.hidden=false; link.click();
+      updateSteps(3);
       $('[data-status]').textContent='Супровідні готові. ZIP містить Word-документи; вихідні протоколи та Excel до нього не копіюються.';
     } catch(e) { error(e); } finally { lock(false); }
   });
+  function reviewIssues() {
+    const issues=[],values=payload(false);
+    const add=(message,selector,letterId='')=>issues.push({message,selector,letterId,section:'cover_letters',level:'error'});
+    if(!records.length)add('Додайте протоколи для супровідних.','#cover_letters-view [data-files]');
+    values.records.forEach((record,i)=>{
+      for(const [key,label] of [['number','номер протоколу'],['date','дату протоколу'],['supplier','назву фірми']])
+        if(!String(record[key]||'').trim())add(`Протокол ${i+1}: заповніть ${label}.`,`#cover_letters-view [data-index="${i}"][data-key="${key}"]`);
+      const pages=Number(record.pages);
+      if(!Number.isInteger(pages)||pages<1||pages>10000)add(`Протокол ${i+1}: перевірте кількість аркушів.`,`#cover_letters-view [data-index="${i}"][data-key="pages"]`);
+    });
+    if(records.length && !letters.length)add('Підготуйте листи для редагування.','#cover_letters-view [data-preview]');
+    const contents=editedLetters();
+    for(const letter of letters){
+      const content=contents[letter.id];
+      for(const [key,label] of [['recipients','адресата'],['body','основний текст'],['position','посаду підписанта'],['signer','звання та ім’я підписанта']]){
+        const value=content[key],filled=Array.isArray(value)?value.some(line=>line.trim()):String(value||'').trim();
+        if(!filled)add(`${letter.title}: заповніть ${label}.`,`#cover_letters-view [data-letter="${CSS.escape(letter.id)}"] [data-letter-field="${key}"]`,letter.id);
+      }
+    }
+    return issues;
+  }
   window.OZWorkspace?.register('cover_letters',{
-    title:'Супровідні листи',navigationSection:'excel',
+    title:'Супровідні листи',navigationSection:'cover_letters',
     hasData:()=>!!records.length || !!letters.length || settingsEdited,
     snapshot:()=>{
       if (!records.length && !letters.length && !settingsEdited) return null;
       const edits=editedLetters();
-      return {...payload(false),confirmed:false,warnings:$('[data-warnings]').textContent,
+      return {...payload(false),confirmed:false,selectedLetterId,warnings:$('[data-warnings]').textContent,
         letters:letters.map(letter=>({...letter,content:edits[letter.id]}))};
     },
     restore:async data=>{
@@ -179,10 +274,17 @@
       $('[data-review]').hidden=!records.length;
       $('[data-error]').hidden=true;
       settingsEdited=true;
+      selectedLetterId=String(data.selectedLetterId||'');
       invalidate();renderRecords();renderLetters();
       $('[data-status]').textContent='Чернетку супровідних відновлено. Перевірте реквізити й текст перед завантаженням.';
     },
-    issues:()=>[],
-    reveal:()=>{document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));panel.scrollIntoView({block:'start'});}
+    issues:reviewIssues,
+    reveal:issue=>{
+      document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));
+      if(issue?.letterId)selectLetter(issue.letterId,false);
+      const target=issue?.selector?document.querySelector(issue.selector):panel;
+      for(let parent=target?.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+      target?.scrollIntoView({block:'center',behavior:'smooth'});target?.focus({preventScroll:true});
+    }
   });
 })();

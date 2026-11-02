@@ -25,6 +25,10 @@ under `%LOCALAPPDATA%\Protokol\data`.
 * Other Python packages and PyInstaller: license texts and package metadata are
   included in `_internal/licenses`. PyInstaller's bootloader exception permits
   distributing applications built with it.
+* Word document previews run locally using docx-preview 0.3.7 (Apache-2.0)
+  and JSZip 3.10.1 (MIT option). Sources: https://github.com/VolodymyrBaydalka/docxjs
+  and https://github.com/Stuk/jszip . Their license texts and the bundled file
+  checksums are in `app/static/vendor` in the source archive and application.
 
 `_internal/licenses/protokol-source.zip` contains the application sources for
 this build. Package metadata identifies versions and upstream sources for

@@ -146,7 +146,8 @@
     $('#library-view').hidden = name !== 'library';
     if ($('#assignments-view')) $('#assignments-view').hidden = name !== 'assignments';
     if ($('#excel-view')) $('#excel-view').hidden = name !== 'excel';
-    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
+    if ($('#cover_letters-view')) $('#cover_letters-view').hidden = name !== 'cover_letters';
+    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', cover_letters:'Супровідні листи', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
     $$('.nav-button').forEach(button => {
       const active = button.dataset.view === name;
       button.classList.toggle('active', active);
@@ -617,6 +618,17 @@
     }
   });
   $('#items-list').addEventListener('change', event => { if (event.target.tagName === 'SELECT') updateItemField(event); });
+  $('#items-list').addEventListener('protokol:choose-template',event=>{
+    const select=event.target,card=select.closest('[data-item]');
+    const item=state.items.find(value=>String(value.id)===card?.dataset.item);
+    if(!item)return;
+    window.OZTemplatePicker.open({title:'Шаблони протоколів',subtitle:item.product_name||'Оберіть шаблон для зразка',
+      templates:state.templates,selectedId:item.template_id,recommendedIds:(item.matches||[]).map(t=>t.id),
+      downloadUrl:t=>`/api/templates/${encodeURIComponent(t.id)}/download`,
+      focusSelector:`[data-item="${CSS.escape(String(item.id))}"] select[data-field="template_id"]`,
+      onSelect:id=>{select.value=id;select.dispatchEvent(new Event('change',{bubbles:true}));window.OZTemplatePicker.sync(select);}
+    });
+  });
   $('#items-list').addEventListener('click', async event => {
     const card = event.target.closest('[data-item]');
     if (!card) return;
@@ -1053,7 +1065,8 @@
   }
   function revealActIssue(issue) {
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
-    const target = issue.selector ? $(issue.selector) : $('#items-list');
+    const field = issue.selector ? $(issue.selector) : $('#items-list');
+    const target = window.OZTemplatePicker?.control(field)||field;
     if (!target) return;
     const details = target.closest('details');
     if (details) details.open = true;

@@ -9,14 +9,20 @@
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/workspace.css">
   <link rel="stylesheet" href="/static/act-workspace.css">
+  <script src="/static/vendor/jszip-3.10.1.min.js" defer></script>
+  <script src="/static/vendor/docx-preview-0.3.7.min.js" defer></script>
+  <script src="/static/document-preview.js" defer></script>
+  <script src="/static/template-picker.js" defer></script>
   <script src="/static/workspace.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/customer-directory.js" defer></script>
   <link rel="stylesheet" href="/static/assignments.css">
+  <link rel="stylesheet" href="/static/ui-refresh.css">
   <script src="/static/assignments.js" defer></script>
   <script src="/static/printing.js" defer></script>
   <script src="/static/excel.js" defer></script>
   <script src="/static/cover-letters.js" defer></script>
+  <script src="/static/ui-shell.js" defer></script>
 </head>
 <body>
 <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -42,6 +48,7 @@
  <nav aria-label="Основна навігація">
   <button class="nav-button active" data-view="acts" aria-current="page"><svg class="icon"><use href="#i-file"/></svg>Акти відбору</button>
   <button class="nav-button" data-view="assignments"><svg class="icon"><use href="#i-file"/></svg>Завдання<span id="nav-assignment-count" class="nav-count">—</span></button>
+  <button class="nav-button" data-view="cover_letters"><svg class="icon"><use href="#i-edit"/></svg>Супровідні<span id="nav-letter-count" class="nav-count">0</span></button>
   <button class="nav-button" data-view="excel"><svg class="icon"><use href="#i-grid"/></svg>Excel<span id="nav-excel-count" class="nav-count">0</span></button>
   <button class="nav-button" data-view="library"><svg class="icon"><use href="#i-grid"/></svg>Бібліотека шаблонів<span id="nav-template-count" class="nav-count">—</span></button>
  </nav>

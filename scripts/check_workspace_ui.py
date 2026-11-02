@@ -26,6 +26,15 @@ SCRIPT = r'''void (async () => {try {
     input('[data-field="protocol_number"]','87-015-3000-1400-2');
     input('[data-field="protocol_date"]','29.10.2026');
     input('select[data-field="template_id"]','sample-1053','change');
+    const protocolSelect=document.querySelector('select[data-field="template_id"]');
+    await wait(()=>protocolSelect.previousElementSibling?.matches('[data-template-picker-control]'));
+    protocolSelect.previousElementSibling.click();
+    await wait(()=>document.querySelector('#template-picker[open]'));
+    input('[data-picker-search]','свинина');
+    document.querySelector('[data-picker-id="sample-1053"]').click();
+    await wait(()=>document.querySelector('[data-picker-document] .word-page'));
+    document.querySelector('[data-picker-apply]').click();
+    assert(protocolSelect.value==='sample-1053','Protocol template picker did not apply');
     await providers.excel.restore({records:[{id:'saved-excel',source:'act.pdf',values:{D:'001',E:'29.10.2026',G:'Test',M:'00001234',N:'12345678'},sources:{M:{kind:'manual',label:'Введено вручну'}}}],templateWasSelected:true,templateName:'old.xlsx'});
     const templates=(await(await fetch('/api/assignments/templates')).json()).templates;
     const template=templates.find(value=>value.sample_weight && value.standard && value.product_name);
@@ -36,6 +45,17 @@ SCRIPT = r'''void (async () => {try {
     assert(templateSelect.options.length===templates.filter(t=>t.department===template.department).length+1,'Full template library is not available');
     input(`[data-dept-search="${template.department}"]`,template.filename);
     assert(templateSelect.value===template.id,'Template search cleared the selected value');
+    await wait(()=>templateSelect.previousElementSibling?.matches('[data-template-picker-control]'));
+    templateSelect.previousElementSibling.click();
+    await wait(()=>document.querySelector('#template-picker[open]'));
+    input('[data-picker-search]',template.filename);
+    const pickerOption=document.querySelector(`[data-picker-id="${template.id}"]`);
+    assert(pickerOption,'Template picker search did not find the full filename');pickerOption.click();
+    await wait(()=>document.querySelector('[data-picker-document] .word-page'));
+    document.querySelector('[data-picker-apply]').click();
+    assert(document.querySelector(`[data-dept-template="${template.department}"]`).value===template.id,'Picker did not apply the selected template');
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));
+    assert(!document.querySelector('#cover_letters-view').hidden,'Dedicated cover letter section did not open');
     const protocol=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true,common:{customer:'Замовник',supplier:'ТОВ «Приклад»',sampling_description:'Одеса'},items:[{id:'cover-fixture',protocol_number:'87-015-3000-1400-2',protocol_date:'02.11.2026',product_name:'Свинина тушкована',template_id:'sample-1053'}]})});
     assert(protocol.ok,'Cover letter protocol fixture failed');
     const files=new DataTransfer(); files.items.add(new File([await protocol.arrayBuffer()],'protocols.zip',{type:'application/zip'}));
@@ -47,9 +67,15 @@ SCRIPT = r'''void (async () => {try {
     await wait(()=>!document.querySelector('[data-preview]').disabled);
     document.querySelector('[data-preview]').click();
     await wait(()=>document.querySelectorAll('[data-letter]').length===2);
+    await wait(()=>document.querySelector('[data-page-preview] .word-page'));
+    const paper=document.querySelector('[data-page-preview] .word-page').getBoundingClientRect();
+    assert(paper.width>0 && paper.height>paper.width,'A4 portrait preview is not visible');
+    await wait(()=>document.querySelector('[data-page-preview] img')?.naturalWidth>0);
     input('[data-letter="general"] [data-letter-field="body"]','Текст, відредагований перед завантаженням.\nДругий абзац.');
     assert(!document.querySelector('[data-confirm]').checked,'Edited letter kept its old approval');
     assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value.includes('Другий абзац.'),'Letter editor lost paragraphs');
+    await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('Другий абзац.'));
+    await wait(()=>document.querySelector('[data-dock-primary]').textContent.includes('супровідні'));
     document.querySelector('[data-confirm]').checked=true;
     let automaticCoverDraft=null;
     for(let i=0;i<100;i++) {
@@ -91,6 +117,14 @@ SCRIPT = r'''void (async () => {try {
     assert(document.querySelector('[data-records] [data-key="pages"]').value==='3','Cover letter pages did not restore');
     assert(!document.querySelector('[data-confirm]').checked,'Cover letter approval survived restore');
     assert(document.querySelector('[data-files]').files.length===0,'Source file input should be empty after reload');
+    assert(!document.querySelector('#cover_letters-view').hidden,'Cover draft restored into the wrong section');
+    const letterBody=document.querySelector('[data-letter="general"] [data-letter-field="body"]'),savedBody=letterBody.value;
+    input('[data-letter="general"] [data-letter-field="body"]','');
+    window.OZWorkspace.review('cover_letters');
+    const coverIssue=[...document.querySelectorAll('.workspace-issue')].find(row=>row.textContent.includes('основний текст'));
+    assert(coverIssue,'Missing letter text was not found by review');coverIssue.querySelector('button').click();
+    assert(document.activeElement===letterBody,'Cover letter review did not focus its field');
+    input('[data-letter="general"] [data-letter-field="body"]',savedBody);
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
     input('[data-field="protocol_date"]','31.02.2026');
     document.querySelector('#workspace-review').click();
@@ -100,7 +134,7 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(document.activeElement.dataset.field==='protocol_date','Review link did not focus the incorrect date');
     await window.OZWorkspace.flush();
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','cover letter editor before download','cover letter autosave and restore','linked date review']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','linked date review']}));
   }
 } catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error)}));}})();'''
 
@@ -132,7 +166,7 @@ def main() -> int:
                 print("JavaScript:", message, flush=True)
 
     page = Page(profile, application)
-    view = QWebEngineView(); view.setPage(page)
+    view = QWebEngineView(); view.setPage(page); view.resize(1440, 1000)
     capture = QWebEngineScript()
     capture.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
     capture.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)

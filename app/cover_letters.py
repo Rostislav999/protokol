@@ -409,6 +409,25 @@ def cover_letters_router(settings):
         except (ValueError, ValidationError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @router.post('/preview-document')
+    async def preview_document(payload: str = Form(...), letter_id: str = Form(..., max_length=100)):
+        try:
+            if len(payload) > 3*1024*1024:
+                raise ValueError('Дані комплекту завеликі.')
+            batch = LetterBatch.model_validate_json(payload)
+
+            def build():
+                for identity, title, filename, records, general in _letter_jobs(batch):
+                    if identity == letter_id:
+                        return render_letter(records, batch, general, batch.edits.get(identity))
+                raise ValueError('Лист не знайдено. Оновіть комплект супровідних.')
+
+            data = await run_in_threadpool(build)
+            return Response(data, media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            headers={'Cache-Control':'no-store'})
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @router.post('/import')
     async def read(files: list[UploadFile]=File(...)):
         try:

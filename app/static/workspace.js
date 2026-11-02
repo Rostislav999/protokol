@@ -164,7 +164,7 @@
       changed(activeSection); await saveAll();
     } catch (error) { status(errorMessage(error), true); }
   });
-  document.addEventListener('protokol:view', event => { if (['acts', 'assignments', 'excel'].includes(event.detail?.name)) activeSection = event.detail.name; });
+  document.addEventListener('protokol:view', event => { if (['acts', 'assignments', 'excel', 'cover_letters'].includes(event.detail?.name)) activeSection = event.detail.name; });
   document.addEventListener('protokol:workspace-section', event => {
     if (providers.has(event.detail?.name)) activeSection = event.detail.name;
   });

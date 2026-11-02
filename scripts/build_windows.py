@@ -220,7 +220,7 @@ def build(version: str) -> Path:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-only", action="store_true", help="Verify and stage the private Tesseract distribution.")
-    parser.add_argument("--version", default="1.2.0")
+    parser.add_argument("--version", default="1.3.0")
     args = parser.parse_args(argv)
     if os.name != "nt" or platform.machine().lower() not in ("amd64", "x86_64"):
         parser.error("Build on 64-bit Windows; use the Windows installer GitHub Actions workflow.")
