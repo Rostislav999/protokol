@@ -106,5 +106,6 @@
       return pages;
     }catch(error){stage.remove();throw error;}
   }
-  window.OZDocumentPreview={render,fit};
+  function invalidate(target){if(target)target.previewRevision=(target.previewRevision||0)+1;}
+  window.OZDocumentPreview={render,fit,invalidate};
 })();

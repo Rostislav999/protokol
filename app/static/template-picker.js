@@ -26,7 +26,7 @@
     $('[data-picker-download]').href=url;$('[data-picker-download]').hidden=false;
     controller?.abort();controller=new AbortController();const current=++generation;
     $('[data-picker-state]').textContent='Відкриваємо…';
-    const target=$('[data-picker-document]');target.replaceChildren();
+    const target=$('[data-picker-document]');window.OZDocumentPreview.invalidate(target);target.replaceChildren();
     try {
       const response=await fetch(url,{signal:controller.signal});
       if(!response.ok)throw new Error('Не вдалося відкрити Word-зразок.');
@@ -35,9 +35,9 @@
       if(current===generation)$('[data-picker-state]').textContent=`${count||1} стор.`;
     }catch(error){if(error.name!=='AbortError' && current===generation){$('[data-picker-state]').textContent='Перегляд недоступний';target.textContent=error.message;}}
   }
-  function close(){controller?.abort();generation++;dialog.close();}
+  function close(){controller?.abort();generation++;window.OZDocumentPreview.invalidate($('[data-picker-document]'));dialog.close();}
   dialog.querySelectorAll('[data-picker-close]').forEach(button=>button.onclick=close);
-  dialog.addEventListener('cancel',()=>{controller?.abort();generation++;});
+  dialog.addEventListener('cancel',()=>{controller?.abort();generation++;window.OZDocumentPreview.invalidate($('[data-picker-document]'));});
   dialog.addEventListener('click',event=>{if(event.target===dialog)close();});
   $('[data-picker-search]').oninput=rows;$('[data-picker-group]').onchange=rows;
   $('[data-picker-list]').onclick=event=>{const row=event.target.closest('[data-picker-id]');if(row)showDocument(row.dataset.pickerId);};

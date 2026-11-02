@@ -67,6 +67,7 @@
   panel.addEventListener('input',e=>{
     if (e.target.matches('[data-confirm]')) {updateSteps(e.target.checked?3:2);return;}
     if (e.target.matches('[data-files],[data-page-zoom]')) return;
+    e.target.closest('.field')?.classList.remove('invalid');
     settingsEdited=true;
     invalidate();
     if (!e.target.matches('[data-letter-field]')) clearLetters();
@@ -100,7 +101,7 @@
     finally { lock(false); }
   });
   function renderRecords() {
-    $('[data-records]').innerHTML=records.map((r,i)=>`<article class="panel"><h3>${i+1}. ${esc(r.source)}</h3><div class="form-grid">${[['number','Номер протоколу'],['date','Дата протоколу'],['supplier','Назва фірми'],['code','Код постачальника'],['pages','Кількість аркушів']].map(([key,label])=>`<label class="field"><span>${label}</span><input data-index="${i}" data-key="${key}" value="${esc(r[key])}" ${key==='pages'?'type="number" min="1" max="10000" step="1"':'type="text"'}></label>`).join('')}</div></article>`).join('');
+    $('[data-records]').innerHTML=records.map((r,i)=>`<article class="panel"><h3>${i+1}. ${esc(r.source)}</h3><div class="form-grid">${[['number','Номер протоколу'],['date','Дата протоколу'],['supplier','Назва фірми'],['code','Код постачальника'],['pages','Кількість аркушів']].map(([key,label])=>`<label class="field"><span>${label}${key!=='code'?' *':''}</span><input data-index="${i}" data-key="${key}" value="${esc(r[key])}" ${key!=='code'?'required':''} ${key==='pages'?'type="number" min="1" max="10000" step="1"':'type="text"'}></label>`).join('')}</div></article>`).join('');
   }
   function payload(numericPages = true) {
     const values=records.map(record=>({...record}));
@@ -123,7 +124,7 @@
   }
   function renderLetters() {
     if(!letters.some(letter=>letter.id===selectedLetterId))selectedLetterId=letters[0]?.id||'';
-    editor.innerHTML=letters.length?`<div class="cover-workbench"><aside class="letter-sidebar"><div class="letter-list-heading"><h2>Листи</h2><span class="count-pill">${letters.length}</span></div><nav class="letter-list" aria-label="Листи комплекту">${letters.map(letter=>`<button type="button" class="letter-list-item" data-select-letter="${esc(letter.id)}"><span>${esc(letter.title)}</span><small>${letter.content.attachments?.length||0} додатків · Word</small></button>`).join('')}</nav></aside><section class="letter-document-area"><div class="letter-toolbar"><div><p class="eyebrow">РЕДАКТОР СУПРОВІДНОЇ</p><h2 data-letter-title></h2></div><div class="letter-mobile-tabs"><button type="button" class="button secondary active" data-editor-mode="split">Редагувати</button><button type="button" class="button secondary" data-editor-mode="preview">Перегляд</button></div></div><div class="letter-editor-layout" data-editor-layout data-mode="split"><div class="letter-fields">${letters.map(letter=>`<div data-letter="${esc(letter.id)}" ${letter.id===selectedLetterId?'':'hidden'}>${fields.map(([key,label,rows])=>`<label class="field"><span>${label}</span><textarea rows="${rows}" data-letter-field="${key}">${esc(Array.isArray(letter.content[key])?letter.content[key].join('\n'):letter.content[key])}</textarea></label>`).join('')}</div>`).join('')}</div><aside class="letter-preview"><div class="preview-heading"><span data-page-status role="status">Готуємо вигляд сторінки…</span><label><span class="sr-only">Масштаб сторінки</span><select data-page-zoom aria-label="Масштаб сторінки"><option value="fit">За шириною</option><option value="75">75%</option><option value="100">100%</option></select></label></div><div class="word-preview" data-page-preview></div><p class="preview-note">Попередній вигляд DOCX. Остаточна пагінація й друк — у Word.</p></aside></div></section></div>`:'';
+    editor.innerHTML=letters.length?`<div class="cover-workbench"><aside class="letter-sidebar"><div class="letter-list-heading"><h2>Листи</h2><span class="count-pill">${letters.length}</span></div><nav class="letter-list" aria-label="Листи комплекту">${letters.map(letter=>`<button type="button" class="letter-list-item" data-select-letter="${esc(letter.id)}"><span>${esc(letter.title)}</span><small>${letter.content.attachments?.length||0} додатків · Word</small></button>`).join('')}</nav></aside><section class="letter-document-area"><div class="letter-toolbar"><div><p class="eyebrow">РЕДАКТОР СУПРОВІДНОЇ</p><h2 data-letter-title></h2></div><div class="letter-mobile-tabs"><button type="button" class="button secondary active" data-editor-mode="split">Редагувати</button><button type="button" class="button secondary" data-editor-mode="preview">Перегляд</button></div></div><div class="letter-editor-layout" data-editor-layout data-mode="split"><div class="letter-fields">${letters.map(letter=>`<div data-letter="${esc(letter.id)}" ${letter.id===selectedLetterId?'':'hidden'}>${fields.map(([key,label,rows])=>`<label class="field"><span>${label}${!['attachments','contact'].includes(key)?' *':''}</span><textarea rows="${rows}" data-letter-field="${key}" ${!['attachments','contact'].includes(key)?'required':''}>${esc(Array.isArray(letter.content[key])?letter.content[key].join('\n'):letter.content[key])}</textarea></label>`).join('')}</div>`).join('')}</div><aside class="letter-preview"><div class="preview-heading"><span data-page-status role="status">Готуємо вигляд сторінки…</span><label><span class="sr-only">Масштаб сторінки</span><select data-page-zoom aria-label="Масштаб сторінки"><option value="fit">За шириною</option><option value="75">75%</option><option value="100">100%</option></select></label></div><div class="word-preview" data-page-preview></div><p class="preview-note">Попередній вигляд DOCX. Остаточна пагінація й друк — у Word.</p></aside></div></section></div>`:'';
     editor.hidden=!letters.length;
     $('[data-generate]').disabled=!letters.length;
     $('[data-cover-generation]').hidden=!letters.length;
@@ -147,6 +148,7 @@
   }
   function queuePreview(delay=500) {
     clearTimeout(previewTimer);previewController?.abort();previewGeneration++;
+    window.OZDocumentPreview.invalidate($('[data-page-preview]'));
     const status=$('[data-page-status]');if(status)status.textContent='Оновлюємо сторінку…';
     previewTimer=setTimeout(renderCurrentPreview,delay);
   }
@@ -174,7 +176,7 @@
   editor.addEventListener('click',event=>{
     const item=event.target.closest('[data-select-letter]');if(item)selectLetter(item.dataset.selectLetter);
     const mode=event.target.closest('[data-editor-mode]');
-    if(mode){$('[data-editor-layout]').dataset.mode=mode.dataset.editorMode;editor.querySelectorAll('[data-editor-mode]').forEach(button=>button.classList.toggle('active',button===mode));window.OZDocumentPreview.fit($('[data-page-preview]'),$('[data-page-zoom]').value);}
+    if(mode){$('[data-editor-layout]').dataset.mode=mode.dataset.editorMode;editor.querySelectorAll('[data-editor-mode]').forEach(button=>button.classList.toggle('active',button===mode));window.OZDocumentPreview.fit($('[data-page-preview]'),$('[data-page-zoom]').value);if(mode.dataset.editorMode==='preview')queuePreview(0);}
   });
   editor.addEventListener('change',event=>{
     if(event.target.matches('[data-page-zoom]'))window.OZDocumentPreview.fit($('[data-page-preview]'),event.target.value);
@@ -281,8 +283,13 @@
     issues:reviewIssues,
     reveal:issue=>{
       document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));
-      if(issue?.letterId)selectLetter(issue.letterId,false);
+      if(issue?.letterId){
+        selectLetter(issue.letterId,false);
+        $('[data-editor-layout]').dataset.mode='split';
+        editor.querySelectorAll('[data-editor-mode]').forEach(button=>button.classList.toggle('active',button.dataset.editorMode==='split'));
+      }
       const target=issue?.selector?document.querySelector(issue.selector):panel;
+      target?.closest('.field')?.classList.add('invalid');
       for(let parent=target?.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
       target?.scrollIntoView({block:'center',behavior:'smooth'});target?.focus({preventScroll:true});
     }
