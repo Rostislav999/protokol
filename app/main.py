@@ -28,6 +28,7 @@ from .printing import printing_status
 from .sample_details import first_seal_number, sample_weight_value
 from .supplier_details import supplier_with_code
 from .excel_api import excel_router
+from .cover_letters import cover_letters_router
 from .backups import backup_router, create_automatic_backup
 from .workspace import DraftStore, WorkspaceError, workspace_router
 from .storage_lock import DataAccessMiddleware, data_guard
@@ -264,6 +265,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     app.include_router(settings_router(settings))
     app.include_router(excel_router(settings))
+    app.include_router(cover_letters_router(settings))
     with data_guard(directory):
         app.include_router(assignments_router(directory, settings))
     app.include_router(workspace_router(directory))
