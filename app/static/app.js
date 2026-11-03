@@ -147,7 +147,8 @@
     if ($('#assignments-view')) $('#assignments-view').hidden = name !== 'assignments';
     if ($('#excel-view')) $('#excel-view').hidden = name !== 'excel';
     if ($('#cover_letters-view')) $('#cover_letters-view').hidden = name !== 'cover_letters';
-    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', cover_letters:'Супровідні листи', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
+    if ($('#outgoing-view')) $('#outgoing-view').hidden = name !== 'outgoing';
+    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', cover_letters:'Супровідні листи', outgoing:'Журнал вихідних', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
     $$('.nav-button').forEach(button => {
       const active = button.dataset.view === name;
       button.classList.toggle('active', active);
@@ -811,16 +812,8 @@
     try {
       const response = await jsonPost('/api/generate', {common: state.common, items: state.items.map(({matches, ...item}) => item), confirmed: true});
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'protokoly.zip';
-      document.body.append(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
       $('#download-success').hidden = false;
-      $('#download-success').innerHTML = `${icon('check')}<div><strong>Протоколи створено — ${state.items.length} Word-файлів.</strong><br>Архів передано для завантаження. Відкрийте документи та перевірте оформлення перед використанням.</div>`;
+      $('#download-success').innerHTML = `${icon('check')}<div><strong>Протоколи створено — ${state.items.length} Word-файлів.</strong><br>Повторне завантаження — у меню «Ще». Відкрийте документи та перевірте оформлення перед використанням.</div>`;
       const excelButton = document.createElement('button');
       excelButton.type = 'button';
       excelButton.id = 'protocols-to-excel';
@@ -834,6 +827,7 @@
       $('#step-review').classList.remove('current');
       $('#step-review').classList.add('complete');
       $('#step-download').classList.add('current');
+      await window.OZOffice.deliver(blob,'protokoly.zip','acts');
       toast('Архів протоколів готовий.');
     } catch (error) { toast(error.message, true); }
     finally {

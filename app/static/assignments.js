@@ -19,7 +19,7 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const changed = () => window.OZWorkspace?.changed('assignments');
   const originText = source => source?.label || ({act:'З акта',manual:'Введено вручну',directory:'Із довідника',template:'Із шаблону',derived:'Обчислено програмою'})[source?.kind] || 'Джерело не збережено';
-  const sourceHint = (item,key) => `<small class="field-source" data-assignment-origin="${key}">Джерело: ${esc(originText(item.sources?.[key]))}</small>`;
+  const sourceHint = (item,key) => {const text=originText(item.sources?.[key]);return `<small class="field-source" data-assignment-origin="${key}">${text.startsWith('Джерело')?'':'Джерело: '}${esc(text)}</small>`;};
   const itemSelector = item => `[data-assignment-item="${CSS.escape(item.id)}"]`;
   const view = document.createElement('section');
   view.id = 'assignments-view';
@@ -746,10 +746,6 @@
     try {
       const response = await post('/api/assignments/generate',payload);
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href=url; link.download='zavdannia.zip'; document.body.append(link); link.click(); link.remove();
-      setTimeout(() => URL.revokeObjectURL(url),60000);
       const issued = response.headers.get('X-Assignment-Date') || state.today;
       const next = Number(response.headers.get('X-Next-Sample-Number'));
       let issuedNumbers;
@@ -763,9 +759,10 @@
       renderItems();
       $('#assignment-success').hidden=false;
       const numbers=state.result.numbers;
-      $('#assignment-success').innerHTML=`${icon('check')}<div><strong>Завдання сформовано. Номери зразків: ${esc(numbers.slice(0,8).join(', '))}${numbers.length > 8 ? ` та ще ${numbers.length - 8}` : ''}.</strong><br>Дата видачі: ${esc(displayDate(issued))}. Архів передано для завантаження. Уже присвоєні номери зберігаються при виправленні даних і додаванні відділень.</div>`;
+      $('#assignment-success').innerHTML=`${icon('check')}<div><strong>Завдання сформовано. Номери зразків: ${esc(numbers.slice(0,8).join(', '))}${numbers.length > 8 ? ` та ще ${numbers.length - 8}` : ''}.</strong><br>Дата видачі: ${esc(displayDate(issued))}. Повторне завантаження — у меню «Ще». Уже присвоєні номери зберігаються при виправленні даних і додаванні відділень.</div>`;
       document.dispatchEvent(new CustomEvent('protokol:assignments-ready',{detail:{payload:state.result.payload}}));
       changed();
+      await window.OZOffice.deliver(blob,'zavdannia.zip','assignments');
       notice('Архів завдань готовий.');
     } catch(error) {
       notice(error.message,true);

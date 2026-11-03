@@ -84,7 +84,8 @@ class DataAccessMiddleware:
         self.app, self.directory = app, Path(directory)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
+        if (scope["type"] != "http" or not scope.get("path", "").startswith("/api/")
+                or scope.get('path', '') in ('/api/word/status', '/api/word/pdf')):
             return await self.app(scope, receive, send)
         lease = None
         try:

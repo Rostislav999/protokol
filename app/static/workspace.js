@@ -50,6 +50,7 @@
     for (const [section, item] of drafts) {
       if (!item.pending || !item.entry || !providers.has(section)) continue;
       const row = document.createElement('div'); row.className = 'workspace-draft notice soft';
+      row.hidden=section!==activeSection;
       const label = document.createElement('span');
       label.textContent = `${providers.get(section).title}: є збережена чернетка від ${time(item.entry.updated_at)}.`;
       row.append(label, button('Відновити', () => restore(section)), button('Зберегти поточні замість неї', () => replaceSaved(section)));
@@ -57,6 +58,7 @@
       list.append(row);
     }
     if (loadError) list.append(button('Повторити завантаження чернеток', () => load()));
+    ui.classList.toggle('has-visible-drafts',!!list.querySelector('.workspace-draft:not([hidden])'));
   }
   async function load() {
     try {
@@ -164,7 +166,7 @@
       changed(activeSection); await saveAll();
     } catch (error) { status(errorMessage(error), true); }
   });
-  document.addEventListener('protokol:view', event => { if (['acts', 'assignments', 'excel', 'cover_letters'].includes(event.detail?.name)) activeSection = event.detail.name; });
+  document.addEventListener('protokol:view', event => { if (['acts', 'assignments', 'excel', 'cover_letters'].includes(event.detail?.name)) activeSection = event.detail.name; renderDrafts(); });
   document.addEventListener('protokol:workspace-section', event => {
     if (providers.has(event.detail?.name)) activeSection = event.detail.name;
   });
@@ -286,6 +288,17 @@
   };
   window.OZWorkspace = {
     register(section, provider) { providers.set(section, provider); state(section); renderDrafts(); },
+    async replaceWith(section,data) {
+      if(!loaded)throw new Error(loadError||'Дочекайтеся завантаження чернеток.');
+      const provider=providers.get(section),item=state(section);
+      if(!provider)throw new Error('Редактор ще не готовий.');
+      if((item.pending||provider.hasData?.())&&!window.confirm('Відкрити копію з журналу замість поточного комплекту та збереженої чернетки супровідних?'))return false;
+      clearTimeout(item.timer);if(item.flight)await item.flight;
+      restoring.add(section);
+      try{await provider.restore(data);}finally{restoring.delete(section);}
+      item.pending=false;item.dirty=true;item.generation++;renderDrafts();
+      await persist(section);return true;
+    },
     changed, review, flush: saveAll,
     get pending() { return [...drafts.values()].some(item => item.dirty || item.flight); }
   };

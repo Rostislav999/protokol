@@ -180,6 +180,12 @@ def _validate_json_file(relative: str, data, files: set[str]) -> None:
                         raise BackupError("Некоректний ЄДРПОУ у резервній копії.")
         if not isinstance(data.get("default_issuer_id", ""), str):
             raise BackupError("Некоректний вибір особи, що видає завдання.")
+    elif normalized in {'signers.json', 'appearance.json'}:
+        from .preferences import SignerState, Appearance
+        try:
+            (SignerState if normalized == 'signers.json' else Appearance).model_validate(data)
+        except ValueError as exc:
+            raise BackupError('Некоректні профілі підписантів або налаштування вигляду.') from exc
 
 
 class BackupStore:
@@ -341,6 +347,12 @@ class BackupStore:
                         _validate_json_file(name, _json(target.read_bytes()), set(files))
                     elif name.casefold() == "numbering.sqlite3":
                         _validate_numbering(target)
+                    elif name.casefold() == 'outgoing.sqlite3':
+                        from .outgoing import JournalStore
+                        try:
+                            JournalStore.validate(target)
+                        except (ValueError, sqlite3.Error, KeyError) as exc:
+                            raise BackupError('Некоректна база журналу вихідних листів.') from exc
                     elif target.suffix.lower() == ".docx":
                         _validate_docx(target)
                 return manifest

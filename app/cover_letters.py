@@ -12,12 +12,13 @@ from zipfile import BadZipFile, ZipFile, ZIP_DEFLATED
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from lxml import etree as E
 
 from .excel_api import _read_record
 from .protocol_excel import _parts, xml, cell_text, part_path, NS, R, W, protocol_key, date_text, supplier_code
+from .word_tools import OfficeError, office_status, process_documents
 
 ASSETS = Path(__file__).resolve().parent.parent / 'assets/cover_letters'
 WN = {'w': W}
@@ -68,6 +69,37 @@ class LetterContent(BaseModel):
         return value
 
 
+class LetterRegistration(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    number: str = Field(default='', max_length=100)
+    date: str = Field(default='', max_length=30)
+
+    @field_validator('number')
+    @classmethod
+    def printable_number(cls, value):
+        if any(ord(char) < 32 for char in value):
+            raise ValueError('Вихідний номер має бути одним рядком.')
+        return value
+
+    @field_validator('date')
+    @classmethod
+    def valid_date(cls, value):
+        if not value:
+            return ''
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            return datetime.strptime(value, '%Y-%m-%d').date().isoformat()
+        parsed = date_text(value)
+        if not parsed:
+            raise ValueError('Укажіть коректну дату вихідного листа.')
+        return datetime.strptime(parsed, '%d.%m.%Y').date().isoformat()
+
+    @model_validator(mode='after')
+    def number_needs_date(self):
+        if self.number and not self.date:
+            raise ValueError('Поруч із вихідним номером укажіть дату листа.')
+        return self
+
+
 class LetterBatch(BaseModel):
     records: list[LetterRecord] = Field(min_length=1, max_length=100)
     confirmed: bool = False
@@ -77,8 +109,12 @@ class LetterBatch(BaseModel):
     company_signer: str = Field(default='майор Ростислав АДРІАНОВ', min_length=1, max_length=500)
     contact: str = Field(default='', max_length=500)
     extra_attachments: str = Field(default='', max_length=3000)
+    general_contact: str | None = Field(default=None, max_length=500)
+    company_contact: str | None = Field(default=None, max_length=500)
     include_excel: bool = True
     edits: dict[str, LetterContent] = Field(default_factory=dict, max_length=101)
+    registrations: dict[str, LetterRegistration] = Field(default_factory=dict, max_length=101)
+    generation_id: str = Field(default='', pattern=r'^[A-Za-z0-9_-]{0,100}$')
 
 
 def workbook_records(data):
@@ -113,7 +149,7 @@ def workbook_records(data):
     return result
 
 
-def prepare(files, suppliers):
+def prepare(files, suppliers, exact_pages=False):
     records, warnings, documents, books = [], [], [], []
     expanded = 0
     for name, data in files:
@@ -137,6 +173,7 @@ def prepare(files, suppliers):
         raise ValueError('Оберіть 1–100 протоколів та не більше однієї таблиці XLSX.')
     table = workbook_records(books[0]) if books else {}
     seen = set()
+    docx_indices = []
     for name, data in documents:
         expanded += len(data)
         if expanded > 150*1024*1024:
@@ -171,8 +208,22 @@ def prepare(files, suppliers):
                 nodes = xml(parts['docProps/app.xml']).xpath('//*[local-name()="Pages"]/text()')
                 if nodes and nodes[0].isdigit() and int(nodes[0]) > 0:
                     pages = int(nodes[0])
-            warnings.append(name + ': перевірте кількість аркушів DOCX за оригіналом; метадані можуть бути застарілими.')
-        records.append(dict(source=name, number=number, date=cells.get('E') or values.get('E',''), supplier=supplier, code=code, pages=pages))
+            docx_indices.append(len(records))
+        records.append(dict(source=name, number=number, date=cells.get('E') or values.get('E',''), supplier=supplier, code=code,
+                            pages=pages, pages_source='PDF' if name.lower().endswith('.pdf') else 'metadata'))
+    if docx_indices and exact_pages and office_status()['available']:
+        try:
+            counted = process_documents([documents[index] for index in docx_indices])
+            for index, result in zip(docx_indices, counted):
+                if result['pages']:
+                    records[index].update(pages=result['pages'], pages_source='Word' if result['engine']=='word' else 'LibreOffice')
+                elif result.get('error'):
+                    warnings.append(records[index]['source'] + ': не вдалося порахувати аркуші. ' + result['error'])
+        except OfficeError as exc:
+            warnings.append('Точний підрахунок аркушів не завершено: ' + str(exc))
+    for index in docx_indices:
+        if records[index]['pages_source'] == 'metadata':
+            warnings.append(records[index]['source'] + ': перевірте кількість аркушів DOCX за оригіналом; метадані можуть бути застарілими.')
     return dict(records=records, warnings=warnings, has_excel=bool(books))
 
 
@@ -266,15 +317,19 @@ def _attachment_paragraph(source, value):
     return paragraph
 
 
+def _company_recipient(line):
+    return re.sub(
+        r'[\s,;_–—-]*(?:\(\s*)?(?:код[\s_]+)?[ЄЕ]ДРПОУ'
+        r'[\s_:№.-]*[0-9]{8}(?:[0-9]{2})?(?![0-9])(?:[ \t]*\))?',
+        '', line, flags=re.I,
+    ).strip(' \t,;_–—-')
+
+
 def _company_content(content):
     """Hide labelled tax IDs only in the company address, keeping source records."""
     recipients = []
     for line in content.recipients:
-        name = re.sub(
-            r'[\s,;_–—-]*(?:\(\s*)?(?:код[\s_]+)?[ЄЕ]ДРПОУ'
-            r'[\s_:№.-]*[0-9]{8}(?:[0-9]{2})?(?![0-9])(?:[ \t]*\))?',
-            '', line, flags=re.I,
-        ).strip(' \t,;_–—-')
+        name = _company_recipient(line)
         if name:
             recipients.append(name)
     if not recipients:
@@ -298,9 +353,11 @@ def _default_content(records, batch, general, paragraphs):
         attachments += [s.strip() for s in batch.extra_attachments.splitlines() if s.strip()]
         if batch.include_excel:
             attachments.append('Зведена таблиця у форматі Excel «Зведена інформація щодо протоколів випробувань».')
+    contact = batch.general_contact if general else batch.company_contact
     return LetterContent(recipients=recipients, body=[text], attachments=attachments,
                          position=batch.general_position if general else batch.company_position,
-                         signer=batch.general_signer if general else batch.company_signer, contact=batch.contact)
+                         signer=batch.general_signer if general else batch.company_signer,
+                         contact=batch.contact if contact is None else contact)
 
 
 def render_letter(records, batch, general, content=None):
@@ -311,6 +368,15 @@ def render_letter(records, batch, general, content=None):
     content = content or _default_content(records, batch, general, paragraphs)
     if not general:
         content = _company_content(content)
+    identity = 'general' if general else 'company-' + sha256(' '.join(records[0].supplier.casefold().split()).encode()).hexdigest()[:20]
+    registration = batch.registrations.get(identity, LetterRegistration())
+    stamp = body.find('w:tbl', WN)
+    if registration.date:
+        date_paragraph = next(p for p in stamp.findall('.//w:p', WN) if _paragraph_text(p).startswith('«_____»'))
+        _fill_text(date_paragraph, datetime.strptime(registration.date, '%Y-%m-%d').strftime('%d.%m.%Y'))
+    if registration.number:
+        number_paragraph = next(p for p in stamp.findall('.//w:p', WN) if _paragraph_text(p).startswith('№'))
+        _fill_text(number_paragraph, '№ ' + registration.number)
     introduction = next(p for p in paragraphs if _paragraph_text(p).startswith('Надсилаю на Вашу адресу'))
     first = next(p for p in paragraphs if _paragraph_text(p).startswith('Додаток:'))
     start = paragraphs.index(first)
@@ -398,7 +464,7 @@ def _letter_jobs(batch):
         name = re.sub(r'[^\w .«»()-]', '_', records[0].supplier)[:100].strip(' .')
         identity = 'company-' + sha256(key.encode('utf-8')).hexdigest()[:20]
         jobs.append((identity, records[0].supplier, f'{i:02d}_Супровід_{name}.docx', records, False))
-    if set(batch.edits) - {job[0] for job in jobs}:
+    if (set(batch.edits) | set(batch.registrations)) - {job[0] for job in jobs}:
         raise ValueError('Склад фірм змінився. Оновіть листи для редагування перед завантаженням.')
     return jobs
 
@@ -411,7 +477,8 @@ def preview(batch):
         content = batch.edits.get(identity) or _default_content(records, batch, general, paragraphs)
         if not general:
             content = _company_content(content)
-        letters.append(dict(id=identity, title=title, filename=filename, content=content.model_dump()))
+        letters.append(dict(id=identity, title=title if general else _company_recipient(title), filename=filename,
+                            registration=batch.registrations.get(identity, LetterRegistration()).model_dump(), content=content.model_dump()))
     return dict(letters=letters)
 
 
@@ -424,7 +491,30 @@ def generate(batch):
     return out.getvalue()
 
 
-def cover_letters_router(settings):
+def save_to_journal(batch, journal, *, status='ready'):
+    if status == 'ready' and not batch.confirmed:
+        raise ValueError('Підтвердьте перевірку реквізитів і кількості аркушів.')
+    import json
+    payload = batch.model_dump(exclude={'confirmed', 'generation_id'})
+    fingerprint = sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    batch_id = batch.generation_id or fingerprint
+    letters = {letter['id']: letter for letter in preview(batch)['letters']}
+    payload['edits'] = {identity: letter['content'] for identity, letter in letters.items()}
+    payload['confirmed'] = False
+
+    def build():
+        result = []
+        for identity, title, filename, records, general in _letter_jobs(batch):
+            registration = batch.registrations.get(identity, LetterRegistration())
+            result.append(dict(identity=identity, title=letters[identity]['title'], filename=filename,
+                               protocols=[record.number for record in records], number=registration.number, date=registration.date,
+                               docx=render_letter(records, batch, general, batch.edits.get(identity))))
+        return result
+
+    return journal.register(batch_id, fingerprint, payload, build, status=status), batch_id
+
+
+def cover_letters_router(settings, journal=None):
     router=APIRouter(prefix='/api/cover-letters',tags=['cover-letters'])
 
     @router.post('/preview')
@@ -457,7 +547,7 @@ def cover_letters_router(settings):
             raise HTTPException(422, str(exc)) from exc
 
     @router.post('/import')
-    async def read(files: list[UploadFile]=File(...)):
+    async def read(files: list[UploadFile]=File(...), exact_pages: bool=Form(True)):
         try:
             if not 1<=len(files)<=101: raise ValueError('Оберіть до 100 протоколів та одну XLSX.')
             uploaded=[];total=0
@@ -467,7 +557,7 @@ def cover_letters_router(settings):
                 data=await f.read(25*1024*1024+1);total+=len(data)
                 if not data or len(data)>25*1024*1024 or total>100*1024*1024: raise ValueError('До 25 МБ на файл і 100 МБ на комплект.')
                 uploaded.append((name,data))
-            return await run_in_threadpool(prepare,uploaded,settings.all()['suppliers'])
+            return await run_in_threadpool(prepare,uploaded,settings.all()['suppliers'],exact_pages)
         except (ValueError, KeyError, IndexError, OSError, BadZipFile, RuntimeError) as exc:
             raise HTTPException(422,str(exc)) from exc
         finally:
@@ -478,8 +568,25 @@ def cover_letters_router(settings):
         try:
             if len(payload)>3*1024*1024: raise ValueError('Дані комплекту завеликі.')
             batch=LetterBatch.model_validate_json(payload)
-            data=await run_in_threadpool(generate,batch)
-            return Response(data,media_type='application/zip',headers={'Content-Disposition':"attachment; filename*=UTF-8''%D0%A1%D1%83%D0%BF%D1%80%D0%BE%D0%B2%D1%96%D0%B4%D0%BD%D1%96.zip"})
+            if journal is None:
+                data = await run_in_threadpool(generate, batch)
+                batch_id = ''
+            else:
+                data, batch_id = await run_in_threadpool(save_to_journal, batch, journal)
+            return Response(data,media_type='application/zip',headers={'Content-Disposition':"attachment; filename*=UTF-8''%D0%A1%D1%83%D0%BF%D1%80%D0%BE%D0%B2%D1%96%D0%B4%D0%BD%D1%96.zip",'X-Journal-Batch':batch_id})
         except (ValueError,ValidationError) as exc:
-            raise HTTPException(422,str(exc)) from exc
+            raise HTTPException(getattr(exc, 'status', 422),str(exc)) from exc
+
+    @router.post('/save-draft')
+    async def save_draft(payload: str=Form(...)):
+        try:
+            if journal is None:
+                raise ValueError('Журнал недоступний.')
+            if len(payload)>3*1024*1024:
+                raise ValueError('Дані комплекту завеликі.')
+            batch = LetterBatch.model_validate_json(payload)
+            _, batch_id = await run_in_threadpool(save_to_journal, batch, journal, status='draft')
+            return {'saved': True, 'batch_id': batch_id}
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(getattr(exc, 'status', 422), str(exc)) from exc
     return router

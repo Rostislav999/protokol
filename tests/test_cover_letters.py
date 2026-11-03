@@ -249,4 +249,16 @@ def test_company_address_keeps_name_numbers_and_edited_recipient_lines():
     ]
 
 
+def test_general_and_company_contacts_are_independent_and_legacy_contact_is_preserved():
+    payload = LetterBatch(records=[dict(number='87-012-2972-1259-2', date='01.10.2026',
+                                       supplier='ТОВ «Тест»', pages=3)], contact='Спільний контакт')
+    assert {letter['content']['contact'] for letter in preview(payload)['letters']} == {'Спільний контакт'}
+    payload.general_contact = 'Контакт загального листа'
+    payload.company_contact = 'Контакт фірм'
+    letters = preview(payload)['letters']
+    assert [letter['content']['contact'] for letter in letters] == ['Контакт загального листа', 'Контакт фірм']
+    payload.company_contact = ''
+    assert preview(payload)['letters'][1]['content']['contact'] == ''
+
+
 if __name__=='__main__': unittest.main()

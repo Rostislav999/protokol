@@ -1,4 +1,4 @@
-"""Browser app; documents and OCR stay on the machine running this server."""
+"""Local document workspace, embedded in the native desktop application."""
 from __future__ import annotations
 
 import io
@@ -29,6 +29,9 @@ from .sample_details import first_seal_number, sample_weight_value
 from .supplier_details import supplier_with_code
 from .excel_api import excel_router
 from .cover_letters import cover_letters_router
+from .outgoing import JournalStore, outgoing_router
+from .preferences import preferences_router
+from .word_tools import word_router
 from .backups import backup_router, create_automatic_backup
 from .workspace import DraftStore, WorkspaceError, workspace_router
 from .storage_lock import DataAccessMiddleware, data_guard
@@ -109,10 +112,10 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="ОЗтаУСЯ", version="1.3.1")
+    app = FastAPI(title="ОЗтаУСЯ", version="1.4.0")
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
     with data_guard(directory):
-        create_automatic_backup(directory, "1.3.1")
+        create_automatic_backup(directory, "1.4.0")
         library = Library(directory / "templates")
         settings = SettingsStore(directory)
     app.state.library = library
@@ -265,7 +268,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     app.include_router(settings_router(settings))
     app.include_router(excel_router(settings))
-    app.include_router(cover_letters_router(settings))
+    journal = JournalStore(directory / 'outgoing.sqlite3')
+    app.include_router(cover_letters_router(settings, journal))
+    app.include_router(outgoing_router(journal))
+    app.include_router(preferences_router(directory))
+    app.include_router(word_router())
     with data_guard(directory):
         app.include_router(assignments_router(directory, settings))
     app.include_router(workspace_router(directory))
@@ -281,8 +288,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         Library(stage / "templates")
         AssignmentLibrary(stage / "assignment_templates")
         SettingsStore(stage).all()
+        from .preferences import _read, SignerState, Appearance
+        _read(stage / 'signers.json', SignerState)
+        _read(stage / 'appearance.json', Appearance)
 
-    app.include_router(backup_router(directory, version="1.3.1", validate_staged=validate_restored))
+    app.include_router(backup_router(directory, version="1.4.0", validate_staged=validate_restored))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app

@@ -60,6 +60,9 @@ SCRIPT = r'''void (async () => {try {
     assert(protocol.ok,'Cover letter protocol fixture failed');
     const files=new DataTransfer(); files.items.add(new File([await protocol.arrayBuffer()],'protocols.zip',{type:'application/zip'}));
     const upload=document.querySelector('[data-files]'); upload.files=files.files; upload.dispatchEvent(new Event('change',{bubbles:true}));
+    // Native renderer validation must not start a separately installed Office.
+    // Actual pagination/conversion is covered by the office integration checks.
+    document.querySelector('[data-exact-pages]').checked=false;
     document.querySelector('[data-import]').click();
     await wait(()=>document.querySelector('[data-records] [data-key="pages"]'));
     input('[data-records] [data-key="supplier"]','ТОВ «Приклад», код ЄДРПОУ: 00123456');
@@ -75,18 +78,66 @@ SCRIPT = r'''void (async () => {try {
     assert(stamp,'Missing cover letter stamp');
     assert([...stamp.querySelectorAll('span')].filter(node=>node.textContent.trim()).every(node=>getComputedStyle(node).color==='rgb(46, 117, 182)'),'Stamp text uses inconsistent ink');
     assert(getComputedStyle(stamp.querySelector('img')).filter.includes('stamp-ink-'),'Emblem preview did not apply the Word stamp ink');
-    const companyButton=document.querySelector('[data-select-letter^="company-"]');companyButton.click();
+    const companyId=[...document.querySelector('[data-letter-select]').options].find(option=>option.value.startsWith('company-')).value;
+    input('[data-letter-select]',companyId,'change');
     await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('ТОВ «Приклад»'));
     const companyAddress=document.querySelector('[data-letter]:not([hidden]) [data-letter-field="recipients"]').value;
     assert(companyAddress==='ТОВ «Приклад»','Company address still includes its tax code');
     assert(!document.querySelector('[data-page-preview]').textContent.includes('00123456'),'Company DOCX preview still includes its tax code');
-    document.querySelector('[data-select-letter="general"]').click();
+    input('[data-letter-select]','general','change');
     await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('00123456'));
     input('[data-letter="general"] [data-letter-field="body"]','Текст, відредагований перед завантаженням.\nДругий абзац.');
     assert(!document.querySelector('[data-confirm]').checked,'Edited letter kept its old approval');
     assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value.includes('Другий абзац.'),'Letter editor lost paragraphs');
     await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('Другий абзац.'));
     await wait(()=>document.querySelector('[data-dock-primary]').textContent.includes('супровідні'));
+    document.querySelector('[data-manage-signers]').click();
+    await wait(()=>document.querySelector('#signer-profiles[open]'));
+    input('#signer-profiles [name="name"]','Підпис для перевірки');
+    input('#signer-profiles [name="position"]','Начальник лабораторії');
+    input('#signer-profiles [name="signer"]','майор Ірина ПРИКЛАД');
+    input('#signer-profiles [name="contact"]','Виконавець 00 000');
+    document.querySelector('[data-profile-save]').click();
+    await wait(()=>document.querySelector('[data-profile-message]').textContent.includes('збережено'));
+    const profile=(await(await fetch('/api/signers')).json()).profiles[0];
+    assert(profile?.signer==='майор Ірина ПРИКЛАД','Signer profile did not persist');
+    document.querySelector('[data-signers-close]').click();
+    const profileSelect=document.querySelector('[data-letter="general"] [data-apply-profile="individual"]');
+    profileSelect.closest('details').open=true;
+    input('[data-letter="general"] [data-apply-profile="individual"]',profile.id,'change');
+    assert(document.querySelector('[data-letter="general"] [data-letter-field="signer"]').value===profile.signer,'Signer profile was not applied');
+    assert(document.querySelector('[data-letter="general"] [data-letter-field="contact"]').value===profile.contact,'Profile contact was not applied');
+    document.querySelector('[data-letter="general"] .letter-registration').open=true;
+    input('[data-letter="general"] [data-registration-field="date"]','2026-11-03');
+    input('[data-letter="general"] [data-registration-field="number"]','UI-001');
+    document.querySelector('[data-journal-draft]').click();
+    await wait(()=>document.querySelector('[data-status]').textContent.includes('збережено в журналі'));
+    const journal=(await(await fetch('/api/outgoing')).json()).entries;
+    assert(journal.length===2 && journal.every(entry=>entry.status==='draft'),'Draft letters were not registered');
+    assert(journal.find(entry=>entry.identity==='general').outgoing_number==='UI-001','Outgoing number did not reach the register');
+    document.querySelector('[data-view="outgoing"]').click();
+    await wait(()=>document.querySelectorAll('[data-open-letter]').length===2);
+    assert(document.querySelector('.action-dock').hidden,'Editor actions overlap the outgoing register');
+    input('[data-journal-search]','ui-001');
+    await wait(()=>document.querySelectorAll('[data-open-letter]').length===1);
+    document.querySelector('[data-open-letter]').click();
+    await wait(()=>document.querySelector('#outgoing-letter[open]'));
+    input('[data-journal-entry-status]','sent','change');
+    input('[data-journal-notes]','Передано для перевірки');
+    document.querySelector('[data-journal-save]').click();
+    await wait(()=>document.querySelector('[data-journal-message]').textContent.includes('Статус збережено'));
+    const sent=(await(await fetch('/api/outgoing?status=sent')).json()).entries;
+    assert(sent.length===1 && sent[0].outgoing_number==='UI-001','Sent status did not persist');
+    const original=await fetch('/api/outgoing/'+sent[0].id+'/docx');
+    assert(original.ok && (await original.arrayBuffer()).byteLength>10000,'Stored Word letter cannot be downloaded');
+    document.querySelector('[data-journal-copy]').click();
+    await wait(()=>!document.querySelector('#cover_letters-view').hidden && !document.querySelector('#outgoing-letter').open);
+    assert(document.querySelector('[data-letter="general"] [data-registration-field="number"]').value==='','Editing a copy reused an official outgoing number');
+    assert(document.querySelector('[data-letter="general"] [data-letter-field="signer"]').value===profile.signer,'Copying lost the saved signature');
+    input('[data-text-size]','large','change');
+    await wait(()=>!document.querySelector('[data-text-size]').disabled);
+    assert((await(await fetch('/api/preferences')).json()).text_size==='large','Text size preference was not saved');
+    assert(getComputedStyle(document.querySelector('[data-letter="general"] [data-letter-field="body"]')).fontSize==='18px','Larger form text was not applied');
     document.querySelector('[data-confirm]').checked=true;
     let automaticCoverDraft=null;
     for(let i=0;i<100;i++) {
@@ -129,6 +180,10 @@ SCRIPT = r'''void (async () => {try {
     assert(!document.querySelector('[data-confirm]').checked,'Cover letter approval survived restore');
     assert(document.querySelector('[data-files]').files.length===0,'Source file input should be empty after reload');
     assert(!document.querySelector('#cover_letters-view').hidden,'Cover draft restored into the wrong section');
+    await wait(()=>document.querySelector('[data-text-size]').value==='large');
+    assert(document.querySelector('[data-text-size]').value==='large','Text size did not survive restart');
+    assert((await(await fetch('/api/signers')).json()).profiles[0]?.signer==='майор Ірина ПРИКЛАД','Signer profile was lost after restart');
+    assert((await(await fetch('/api/outgoing?status=sent')).json()).total===1,'Outgoing history was lost after restart');
     const letterBody=document.querySelector('[data-letter="general"] [data-letter-field="body"]'),savedBody=letterBody.value;
     input('[data-letter="general"] [data-letter-field="body"]','');
     window.OZWorkspace.review('cover_letters');
@@ -145,7 +200,7 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(document.activeElement.dataset.field==='protocol_date','Review link did not focus the incorrect date');
     await window.OZWorkspace.flush();
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','linked date review']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','linked date review']}));
   }
 } catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error)}));}})();'''
 
