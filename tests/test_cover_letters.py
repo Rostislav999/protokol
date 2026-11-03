@@ -6,11 +6,12 @@ import tempfile
 import unittest
 from zipfile import ZipFile, ZIP_DEFLATED
 
+import pytest
 from fastapi.testclient import TestClient
 from lxml import etree as E
 
 from app.main import create_app
-from app.cover_letters import LetterBatch, generate, prepare, workbook_records
+from app.cover_letters import LetterBatch, generate, prepare, preview, workbook_records
 from app.protocol_excel import Record, write_excel_bytes, W
 
 
@@ -195,6 +196,57 @@ class CoverLettersTests(unittest.TestCase):
                 generated=self.text(archive.read('Загальна_супровідна.docx'))
                 self.assertIn('Збережений текст Ω.',generated)
                 self.assertIn('Новий абзац після відновлення.',generated)
+
+
+@pytest.mark.parametrize('supplier', [
+    'ТОВ «Охтирка м’ясопродукт», код ЄДРПОУ: 37124055',
+    'ТОВ «Охтирка м’ясопродукт»_код ЄДРПОУ_37124055',
+    'ТОВ «Охтирка м’ясопродукт» (ЄДРПОУ 37124055)',
+    'ТОВ «Охтирка м’ясопродукт» — Код ЕДРПОУ № 00123456',
+    'ТОВ «Охтирка м’ясопродукт», код ЄДРПОУ 0012345678',
+])
+@pytest.mark.parametrize('edited', [False, True])
+def test_company_address_omits_tax_code_in_preview_and_download(supplier, edited):
+    payload = LetterBatch(records=[dict(number='87-012-2972-1259-2', date='01.10.2026',
+                                       supplier=supplier, code='012', pages=3)], confirmed=True)
+    company = preview(payload)['letters'][1]
+    if edited:
+        # Previously saved drafts and manually edited addresses follow the same rule.
+        payload = LetterBatch.model_validate({**payload.model_dump(), 'edits': {company['id']: {
+            **company['content'], 'recipients': [supplier, 'код ЄДРПОУ: 37124055'],
+            'body': ['Мій текст.', '', 'Зі збереженим абзацом.'],
+        }}})
+    letter = preview(payload)['letters'][1]
+    assert letter['content']['recipients'] == ['ТОВ «Охтирка м’ясопродукт»']
+    with ZipFile(BytesIO(generate(payload))) as archive:
+        with ZipFile(BytesIO(archive.read(letter['filename']))) as document:
+            root = E.fromstring(document.read('word/document.xml'))
+    paragraphs = root.findall('.//{'+W+'}body/{'+W+'}p')
+    address = next(p for p in paragraphs if 'Охтирка' in ''.join(p.itertext()))
+    assert ''.join(address.itertext()) == 'ТОВ «Охтирка м’ясопродукт»'
+    assert 'Код ЄДРПОУ 26614722' in ''.join(root.itertext())
+    assert payload.records[0].supplier == supplier  # No edits to protocols or source metadata.
+    if edited:
+        assert 'Мій текст.' in ''.join(root.itertext())
+    else:
+        assert supplier in preview(payload)['letters'][0]['content']['body'][0]
+
+
+def test_company_address_keeps_name_numbers_and_edited_recipient_lines():
+    payload = LetterBatch(records=[dict(number='87-012-2972-1259-2', date='01.10.2026',
+                                       supplier='ТОВ «Фірма 12345678 (Україна)»', pages=3)], confirmed=True)
+    company = preview(payload)['letters'][1]
+    assert company['content']['recipients'] == ['ТОВ «Фірма 12345678 (Україна)»']
+    payload = LetterBatch.model_validate({**payload.model_dump(), 'edits': {company['id']: {
+        **company['content'], 'recipients': [
+            'Директору підприємства', 'ТОВ «Фірма 12345678 (Україна)», код ЄДРПОУ: 00123456',
+            'м. Одеса, вул. Прикладна, 12',
+        ],
+    }}})
+    assert preview(payload)['letters'][1]['content']['recipients'] == [
+        'Директору підприємства', 'ТОВ «Фірма 12345678 (Україна)»',
+        'м. Одеса, вул. Прикладна, 12',
+    ]
 
 
 if __name__=='__main__': unittest.main()

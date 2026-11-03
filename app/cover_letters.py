@@ -266,6 +266,22 @@ def _attachment_paragraph(source, value):
     return paragraph
 
 
+def _company_content(content):
+    """Hide labelled tax IDs only in the company address, keeping source records."""
+    recipients = []
+    for line in content.recipients:
+        name = re.sub(
+            r'[\s,;_–—-]*(?:\(\s*)?(?:код[\s_]+)?[ЄЕ]ДРПОУ'
+            r'[\s_:№.-]*[0-9]{8}(?:[0-9]{2})?(?![0-9])(?:[ \t]*\))?',
+            '', line, flags=re.I,
+        ).strip(' \t,;_–—-')
+        if name:
+            recipients.append(name)
+    if not recipients:
+        raise ValueError('Укажіть назву фірми в адресаті, а не лише код ЄДРПОУ.')
+    return content.model_copy(update={'recipients': recipients})
+
+
 def _default_content(records, batch, general, paragraphs):
     introduction = next(p for p in paragraphs if _paragraph_text(p).startswith('Надсилаю на Вашу адресу'))
     recipients = [_paragraph_text(p) for p in paragraphs[:paragraphs.index(introduction)] if _paragraph_text(p)]
@@ -293,6 +309,8 @@ def render_letter(records, batch, general, content=None):
     body = root.find('w:body', WN)
     paragraphs = body.findall('w:p', WN)
     content = content or _default_content(records, batch, general, paragraphs)
+    if not general:
+        content = _company_content(content)
     introduction = next(p for p in paragraphs if _paragraph_text(p).startswith('Надсилаю на Вашу адресу'))
     first = next(p for p in paragraphs if _paragraph_text(p).startswith('Додаток:'))
     start = paragraphs.index(first)
@@ -307,9 +325,6 @@ def render_letter(records, batch, general, content=None):
 
     # Keep the entire stationery, including the floating stamp, recipient
     # placement, blank paragraphs, section margins, and original run properties.
-    stamp = body.find('w:tbl', WN)
-    email = next(p for p in stamp.findall('.//w:p', WN) if 'E-mail:' in _paragraph_text(p))
-    _fill_text(email.getnext(), 'Код ЄДРПОУ 26614722')
     recipients = [p for p in paragraphs[:paragraphs.index(introduction)] if _paragraph_text(p)]
     for i, paragraph in enumerate(recipients):
         _fill_text(paragraph, content.recipients[i] if i < len(content.recipients) else '')
@@ -383,6 +398,8 @@ def preview(batch):
         parts, _ = _parts((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
         paragraphs = xml(parts['word/document.xml']).findall('w:body/w:p', WN)
         content = batch.edits.get(identity) or _default_content(records, batch, general, paragraphs)
+        if not general:
+            content = _company_content(content)
         letters.append(dict(id=identity, title=title, filename=filename, content=content.model_dump()))
     return dict(letters=letters)
 

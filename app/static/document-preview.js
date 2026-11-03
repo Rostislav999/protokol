@@ -85,6 +85,29 @@
     const width=parseFloat(getComputedStyle(page).width)||794;
     stack.style.zoom=value==='fit'?Math.max(.2,Math.min(1,(target.clientWidth-32)/width)):Number(value)/100;
   }
+  async function stampInk(data,content,styles) {
+    // docx-preview leaves DrawingML image colours unchanged. Read the same
+    // two explicit colours as Word so the original emblem matches the stamp.
+    const archive=await JSZip.loadAsync(data);
+    const documentXML=new DOMParser().parseFromString(await archive.file('word/document.xml').async('string'),'application/xml');
+    const stamp=documentXML.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main','tbl')[0];
+    const drawingNS='http://schemas.openxmlformats.org/drawingml/2006/main';
+    const colours=stamp?.getElementsByTagNameNS(drawingNS,'duotone')[0]?.children;
+    const image=content.querySelector('img');
+    if(!image || colours?.length!==2 || [...colours].some(node=>node.localName!=='srgbClr' || !/^[0-9a-f]{6}$/i.test(node.getAttribute('val'))))return;
+    const rgb=node=>node.getAttribute('val').match(/../g).map(value=>parseInt(value,16)/255);
+    const dark=rgb(colours[0]),light=rgb(colours[1]);
+    const matrix=dark.flatMap((value,index)=>[.2126,.7152,.0722].map(weight=>weight*(light[index]-value)).concat([0,value])).concat([0,0,0,1,0]);
+    const svgNS='http://www.w3.org/2000/svg',svg=document.createElementNS(svgNS,'svg');
+    svg.setAttribute('width','0');svg.setAttribute('height','0');svg.setAttribute('aria-hidden','true');
+    svg.style.position='absolute';
+    const filter=document.createElementNS(svgNS,'filter');
+    filter.id=`stamp-ink-${++stampFilterId}`;filter.setAttribute('color-interpolation-filters','sRGB');
+    const effect=document.createElementNS(svgNS,'feColorMatrix');effect.setAttribute('values',matrix.join(' '));
+    filter.append(effect);svg.append(filter);styles.append(svg);
+    image.style.filter=`url(#${filter.id})`;
+  }
+  let stampFilterId=0;
   async function render(data,target,{className='ozdocx'}={}) {
     const revision=(target.previewRevision||0)+1;target.previewRevision=revision;
     const stage=document.createElement('div');stage.className='word-preview-staging';
@@ -93,6 +116,7 @@
     try {
       await docx.renderAsync(data,content,styles,{className,inWrapper:false,breakPages:true,
         ignoreLastRenderedPageBreak:true,useBase64URL:true,renderAltChunks:false,experimental:true});
+      if(className==='ozdoc-cover')await stampInk(data,content,styles);
       // The document pane is read-only; links must not navigate the app window.
       content.querySelectorAll('a').forEach(link=>{link.removeAttribute('href');link.removeAttribute('target');});
       content.querySelectorAll('script,iframe,object,embed').forEach(node=>node.remove());

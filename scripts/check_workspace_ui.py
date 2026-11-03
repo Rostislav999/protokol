@@ -62,7 +62,7 @@ SCRIPT = r'''void (async () => {try {
     const upload=document.querySelector('[data-files]'); upload.files=files.files; upload.dispatchEvent(new Event('change',{bubbles:true}));
     document.querySelector('[data-import]').click();
     await wait(()=>document.querySelector('[data-records] [data-key="pages"]'));
-    input('[data-records] [data-key="supplier"]','ТОВ «Приклад»');
+    input('[data-records] [data-key="supplier"]','ТОВ «Приклад», код ЄДРПОУ: 00123456');
     input('[data-records] [data-key="pages"]','3');
     await wait(()=>!document.querySelector('[data-preview]').disabled);
     document.querySelector('[data-preview]').click();
@@ -71,6 +71,17 @@ SCRIPT = r'''void (async () => {try {
     const paper=document.querySelector('[data-page-preview] .word-page').getBoundingClientRect();
     assert(paper.width>0 && paper.height>paper.width,'A4 portrait preview is not visible');
     await wait(()=>document.querySelector('[data-page-preview] img')?.naturalWidth>0);
+    const stamp=document.querySelector('[data-page-preview] article table');
+    assert(stamp,'Missing cover letter stamp');
+    assert([...stamp.querySelectorAll('span')].filter(node=>node.textContent.trim()).every(node=>getComputedStyle(node).color==='rgb(46, 117, 182)'),'Stamp text uses inconsistent ink');
+    assert(getComputedStyle(stamp.querySelector('img')).filter.includes('stamp-ink-'),'Emblem preview did not apply the Word stamp ink');
+    const companyButton=document.querySelector('[data-select-letter^="company-"]');companyButton.click();
+    await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('ТОВ «Приклад»'));
+    const companyAddress=document.querySelector('[data-letter]:not([hidden]) [data-letter-field="recipients"]').value;
+    assert(companyAddress==='ТОВ «Приклад»','Company address still includes its tax code');
+    assert(!document.querySelector('[data-page-preview]').textContent.includes('00123456'),'Company DOCX preview still includes its tax code');
+    document.querySelector('[data-select-letter="general"]').click();
+    await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('00123456'));
     input('[data-letter="general"] [data-letter-field="body"]','Текст, відредагований перед завантаженням.\nДругий абзац.');
     assert(!document.querySelector('[data-confirm]').checked,'Edited letter kept its old approval');
     assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value.includes('Другий абзац.'),'Letter editor lost paragraphs');

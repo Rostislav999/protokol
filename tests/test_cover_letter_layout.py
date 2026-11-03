@@ -50,7 +50,7 @@ def test_retains_page_stamp_and_all_other_docx_parts(general):
     result = render_letter(payload.records, payload, general)
     original, rendered = document(template), document(result)
     assert structure(rendered.find('w:body/w:sectPr', NS)) == structure(original.find('w:body/w:sectPr', NS))
-    # The positioned, nested stamp tables and emblem must not be rebuilt.
+    # Preserve the positioned stamp and the original emblem when filling letters.
     stamp, original_stamp = rendered.find('w:body/w:tbl', NS), original.find('w:body/w:tbl', NS)
     for tag in ('tblPr', 'tblGrid', 'trPr', 'tcPr', 'pPr', 'drawing'):
         assert [structure(n) for n in stamp.findall('.//w:' + tag, NS)] == [
@@ -65,6 +65,33 @@ def test_retains_page_stamp_and_all_other_docx_parts(general):
         for name in before.namelist():
             if name != 'word/document.xml':
                 assert after.read(name) == before.read(name), name
+
+
+@pytest.mark.parametrize('general', [True, False])
+def test_stamp_uses_reference_line_order_and_one_explicit_blue(general):
+    payload = batch()
+    rendered = document(render_letter(payload.records, payload, general))
+    stamp = rendered.find('w:body/w:tbl', NS)
+    assert stamp.find('.//w:tbl', NS) is None
+    assert stamp.find('w:tblPr/w:tblpPr', NS).get('{' + W + '}vertAnchor') == 'page'
+    assert stamp.find('w:tblPr/w:tblW', NS).attrib == {
+        '{' + W + '}w': '4370', '{' + W + '}type': 'dxa',
+    }
+    assert [text(p) for p in stamp.findall('.//w:p', NS) if text(p)] == [
+        'МІНІСТЕРСТВО ОБОРОНИ', 'УКРАЇНИ', 'ВІЙСЬКОВА ЧАСТИНА А0873',
+        'E-mail: a0873@mod.gov.ua', 'Код ЄДРПОУ 26614722',
+        '«_____»____________________20____', '№____________________________',
+    ]
+    for run in stamp.findall('.//w:r', NS):
+        if text(run):
+            assert run.find('w:rPr/w:color', NS).attrib == {'{' + W + '}val': '2E75B6'}
+    assert all(color.attrib == {'{' + W + '}val': '2E75B6'}
+               for color in stamp.findall('.//w:color', NS))
+    drawing = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+    duotone = stamp.find('.//a:duotone', drawing)
+    assert [E.QName(node).localname for node in duotone] == ['srgbClr', 'srgbClr']
+    assert [node.attrib for node in duotone] == [{'val': '2E75B6'}, {'val': 'FFFFFF'}]
+    assert all(len(node) == 0 for node in duotone)  # No theme shade/tint overrides.
 
 
 @pytest.mark.parametrize('general', [True, False])
