@@ -2,7 +2,7 @@
 :root {
   color-scheme:light;
   --surface:#fff;--surface-muted:#f5f6f7;--surface-subtle:#fafbfc;--surface-hover:#edf0f2;
-  --ink:#273444;--text-label:#39495b;--text-secondary:#48596b;--muted:#566476;--placeholder:#758294;
+  --ink:#273444;--text-label:#39495b;--text-secondary:#48596b;--muted:#566476;--placeholder:#687585;
   --line:#dfe4e9;--field-border:#aab7c5;--field-bg:#fff;--bg:#f5f6f7;--preview-bg:#eceeed;
   --warning-bg:#fff8e8;--warning-line:#d6bd83;--warning-ink:#745120;
   --success-bg:#eff6f1;--success-line:#bdd4c4;--success-ink:#37614a;
