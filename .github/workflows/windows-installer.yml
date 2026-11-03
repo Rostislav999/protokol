@@ -55,7 +55,7 @@ jobs:
       - name: Check drafts and review in the native renderer
         run: python -m scripts.check_workspace_ui
       - name: Build installer and test installed application
-        run: python scripts/build_windows.py --version 1.6.0
+        run: python scripts/build_windows.py --version 1.6.1
       - name: Upload installer and validation results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

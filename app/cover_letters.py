@@ -278,13 +278,13 @@ def _fill_text(paragraph, value):
 
 
 def _fill_signer(paragraph, value, text_width):
-    # Leave the supplied signature intact; edited ranks/names need a real tab
-    # stop instead of a fixed number of spaces, which can wrap a longer name.
-    if ' '.join(_paragraph_text(paragraph).split()) == ' '.join(value.split()):
-        return
-    new = re.fullmatch(r'(.+?)\s+([A-ZА-ЯІЇЄҐ].*)', value.strip())
+    # The original signatures also contain space padding. Always replace it
+    # with a right-aligned tab so Word's font metrics cannot push the surname
+    # onto another line. Keep the personal name together within that tab.
+    value = ' '.join(value.split())
+    new = re.fullmatch(r'(.+?)\s+([A-ZА-ЯІЇЄҐ].*)', value)
     if new is None:
-        new = re.fullmatch(r'(\S+)\s+(.+)', value.strip())
+        new = re.fullmatch(r'(\S+)\s+(.+)', value)
     if new is None:
         _fill_text(paragraph, value)
         return
@@ -296,6 +296,8 @@ def _fill_signer(paragraph, value, text_width):
         run = E.SubElement(paragraph, Q('r'))
         if properties is not None:
             run.append(deepcopy(properties))
+        if i == 1:
+            text = text.replace(' ', '\u00a0')
         E.SubElement(run, Q('t')).text = text
         if i == 0:
             E.SubElement(run, Q('tab'))

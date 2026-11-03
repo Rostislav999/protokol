@@ -6,7 +6,7 @@ from zipfile import ZipFile
 from lxml import etree as E
 import pytest
 
-from app.cover_letters import ASSETS, LetterBatch, render_letter
+from app.cover_letters import ASSETS, LetterBatch, LetterContent, preview, render_letter
 from app.protocol_excel import W
 
 
@@ -95,7 +95,7 @@ def test_stamp_uses_reference_line_order_and_one_explicit_blue(general):
 
 
 @pytest.mark.parametrize('general', [True, False])
-def test_keeps_paragraph_spacing_fonts_blank_lines_and_signature_gap(general):
+def test_keeps_paragraph_spacing_fonts_and_blank_lines(general):
     original = document((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
     payload = batch(contact='Ірина Приклад 00 000')
     rendered = document(render_letter(payload.records, payload, general))
@@ -109,17 +109,25 @@ def test_keeps_paragraph_spacing_fonts_blank_lines_and_signature_gap(general):
         return paragraphs
     before, after = fixed_paragraphs(original), fixed_paragraphs(rendered)
     assert len(after) == len(before)
+    rank = 'полковник' if general else 'майор'
     for p, q in zip(before, after):
+        if text(p).startswith(rank):
+            continue  # Signature padding is deliberately replaced by a tab.
         assert structure(without_pagination(q.find('w:pPr', NS))) == structure(p.find('w:pPr', NS))
         assert [structure(r) for r in q.findall('.//w:rPr', NS)] == [
             structure(r) for r in p.findall('.//w:rPr', NS)
         ]
         if not text(p):
             assert structure(q) == structure(p)
-    rank = 'полковник' if general else 'майор'
     signature = next(p for p in before if text(p).startswith(rank))
     filled = next(p for p in after if text(p).startswith(rank))
-    assert structure(without_pagination(filled)) == structure(signature)
+    properties = without_pagination(filled.find('w:pPr', NS))
+    properties.remove(properties.find('w:tabs', NS))
+    assert structure(properties) == structure(signature.find('w:pPr', NS))
+    original_runs, filled_runs = signature.findall('w:r', NS), filled.findall('w:r', NS)
+    assert [structure(r.find('w:rPr', NS)) for r in filled_runs] == [
+        structure(r.find('w:rPr', NS)) for r in (original_runs[0], original_runs[-1])
+    ]
     assert filled.find('w:pPr/w:keepLines', NS) is not None
     position = after[after.index(filled) - 1]
     assert position.find('w:pPr/w:keepLines', NS) is not None
@@ -137,8 +145,33 @@ def test_letter_ends_at_signature_or_contact_without_empty_page_paragraphs(gener
     rendered = document(render_letter(payload.records, payload, general))
     paragraphs = rendered.findall('w:body/w:p', NS)
     expected = contact or (payload.general_signer if general else payload.company_signer)
-    assert ' '.join(text(paragraphs[-1]).split()) == ' '.join(expected.split())
+    last_text = ''.join('\t' if node.tag == '{' + W + '}tab' else node.text or ''
+                        for node in paragraphs[-1].iter()
+                        if node.tag in ('{' + W + '}t', '{' + W + '}tab'))
+    assert ' '.join(last_text.split()) == ' '.join(expected.split())
     assert rendered.find('w:body', NS)[-1].tag == '{' + W + '}sectPr'
+
+
+@pytest.mark.parametrize('general', [True, False])
+@pytest.mark.parametrize('saved_edit', [False, True])
+def test_default_signature_uses_a_right_tab_and_unbroken_name(general, saved_edit):
+    payload = batch()
+    content = None
+    if saved_edit:
+        letter = preview(payload)['letters'][0 if general else 1]
+        # A previously saved draft may retain the template's space padding.
+        content = LetterContent.model_validate({
+            **letter['content'], 'signer': letter['content']['signer'].replace(' ', '     '),
+        })
+    rendered = document(render_letter(payload.records, payload, general, content))
+    rank, name = ('полковник', 'Олександр\u00a0КАЛЮЖНИЙ') if general else ('майор', 'Ростислав\u00a0АДРІАНОВ')
+    signature = next(p for p in rendered.findall('w:body/w:p', NS) if text(p).startswith(rank))
+    assert [text(r) for r in signature.findall('w:r', NS)] == [rank, name]
+    assert len(signature.findall('.//w:r/w:tab', NS)) == 1
+    assert signature.find('w:pPr/w:tabs/w:tab', NS).attrib == {
+        '{' + W + '}val': 'right', '{' + W + '}pos': '9638',
+    }
+    assert signature.find('.//w:br', NS) is None
 
 
 @pytest.mark.parametrize('general', [True, False])
@@ -186,7 +219,7 @@ def test_extra_attachments_and_custom_signers_keep_their_layout():
         old_signature = next(p for p in original.findall('w:body/w:p', NS) if text(p).startswith(old_rank))
         runs = signature.findall('w:r', NS)
         assert text(runs[0]) == rank
-        assert text(runs[1]) == name
+        assert text(runs[1]) == name.replace(' ', '\u00a0')
         assert len(signature.findall('.//w:r/w:tab', NS)) == 1
         assert signature.find('w:pPr/w:tabs/w:tab', NS).attrib == {
             '{'+W+'}val': 'right', '{'+W+'}pos': '9638',

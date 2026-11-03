@@ -186,3 +186,35 @@ def test_real_pdf_conversion_preserves_stamp_and_company_address():
         colours = [span['color'] for block in rendered[0].get_text('dict')['blocks'] for line in block.get('lines', []) for span in line['spans'] if 'E-mail:' in span['text']]
         assert colours == [0x2e75b6]
     assert source == docx()
+
+
+@pytest.mark.skipif(not shutil.which('soffice'), reason='Requires local LibreOffice')
+def test_real_cover_signatures_keep_rank_name_and_surname_on_one_line():
+    if word_tools.office_status()['engine'] != 'libreoffice':
+        pytest.skip('Local integration test uses LibreOffice')
+    documents, expected = [], []
+    for count in (1, 12):
+        for signer in (None, 'старший лейтенант Олександр СЕРЖАНТ-МІЩЕНКО',
+                       'підполковник Ірина Михайлівна ПРИКЛАД'):
+            changes = {} if signer is None else dict(general_signer=signer, company_signer=signer)
+            payload = LetterBatch(records=[dict(number=f'87-012-2972-{1259+i}-2', date='01.10.2026',
+                                                supplier='ТОВ «Тест»', code='012', pages=3)
+                                           for i in range(count)], confirmed=True, **changes)
+            for general in (True, False):
+                value = payload.general_signer if general else payload.company_signer
+                documents.append((f'letter-{len(documents)}.docx', render_letter(payload.records, payload, general)))
+                expected.append(value.split())
+    for words, result in zip(expected, word_tools.process_documents(documents, pdf=True)):
+        assert not result['error'], result
+        with fitz.open(stream=result['pdf'], filetype='pdf') as rendered:
+            # Inspect each word's rendered page and baseline, rather than just
+            # checking that the document contains the signer's text somewhere.
+            positions = []
+            for word in words:
+                matches = [(page.number, rect) for page in rendered for rect in page.search_for(word)]
+                assert len(matches) == 1, (words, word, matches)
+                positions.append(matches[0])
+            assert len({page for page, _ in positions}) == 1, words
+            assert max(rect.y0 for _, rect in positions) - min(rect.y0 for _, rect in positions) < 1, words
+            assert positions[0][1].x0 < positions[-1][1].x0
+            assert positions[-1][1].x1 <= rendered[positions[-1][0]].rect.width - 28

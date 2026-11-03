@@ -9,7 +9,7 @@ Windows 10 (1809 и новее) и Windows 11, 64-разрядные.
 
 Установщик собирается в [Actions → Windows installer](https://github.com/Rostislav999/protokol/actions/workflows/windows-installer.yml).
 Откройте **успешно завершённую** сборку, скачайте **Artifacts → Protokol-Windows-Installer**,
-распакуйте архив и запустите `Protokol-Setup-1.6.0-win64.exe`. Исходный ZIP по
+распакуйте архив и запустите `Protokol-Setup-1.6.1-win64.exe`. Исходный ZIP по
 ссылке ниже — другой вариант запуска, он по-прежнему требует Python и Tesseract.
 Артефакты сборок хранятся 30 дней; при необходимости запустите **Run workflow**.
 
