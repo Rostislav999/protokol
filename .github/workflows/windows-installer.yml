@@ -70,6 +70,7 @@ jobs:
           name: Windows-build-diagnostics
           path: |
             build/windows/**/*.log
+            build/windows/native-ui-*
             build/protokol/warn-protokol.txt
           if-no-files-found: ignore
           retention-days: 7

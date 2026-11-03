@@ -13,7 +13,7 @@ import tempfile
 
 SCRIPT = r'''void (async () => {try {
   const assert=(value,message)=>{if(!value)throw new Error(message);};
-  const wait=async fn=>{for(let i=0;i<400;i++){if(fn())return;await new Promise(r=>setTimeout(r,50));}throw new Error('UI readiness timeout');};
+  const wait=async fn=>{for(let i=0;i<400;i++){if(fn())return;await new Promise(r=>setTimeout(r,50));}throw new Error('UI readiness timeout: '+fn.toString());};
   const input=(selector,value,event='input')=>{const field=document.querySelector(selector);assert(field,'Missing field: '+selector);field.value=value;field.dispatchEvent(new Event(event,{bubbles:true}));};
   await wait(()=>window.__providers?.acts && window.__providers?.excel && window.__providers?.assignments && window.__providers?.cover_letters && !document.querySelector('#workspace-save-status').textContent.includes('Завантажуємо'));
   const providers=window.__providers;
@@ -70,6 +70,8 @@ SCRIPT = r'''void (async () => {try {
     await wait(()=>!document.querySelector('[data-preview]').disabled);
     document.querySelector('[data-preview]').click();
     await wait(()=>document.querySelectorAll('[data-letter]').length===2);
+    // Narrower/scaled windows deliberately start in text mode.
+    document.querySelector('[data-editor-mode="preview"]').click();
     await wait(()=>document.querySelector('[data-page-preview] .word-page'));
     const paper=document.querySelector('[data-page-preview] .word-page').getBoundingClientRect();
     assert(paper.width>0 && paper.height>paper.width,'A4 portrait preview is not visible');
@@ -86,11 +88,14 @@ SCRIPT = r'''void (async () => {try {
     assert(!document.querySelector('[data-page-preview]').textContent.includes('00123456'),'Company DOCX preview still includes its tax code');
     input('[data-letter-select]','general','change');
     await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('00123456'));
+    document.querySelector('[data-editor-mode="edit"]').click();
     input('[data-letter="general"] [data-letter-field="body"]','Текст, відредагований перед завантаженням.\nДругий абзац.');
     assert(!document.querySelector('[data-confirm]').checked,'Edited letter kept its old approval');
     assert(document.querySelector('[data-letter="general"] [data-letter-field="body"]').value.includes('Другий абзац.'),'Letter editor lost paragraphs');
+    document.querySelector('[data-editor-mode="preview"]').click();
     await wait(()=>document.querySelector('[data-page-preview]').textContent.includes('Другий абзац.'));
     await wait(()=>document.querySelector('[data-dock-primary]').textContent.includes('супровідні'));
+    document.querySelector('[data-editor-mode="edit"]').click();
     document.querySelector('[data-manage-signers]').click();
     await wait(()=>document.querySelector('#signer-profiles[open]'));
     input('#signer-profiles [name="name"]','Підпис для перевірки');
@@ -202,7 +207,7 @@ SCRIPT = r'''void (async () => {try {
     await window.OZWorkspace.flush();
     console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','linked date review']}));
   }
-} catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error)}));}})();'''
+} catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error),viewport:{width:innerWidth,height:innerHeight},editorMode:document.querySelector('[data-editor-layout]')?.dataset.mode,activeView:document.querySelector('.nav-button.active')?.dataset.view}));}})();'''
 
 
 def main() -> int:
@@ -227,12 +232,17 @@ def main() -> int:
                 QTimer.singleShot(0, view.reload)
             elif message.startswith("OZ_WORKSPACE_RESULT:"):
                 result.update(json.loads(message.split(":", 1)[1]))
+                if not result['ok']:
+                    capture_path = Path('build/windows/native-ui-failure.png')
+                    capture_path.parent.mkdir(parents=True, exist_ok=True)
+                    view.grab().save(str(capture_path))
                 application.exit(0 if result["ok"] else 1)
             elif "Error" in message:
                 print("JavaScript:", message, flush=True)
 
     page = Page(profile, application)
-    view = QWebEngineView(); view.setPage(page); view.resize(1440, 1000)
+    view = QWebEngineView(); view.setPage(page)
+    view.resize(int(os.environ.get('PROTOKOL_UI_WIDTH', '1440')), 1000)
     capture = QWebEngineScript()
     capture.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
     capture.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
@@ -256,6 +266,13 @@ def main() -> int:
         application.processEvents()
     if result['ok']:
         result.pop('error', None)
+    report = json.dumps(result, ensure_ascii=False, indent=2)
+    report_path = Path('build/windows/native-ui-result.json')
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report, encoding='utf-8')
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
+            summary.write('### Native workspace check\n\n```json\n' + report + '\n```\n')
     print(json.dumps(result, ensure_ascii=False), flush=True)
     return code if code else (0 if result["ok"] else 1)
 
