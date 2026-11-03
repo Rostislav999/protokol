@@ -17,6 +17,13 @@
     link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }
+  async function archive(record,blob,filename,kind){
+    record.archiveErrors ||= new Map();
+    try{await window.OZWorkspace.retainFiles([new File([blob],filename,{type:blob.type})],record.context.section,kind,record.context);record.archiveErrors.delete(kind);}
+    catch(error){record.archiveErrors.set(kind,'Документ готовий. Не вдалося зберегти його в пакеті: '+error.message);}
+    record.archiveError=[...record.archiveErrors.values()].join(' ');
+    announce('protokol:export-ready',{section:record.context.section});
+  }
   async function pdf(record) {
     if(record.pdf)return record.pdf;
     const status=capability||await ready;
@@ -27,11 +34,14 @@
       const body=await response.json().catch(()=>({}));
       throw new Error(typeof body.detail==='string'?body.detail:'Не вдалося створити PDF.');
     }
-    record.pdf=await response.blob();return record.pdf;
+    record.pdf=await response.blob();
+    record.pdfName=record.filename.replace(/\.(zip|docx)$/i,match=>match.toLowerCase()==='.zip'?'-PDF.zip':'.pdf');
+    await archive(record,record.pdf,record.pdfName,'output_pdf');return record.pdf;
   }
-  async function deliver(blob,filename,section) {
-    const record={blob,filename};latest.set(section,record);announce('protokol:export-ready',{section});
-    return repeat(section,format);
+  async function deliver(blob,filename,section,context=window.OZWorkspace.context(section)) {
+    const record={blob,filename,context,archiveError:''};latest.set(section,record);announce('protokol:export-ready',{section});
+    await archive(record,blob,filename,section==='excel'?'output_excel':'output_word');
+    return repeat(section,section==='excel'?'word':format);
   }
   async function repeat(section,chosen='word') {
     const record=latest.get(section);if(!record)throw new Error('Спочатку створіть документи.');
@@ -54,6 +64,9 @@
   });
   const ready=refresh();
   window.OZOffice={ready,refresh,download,deliver,repeat,invalidate,has:section=>latest.has(section),
+    clear(){latest.clear();announce('protokol:export-ready');},
+    archiveError:section=>latest.get(section)?.archiveError||'',
+    async retryArchive(section){const record=latest.get(section);if(!record)return;await archive(record,record.blob,record.filename,section==='excel'?'output_excel':'output_word');if(record.pdf)await archive(record,record.pdf,record.pdfName,'output_pdf');},
     get status(){return capability;},get busy(){return converting;},get format(){return format;},
     setFormat(value){format=value==='pdf'&&capability?.available?'pdf':'word';}};
 })();

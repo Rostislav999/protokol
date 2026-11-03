@@ -230,6 +230,19 @@ class DraftUpdate(BaseModel):
 def workspace_router(directory: Path) -> APIRouter:
     router = APIRouter(prefix="/api/workspace/drafts", tags=["workspace"])
     store = DraftStore(directory)
+    from .workbench_store import WorkStore, WorkbenchError
+    history = WorkStore(directory)
+
+    def save(section, data, expected_revision):
+        if section == 'cover_letters':
+            clean = _draft_data(data)
+            # A rejected concurrent edit must never enter the version history.
+            store._expect(store.all(), section, expected_revision)
+            try:
+                history.capture('workspace', clean)
+            except WorkbenchError as exc:
+                raise WorkspaceError(str(exc), exc.status) from exc
+        return store.save(section, data, expected_revision)
 
     def perform(function, *args):
         try:
@@ -245,7 +258,7 @@ def workspace_router(directory: Path) -> APIRouter:
 
     @router.put("/{section}")
     def save_draft(section: str, values: DraftUpdate):
-        return perform(store.save, section, values.data, values.expected_revision)
+        return perform(save, section, values.data, values.expected_revision)
 
     @router.delete("/{section}")
     def delete_draft(section: str, expected_revision: int | None = Query(default=None, ge=0)):

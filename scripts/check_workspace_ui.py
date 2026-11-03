@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 
 
 SCRIPT = r'''void (async () => {try {
@@ -17,6 +18,19 @@ SCRIPT = r'''void (async () => {try {
   const input=(selector,value,event='input')=>{const field=document.querySelector(selector);assert(field,'Missing field: '+selector);field.value=value;field.dispatchEvent(new Event(event,{bubbles:true}));};
   await wait(()=>window.__providers?.acts && window.__providers?.excel && window.__providers?.assignments && window.__providers?.cover_letters && !document.querySelector('#workspace-save-status').textContent.includes('Завантажуємо'));
   const providers=window.__providers;
+  if (__PACKAGE_PHASE__) {
+    await window.OZWorkspace.ready;await window.OZAppearance.ready;
+    const session=await(await fetch('/api/workbench/session')).json();
+    assert(session.package?.title==='Пакет перевірки UI' && window.OZWorkspace.scope===session.scope,'Active package did not survive restart');
+    assert(providers.acts.snapshot().common.customer==='Замовник Ω','Act was lost when reopening its package');
+    assert(providers.cover_letters.snapshot().letters.find(value=>value.id==='general').content.body[1]==='Другий абзац.','Letter text was lost when reopening its package');
+    assert(!document.querySelector('[data-confirm]').checked && !document.querySelector('#review-confirmed').checked,'Package restart restored an approval');
+    assert(Object.values(providers.assignments.snapshot().items[0].departments).some(value=>value.sample_weight==='7 кг'),'Package restart lost a manual assignment weight');
+    assert((await(await fetch('/api/template-choices')).json()).choices.some(value=>value.template_id==='sample-1053' && value.favorite),'Favorite template was lost on restart');
+    assert((await(await fetch('/api/workbench/files?scope='+session.scope)).json()).files.some(value=>value.kind==='source'),'Package lost its original files');
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports']}));
+    return;
+  }
   if (!__RESTORE_PHASE__) {
     await wait(()=>document.querySelector('#nav-template-count').textContent==='22');
     document.querySelector('#start-manual').click();
@@ -244,7 +258,68 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(document.activeElement.dataset.field==='protocol_date','Review link did not focus the incorrect date');
     await window.OZWorkspace.flush();
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review']}));
+    // The old ungrouped workspace remains available while cases get independent drafts.
+    input('[data-field="protocol_date"]','29.10.2026');await window.OZWorkspace.flush();
+    document.querySelector('[data-view="packages"]').click();
+    document.querySelector('[data-package-new]').click();
+    await wait(()=>document.querySelector('#package-form[open]'));
+    input('#package-form [name="title"]','Пакет перевірки UI');
+    assert(document.querySelector('#package-form [name="copy"]').checked,'Current work is not offered when creating a first package');
+    document.querySelector('[data-package-form-save]').click();
+    await wait(()=>window.OZWorkspace.scope!=='workspace' && !window.OZWorkspace.switching && !document.querySelector('#package-form').open);
+    const firstPackage=window.OZWorkspace.scope;
+    assert(providers.acts.snapshot().common.customer==='Замовник Ω','Creating a package lost the act');
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
+    const choice=document.querySelector('select[data-field="template_id"]');
+    choice.previousElementSibling.click();await wait(()=>document.querySelector('#template-picker[open]'));
+    input('[data-picker-search]','свинина');
+    const favorite=document.querySelector('[data-picker-favorite="sample-1053"]');
+    assert(favorite,'Favorite template action is missing');if(favorite.getAttribute('aria-pressed')!=='true')favorite.click();
+    await wait(()=>document.querySelector('[data-picker-favorite="sample-1053"]')?.getAttribute('aria-pressed')==='true');
+    input('[data-picker-shortcuts]','favorites','change');
+    assert(document.querySelector('[data-picker-id="sample-1053"]'),'Favorites filter did not show the saved template');
+    document.querySelector('[data-picker-close]').click();
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));
+    document.querySelector('[data-editor-mode="edit"]').click();
+    document.querySelector('[data-letter-history]').click();await wait(()=>document.querySelector('#letter-history[open]'));
+    input('[data-history-label]','UI контрольна версія');document.querySelector('[data-history-save]').click();
+    await wait(()=>document.querySelector('[data-history-list]').textContent.includes('UI контрольна версія'));
+    document.querySelector('[data-history-close]').click();
+    input('[data-letter="general"] [data-letter-field="body"]','Тимчасова зміна для перевірки історії.');
+    await window.OZWorkspace.flush();
+    document.querySelector('[data-letter-history]').click();await wait(()=>document.querySelector('#letter-history[open]'));
+    await wait(()=>[...document.querySelectorAll('[data-history-version]')].some(button=>button.textContent.includes('UI контрольна версія')));
+    [...document.querySelectorAll('[data-history-version]')].find(button=>button.textContent.includes('UI контрольна версія')).click();
+    await wait(()=>!document.querySelector('[data-history-restore]').disabled);
+    assert(document.querySelector('.history-changed'),'History comparison did not show a changed field');
+    document.querySelector('[data-history-restore]').click();await wait(()=>!document.querySelector('#letter-history').open);
+    assert(providers.cover_letters.snapshot().letters.find(value=>value.id==='general').content.body[1]==='Другий абзац.','History restore did not recover the selected letter');
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'packages'}}));
+    document.querySelector('[data-package-new]').click();input('#package-form [name="title"]','Порожній пакет UI');
+    assert(!document.querySelector('#package-form [name="copy"]').checked,'A new case implicitly copies another case');
+    document.querySelector('[data-package-form-save]').click();
+    await wait(()=>window.OZWorkspace.scope!==firstPackage && !window.OZWorkspace.switching && !document.querySelector('#package-form').open);
+    assert(Object.values(providers).every(provider=>provider.snapshot()===null),'A new package inherited another package’s fields');
+    await window.OZWorkspace.activateScope(firstPackage);
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true}));await window.OZWorkspace.flush();
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'1',altKey:true,bubbles:true,cancelable:true}));
+    assert(!document.querySelector('#packages-view').hidden,'Keyboard navigation did not open packages');
+    const beforeCancellation=JSON.stringify(providers.acts.snapshot());
+    const cancelled=window.OZTasks.run('act',[new File(['Перевірка скасування'],'cancel-check.txt',{type:'text/plain'})],{section:'acts'}).then(()=>false,error=>error.name==='AbortError');
+    await wait(()=>document.querySelector('[data-task-label]').textContent.includes('Читаємо сторінку'));
+    document.querySelector('[data-task-cancel]').click();assert(await cancelled,'Background cancellation did not finish');
+    assert(JSON.stringify(providers.acts.snapshot())===beforeCancellation,'Cancelled import changed the act');
+    const cancelledSources=(await(await fetch('/api/workbench/files?scope='+firstPackage)).json()).files;assert(cancelledSources.some(file=>file.filename==='cancel-check.txt'&&!file.active),'Cancelled import lost its original file or activated a partial result');
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'F1',bubbles:true,cancelable:true}));
+    assert(document.querySelector('#diagnostics[open]'),'Keyboard help did not open');document.querySelector('[data-diagnostics-close]').click();
+    const diagnostics=await fetch('/api/diagnostics/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    assert(diagnostics.ok,'Technical report could not be created');
+    const diagnosticArchive=await JSZip.loadAsync(await diagnostics.arrayBuffer());
+    const diagnosticJSON=await diagnosticArchive.file('diagnostic.json').async('string');
+    assert(JSON.parse(diagnosticJSON).system.python && !diagnosticJSON.includes('Другий абзац.'),'Diagnostic report contains document text');
+    const packageReport=await(await fetch('/api/packages/'+firstPackage+'/check')).json();assert(Array.isArray(packageReport.issues),'Package consistency report is unavailable');
+    console.log('OZ_PACKAGES_RELOAD');
   }
 } catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error),viewport:{width:innerWidth,height:innerHeight},editorMode:document.querySelector('[data-editor-layout]')?.dataset.mode,activeView:document.querySelector('.nav-button.active')?.dataset.view}));}})();'''
 
@@ -261,13 +336,16 @@ def main() -> int:
 
     application = QApplication([])
     result = {"ok": False, "error": "Workspace UI timed out"}
-    phase = {"restore": False}
+    phase = {"restore": False, "packages": False}
     profile = QWebEngineProfile(application)
 
     class Page(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, line, source):
             if message == "OZ_WORKSPACE_RELOAD":
                 phase["restore"] = True
+                QTimer.singleShot(0, view.reload)
+            elif message == "OZ_PACKAGES_RELOAD":
+                phase["packages"] = True
                 QTimer.singleShot(0, view.reload)
             elif message.startswith("OZ_WORKSPACE_RESULT:"):
                 result.update(json.loads(message.split(":", 1)[1]))
@@ -294,10 +372,22 @@ def main() -> int:
       }});
     })();""")
     page.scripts().insert(capture)
-    page.loadFinished.connect(lambda success: page.runJavaScript(SCRIPT.replace("__RESTORE_PHASE__", "true" if phase["restore"] else "false")) if success else application.exit(2))
+    page.loadFinished.connect(lambda success: page.runJavaScript(SCRIPT.replace("__RESTORE_PHASE__", "true" if phase["restore"] else "false").replace("__PACKAGE_PHASE__", "true" if phase["packages"] else "false")) if success else application.exit(2))
     QTimer.singleShot(90000, lambda: application.exit(3))
     with tempfile.TemporaryDirectory(prefix="oz-workspace-ui-") as temporary:
-        with LocalServer(create_app(Path(temporary) / "data")) as server:
+        app = create_app(Path(temporary) / "data")
+        original_act_processor = app.state.tasks.processors['act']
+        def cancellable_fixture(files, options):
+            if files[0][0] != 'cancel-check.txt':
+                return original_act_processor(files, options)
+            from app import progress
+            progress.file(1, 1, files[0][0])
+            for number in range(1, 1001):
+                progress.page(number, 1000)
+                time.sleep(.01)
+            return original_act_processor(files, options)
+        app.state.tasks.processors['act'] = cancellable_fixture
+        with LocalServer(app) as server:
             view.setUrl(QUrl(server.url)); view.show()
             code = application.exec()
         view.close(); page.deleteLater()

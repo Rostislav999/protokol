@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from contextlib import asynccontextmanager
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,10 @@ from .excel_api import excel_router
 from .cover_letters import cover_letters_router
 from .outgoing import JournalStore, outgoing_router
 from .preferences import preferences_router
+from .packages import packages_router
+from .tasks import TaskManager, tasks_router
+from .diagnostics import Diagnostics, DiagnosticMiddleware, diagnostics_router
+from . import progress
 from .word_tools import word_router
 from .backups import backup_router, create_automatic_backup
 from .workspace import DraftStore, WorkspaceError, workspace_router
@@ -112,25 +117,26 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="ОЗтаУСЯ", version="1.5.0")
+    app = FastAPI(title="ОЗтаУСЯ", version="1.6.0")
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
     with data_guard(directory):
-        create_automatic_backup(directory, "1.5.0")
+        create_automatic_backup(directory, "1.6.0")
         library = Library(directory / "templates")
         settings = SettingsStore(directory)
     app.state.library = library
+    app.state.data_directory = directory
     app.add_middleware(DataAccessMiddleware, directory=directory)
 
     def public_template(entry: dict) -> dict:
         return {**entry, "inferred_subcategory": infer_subcategory(entry.get("product_name") or entry["name"])}
 
-    def enriched(text: str) -> dict:
+    def enriched(text: str, known_templates=None) -> dict:
         result = parse_act(text)
         for item in result["items"]:
             item["id"] = uuid4().hex
             item.setdefault("protocol_date", "")
             item["template_id"] = None  # Never silently confirm a suggestion.
-            item["matches"] = rank_templates(item["product_name"], library.all())[:5]
+            item["matches"] = rank_templates(item["product_name"], known_templates if known_templates is not None else library.all())[:5]
         return {"text": text, **result}
 
     @app.get("/api/health")
@@ -276,6 +282,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     with data_guard(directory):
         app.include_router(assignments_router(directory, settings))
     app.include_router(workspace_router(directory))
+    def template_exists(family, template_id):
+        entries = library.all() if family == 'protocols' else AssignmentLibrary(directory / 'assignment_templates').all()
+        return any(entry['id'] == template_id for entry in entries)
+    app.include_router(packages_router(directory, template_exists))
+
+    def import_act(files, options):
+        name, data = files[0]
+        progress.file(1, 1, name)
+        with data_guard(directory):
+            known_templates = library.all()
+        result = extract_text(data, name)
+        progress.phase('Визначаємо реквізити та шаблони')
+        parsed = enriched(result['text'], known_templates)
+        return {**result, **parsed, 'warnings': list(dict.fromkeys(result.get('warnings', []) + parsed.get('warnings', [])))}
+
+    def import_documents(operation, files, options):
+        with data_guard(directory):
+            suppliers = settings.all()['suppliers']
+        if operation == 'cover_letters':
+            from .cover_letters import prepare
+            return prepare(files, suppliers, options['exact_pages'])
+        from .excel_api import import_protocols
+        return import_protocols(files, suppliers)
+
+    manager = TaskManager({'act': import_act,
+                           'cover_letters': lambda files, options: import_documents('cover_letters', files, options),
+                           'excel': lambda files, options: import_documents('excel', files, options)})
+    app.state.tasks = manager
+    app.include_router(tasks_router(manager))
+    recorder = Diagnostics(directory)
+    app.add_middleware(DiagnosticMiddleware, recorder=recorder)
+    app.include_router(diagnostics_router(app, directory, recorder, manager))
+
+    @asynccontextmanager
+    async def lifespan(_):
+        try:
+            yield
+        finally:
+            manager.close()
+    app.router.lifespan_context = lifespan
 
     def validate_restored(stage: Path):
         try:
@@ -291,8 +337,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from .preferences import _read, SignerState, Appearance
         _read(stage / 'signers.json', SignerState)
         _read(stage / 'appearance.json', Appearance)
+        from .workbench_store import WorkStore
+        if (stage / 'workbench.sqlite3').exists():
+            WorkStore(stage).rebase()
 
-    app.include_router(backup_router(directory, version="1.5.0", validate_staged=validate_restored))
+    app.include_router(backup_router(directory, version="1.6.0", validate_staged=validate_restored))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .extraction import _ocr_image, _ocr_languages
+from . import progress
 
 MAX_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 20
@@ -101,6 +102,7 @@ def read_protocol_pdf(data: bytes) -> tuple[str, list[str]]:
         if not 0 < len(document) <= MAX_PAGES:
             raise ValueError("PDF має містити від 1 до 20 сторінок.")
         for index, page in enumerate(document, 1):
+            progress.page(index, len(document))
             text = page.get_text("text") or ""
             if len(re.sub(r"\W", "", text)) >= 40:
                 texts.append(text)

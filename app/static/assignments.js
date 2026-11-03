@@ -390,7 +390,7 @@
     state.items = (data.items || []).map(item => blankItem({id:item.id || uid(), product_name:item.product_name || '', standard:item.standard || '', sample_weight:'',
       sources:Object.fromEntries(['product_name','standard','sample_weight'].map(key => [key,
         key === 'sample_weight' ? {kind:'manual',label:'Не заповнено'} : data.provenance?.items?.[item.id]?.[key] || {kind:manual?'manual':'act',label:manual?'Введено вручну':`З акта: ${source || 'акт відбору'}`,source:source || ''}]))}));
-    state.text = data.text || '';
+    state.text = data.text || '';state.sourceGroup=data.sourceGroup||'';
     state.source = source || 'Акт відбору';
     $('#assignment-raw-text').value = state.text;
     $('#assignment-editor').hidden = false;
@@ -435,8 +435,7 @@
     try {
       const form = new FormData();
       form.append('file', file);
-      const response = await api('/api/extract', {method:'POST', body:form});
-      const data = await response.json();
+      const data = await window.OZTasks.run('act',[file],{section:'assignments'});
       if (state.sourceUrl) URL.revokeObjectURL(state.sourceUrl);
       state.sourceUrl = URL.createObjectURL(file);
       await importData(data, file.name);
@@ -611,7 +610,7 @@
     const select=event.target,card=select.closest('[data-assignment-item]');
     const item=state.items.find(value=>value.id===card?.dataset.assignmentItem),department=select.dataset.deptTemplate;
     if(!item)return;
-    window.OZTemplatePicker.open({title:`Шаблони: ${deptName(department)}`,subtitle:item.product_name||'Ручний вибір із бази відділення',
+    window.OZTemplatePicker.open({family:'assignments',title:`Шаблони: ${deptName(department)}`,subtitle:item.product_name||'Ручний вибір із бази відділення',
       templates:state.templates.filter(t=>t.department===department).map(t=>({...t,group:deptName(t.department)})),
       selectedId:item.departments[department].template_id,recommendedIds:(item.matches[department]||[]).map(t=>t.id),
       downloadUrl:t=>`/api/assignments/templates/${encodeURIComponent(t.id)}/download`,
@@ -743,7 +742,9 @@
     state.busy = true;
     $('#assignment-editor').disabled = true;
     updateReadiness();
+    const exportContext=window.OZWorkspace.context('assignments');
     try {
+      await window.OZWorkspace.flushSection('assignments');
       const response = await post('/api/assignments/generate',payload);
       const blob = await response.blob();
       const issued = response.headers.get('X-Assignment-Date') || state.today;
@@ -762,7 +763,7 @@
       $('#assignment-success').innerHTML=`${icon('check')}<div><strong>Завдання сформовано. Номери зразків: ${esc(numbers.slice(0,8).join(', '))}${numbers.length > 8 ? ` та ще ${numbers.length - 8}` : ''}.</strong><br>Дата видачі: ${esc(displayDate(issued))}. Повторне завантаження — у меню «Ще». Уже присвоєні номери зберігаються при виправленні даних і додаванні відділень.</div>`;
       document.dispatchEvent(new CustomEvent('protokol:assignments-ready',{detail:{payload:state.result.payload}}));
       changed();
-      await window.OZOffice.deliver(blob,'zavdannia.zip','assignments');
+      await window.OZOffice.deliver(blob,'zavdannia.zip','assignments',exportContext);
       notice('Архів завдань готовий.');
     } catch(error) {
       notice(error.message,true);
@@ -853,9 +854,11 @@
     finally{$('#assignment-template-save').disabled=false;}
   });
   window.OZWorkspace?.register('assignments',{
-    title:'Завдання на дослідження',
+    title:'Завдання на дослідження',isBusy:()=>state.busy,
+    reset:async()=>{state.items=[];state.text='';state.source='';state.sourceGroup='';state.warnings=[];state.initialNumber='';state.issuerId='';if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.sourceUrl='';$('#assignment-editor').hidden=true;$('#assignment-upload-panel').hidden=false;invalidate();await load();await hydrateNumbers();renderSource();renderNumbering();renderIssuerSummary();renderItems();},
+    attachFiles:async()=>{const file=await window.OZWorkspace.sourceFile('assignments',state.source,'source',state.sourceGroup)||await window.OZWorkspace.sourceFile('acts',state.source,'source',state.sourceGroup);if(file){if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.sourceUrl=URL.createObjectURL(file);renderSource();const link=$('#assignment-source .source-original-link');link.removeAttribute('target');link.download=file.name;link.textContent='Завантажити оригінал акта';}else if(state.sourceHadFile&&!window.OZWorkspace.switching)notice('Для перегляду оригіналу акта оберіть файл повторно.');},
     hasData:() => state.items.length > 0 || !!state.text || !!state.source,
-    snapshot:() => state.items.length || state.text || state.source ? ({source:state.source,text:state.text,sourceHadFile:!!state.sourceUrl,warnings:clone(state.warnings),
+    snapshot:() => state.items.length || state.text || state.source ? ({source:state.source,sourceGroup:state.sourceGroup||'',text:state.text,sourceHadFile:!!state.sourceUrl,warnings:clone(state.warnings),
       initialNumber:state.initialNumber,issuerId:state.issuerId,
       items:state.items.map(item => ({id:item.id,product_name:item.product_name,standard:item.standard,sample_weight:item.sample_weight,
         sources:clone(item.sources || {}),departments:Object.fromEntries(DEPTS.map(department => {
@@ -867,6 +870,7 @@
       if (state.busy) throw new Error('Дочекайтеся завершення поточної операції завдань.');
       await load();
       if (!state.loaded) throw new Error('Не вдалося завантажити актуальні шаблони та налаштування завдань.');
+      state.sourceGroup=String(data.sourceGroup||'');
       const warnings = Array.isArray(data.warnings) ? data.warnings.map(String).slice(0,200) : [];
       const seen = new Set();
       const choices = new Map();
@@ -916,7 +920,7 @@
       invalidate();
       await hydrateNumbers();
       renderSource(); renderNumbering(); renderIssuerSummary(); renderItems();
-      if (data.sourceHadFile) notice('Поля та розпізнаний текст відновлено. Для перегляду оригіналу акта потрібно знову обрати файл.');
+      state.sourceHadFile=!!data.sourceHadFile;
     },
     issues:reviewIssues,
     reveal:issue => {

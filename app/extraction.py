@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 
 from .protocol_text import clean_product_name, sampling_description_from_act
 from .sample_details import first_seal_number, sample_weight_value
+from . import progress
 
 MAX_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 20
@@ -46,6 +47,7 @@ def _ocr_languages() -> tuple[str, list[str]]:
 
 
 def _ocr_image(image, language: str, psm: int = 3) -> str:
+    progress.check()
     if image.width * image.height > MAX_PIXELS:
         raise ValueError("Зображення завелике: не більше 40 млн пікселів на сторінку.")
     from PIL import ImageOps
@@ -249,7 +251,8 @@ def extract_text(data: bytes, filename: str) -> dict:
             texts, methods = [], set()
             language = None
             table_header = None
-            for page in document:
+            for page_index, page in enumerate(document, 1):
+                progress.page(page_index, len(document))
                 text = page.get_text(sort=True).strip()
                 if len(re.sub(r"\W", "", text)) >= 40:
                     methods.add("pdf-text")
@@ -288,6 +291,7 @@ def extract_text(data: bytes, filename: str) -> dict:
             texts = []
             table_header = None
             for index in range(pages):
+                progress.page(index + 1, pages)
                 image.seek(index)
                 if image.width * image.height > MAX_PIXELS:
                     raise ValueError("Зображення завелике: не більше 40 млн пікселів.")

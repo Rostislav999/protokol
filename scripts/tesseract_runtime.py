@@ -30,7 +30,9 @@ def run_tesseract(args: list[str], *, executable="tesseract", models_directory: 
     # Python sets cwd with the Unicode Windows API; Tesseract sees only '.'.
     env["TESSDATA_PREFIX"] = "."
     try:
-        return subprocess.run([str(executable), *args, "--tessdata-dir", "."], cwd=directory, env=env,
+        from app.progress import current, run_process
+        runner = run_process if current.get() is not None else subprocess.run
+        return runner([str(executable), *args, "--tessdata-dir", "."], cwd=directory, env=env,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
     except subprocess.TimeoutExpired as exc:

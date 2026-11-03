@@ -24,7 +24,7 @@
   const editor=panel.querySelector('[data-letters]');
   const $ = s => panel.querySelector(s);
   const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  let records = [], letters = [], busy = false, url = '', settingsEdited = false;
+  let sourceGroup='',records = [], letters = [], busy = false, url = '', settingsEdited = false;
   let selectedLetterId='',previewTimer=null,previewController=null,previewGeneration=0;
   let generationId=crypto.randomUUID();
   const changed = () => window.OZWorkspace?.changed('cover_letters');
@@ -73,6 +73,7 @@
     if (e.target.matches('[data-confirm]')) {updateSteps(e.target.checked?3:2);return;}
     if (e.target.matches('[data-files],[data-page-zoom],[data-exact-pages],[data-apply-profile],[data-letter-select]')) return;
     e.target.closest('.field')?.classList.remove('invalid');
+    if(e.target.matches('[data-key="pages"]'))records[Number(e.target.dataset.index)].pages_source='manual';
     settingsEdited=true;
     invalidate();
     if (!e.target.matches('[data-letter-field],[data-registration-field]')) clearLetters();
@@ -94,7 +95,11 @@
     try {
       const form=new FormData(); files.forEach(f=>form.append('files',f));
       form.append('exact_pages',String(exactPages));
-      const data=await (await request('import',form)).json(); records=data.records;
+      const data=await window.OZTasks.run('cover_letters',files,{section:'cover_letters',exact_pages:exactPages}); records=data.records;sourceGroup=data.sourceGroup||'';
+      if(window.OZWorkspace.scope!=='workspace'){
+        const act=window.OZWorkspace.snapshot('acts'),number=value=>String(value||'').replace(/^№\s*/,'').replace(/\s+/g,'');
+        for(const record of records)if(!record.supplier&&act.common?.supplier&&act.items?.some(item=>number(item.protocol_number)===number(record.number)))record.supplier=act.common.supplier;
+      }
       clearLetters();
       $('[data-warnings]').textContent=(data.warnings||[]).join('\n');
       $('[data-warnings]').style.whiteSpace='pre-line';
@@ -295,13 +300,15 @@
     lock(true);
     try {
       const form=new FormData(); form.append('payload',JSON.stringify(values));
+      await window.OZWorkspace.flushSection('cover_letters');
+      const exportContext=window.OZWorkspace.context('cover_letters');
       const response=await request('generate',form),blob=await response.blob();
       if(url) URL.revokeObjectURL(url); url=URL.createObjectURL(blob);
       const link=$('[data-download]'); link.href=url; link.hidden=false;
       document.dispatchEvent(new CustomEvent('protokol:journal-changed'));
       updateSteps(3);
       $('[data-status]').textContent='Листи збережено в журналі. Повторне завантаження доступне без нового формування.';
-      await window.OZOffice.deliver(blob,'Супровідні.zip','cover_letters');
+      await window.OZOffice.deliver(blob,'Супровідні.zip','cover_letters',exportContext);
     } catch(e) { error(e); } finally { lock(false); }
   });
   function reviewIssues() {
@@ -328,16 +335,18 @@
     return issues;
   }
   const provider={
-    title:'Супровідні листи',navigationSection:'cover_letters',
+    title:'Супровідні листи',navigationSection:'cover_letters',isBusy:()=>busy,
+    reset:async()=>{await provider.restore({records:[],letters:[]});settingsEdited=false;window.OZSigners?.defaults();$('[data-status]').textContent='';},
     hasData:()=>!!records.length || !!letters.length || settingsEdited,
     snapshot:()=>{
       if (!records.length && !letters.length && !settingsEdited) return null;
       const edits=editedLetters();
-      return {...payload(false),confirmed:false,selectedLetterId,warnings:$('[data-warnings]').textContent,
+      return {...payload(false),sourceGroup,confirmed:false,selectedLetterId,warnings:$('[data-warnings]').textContent,
         letters:letters.map(letter=>({...letter,registration:editedRegistrations()[letter.id],content:edits[letter.id]}))};
     },
     restore:async data=>{
       if (busy) throw new Error('Дочекайтеся завершення обробки супровідних.');
+      sourceGroup=String(data.sourceGroup||'');
       records=(Array.isArray(data.records)?data.records:[]).slice(0,100).map(record=>Object.fromEntries(
         ['source','number','date','supplier','code','pages','pages_source'].map(key=>[key,String(record?.[key]??'').slice(0,2000)])));
       letters=(Array.isArray(data.letters)?data.letters:[]).slice(0,101).filter(letter=>letter && typeof letter.id==='string' && letter.content && typeof letter.content==='object').map(letter=>({
@@ -384,5 +393,19 @@
     if(busy)throw new Error('Дочекайтеся обробки листів.');
     if(!await window.OZWorkspace.replaceWith('cover_letters',data))return false;
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));return true;
-  },canApplyDefaults:()=>!records.length&&!letters.length&&!settingsEdited};
+  },canApplyDefaults:()=>!records.length&&!letters.length&&!settingsEdited,
+    get selectedLetter(){return selectedLetterId;},snapshot:()=>provider.snapshot(),
+    restoreVersion:async data=>{
+      if(busy)throw new Error('Дочекайтеся завершення обробки листів.');
+      const letter=letters.find(value=>value.id===data.id);
+      if(!letter||data.id!==selectedLetterId)throw new Error('Оберіть лист, до якого належить ця версія.');
+      const section=editor.querySelector('[data-letter]:not([hidden])');
+      for(const [key] of fields){const value=data.content[key];section.querySelector(`[data-letter-field="${key}"]`).value=Array.isArray(value)?value.join('\n'):value||'';}
+      letter.content=JSON.parse(JSON.stringify(data.content));letter.registration={number:'',date:''};
+      section.querySelectorAll('[data-registration-field]').forEach(input=>input.value='');
+      invalidate();window.OZOffice.invalidate('cover_letters');fitShortFields();queuePreview(0);changed();
+      await window.OZWorkspace.flushSection('cover_letters');
+      $('[data-status]').textContent='Текстову версію відновлено. Перевірте лист та присвойте вихідний номер.';
+    }
+  };
 })();

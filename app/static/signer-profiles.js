@@ -105,6 +105,6 @@
     try{state=await request('/api/signer-defaults',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({general_id:$('[data-default-general]').value,company_id:$('[data-default-company]').value})});populate();defaults();message('Підписи для нових листів збережено.');}
     catch(error){populate();message(error.message,true);}finally{busy=false;}
   };
-  window.OZSigners={populate};
+  window.OZSigners={populate,defaults};
   load().catch(error=>{message(error.message,true);document.querySelectorAll('[data-manage-signers]').forEach(button=>button.title=error.message);});
 })();

@@ -148,7 +148,8 @@
     if ($('#excel-view')) $('#excel-view').hidden = name !== 'excel';
     if ($('#cover_letters-view')) $('#cover_letters-view').hidden = name !== 'cover_letters';
     if ($('#outgoing-view')) $('#outgoing-view').hidden = name !== 'outgoing';
-    $('#breadcrumb-current').textContent = ({library: 'Бібліотека шаблонів', assignments: 'Завдання', cover_letters:'Супровідні листи', outgoing:'Журнал вихідних', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
+    if ($('#packages-view')) $('#packages-view').hidden = name !== 'packages';
+    $('#breadcrumb-current').textContent = ({packages:'Пакети документів',library: 'Бібліотека шаблонів', assignments: 'Завдання', cover_letters:'Супровідні листи', outgoing:'Журнал вихідних', excel: 'Excel за актом і протоколами', acts: 'Акти відбору'})[name] || 'Робочий простір';
     $$('.nav-button').forEach(button => {
       const active = button.dataset.view === name;
       button.classList.toggle('active', active);
@@ -163,7 +164,7 @@
   document.addEventListener('protokol:navigate', event => switchView(event.detail.name));
   $('#prepare-assignments').addEventListener('click', () => {
     if (!state.items.length) { toast('Спочатку додайте позиції акта.', true); return; }
-    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: clone(state.items), text: state.text, source: state.source, provenance:clone(state.sources)}}));
+    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: clone(state.items), text: state.text, source: state.source, sourceGroup:state.sourceGroup||'', provenance:clone(state.sources)}}));
   });
   $('#prepare-excel-from-act').addEventListener('click', () => {
     if (state.busy) { toast('Дочекайтеся завершення поточної операції.', true); return; }
@@ -333,20 +334,20 @@
     if (state.busy) return;
     if (file.size > 25 * 1024 * 1024) { toast('Файл завеликий. Максимальний розмір — 25 МБ.', true); return; }
     if (!/\.(pdf|jpe?g|png|tiff?|docx|txt)$/i.test(file.name)) { toast('Підтримуються PDF, JPG, PNG, TIFF, DOCX і TXT.', true); return; }
-    revokeSourceUrl();
-    state.sourceUrl = URL.createObjectURL(file);
     state.busy = true;
     showStage('processing');
     $('#processing-label').textContent = `Опрацьовуємо «${file.name}»…`;
     try {
       const form = new FormData();
       form.append('file', file);
-      const response = await api('/api/extract', {method: 'POST', body: form});
-      applyExtraction(await response.json(), file.name);
+      const data = await window.OZTasks.run('act',[file],{section:'acts'});
+      revokeSourceUrl();state.sourceUrl=URL.createObjectURL(file);
+      state.sourceGroup=data.sourceGroup||'';
+      applyExtraction(data, file.name);
       toast('Акт опрацьовано. Перевірте всі поля та оберіть шаблони.');
     } catch (error) {
-      showStage('upload');
-      toast(error.message, true);
+      showStage(state.items.length||state.text?'review':'upload');
+      toast(error.message, error.name!=='AbortError');
     } finally { state.busy = false; actFile.value = ''; }
   }
 
@@ -623,7 +624,7 @@
     const select=event.target,card=select.closest('[data-item]');
     const item=state.items.find(value=>String(value.id)===card?.dataset.item);
     if(!item)return;
-    window.OZTemplatePicker.open({title:'Шаблони протоколів',subtitle:item.product_name||'Оберіть шаблон для зразка',
+    window.OZTemplatePicker.open({family:'protocols',title:'Шаблони протоколів',subtitle:item.product_name||'Оберіть шаблон для зразка',
       templates:state.templates,selectedId:item.template_id,recommendedIds:(item.matches||[]).map(t=>t.id),
       downloadUrl:t=>`/api/templates/${encodeURIComponent(t.id)}/download`,
       focusSelector:`[data-item="${CSS.escape(String(item.id))}"] select[data-field="template_id"]`,
@@ -810,6 +811,8 @@
     button.disabled = true;
     button.innerHTML = 'Створюємо документи…';
     try {
+      await window.OZWorkspace.flushSection('acts');
+      const exportContext=window.OZWorkspace.context('acts');
       const response = await jsonPost('/api/generate', {common: state.common, items: state.items.map(({matches, ...item}) => item), confirmed: true});
       const blob = await response.blob();
       $('#download-success').hidden = false;
@@ -827,7 +830,7 @@
       $('#step-review').classList.remove('current');
       $('#step-review').classList.add('complete');
       $('#step-download').classList.add('current');
-      await window.OZOffice.deliver(blob,'protokoly.zip','acts');
+      await window.OZOffice.deliver(blob,'protokoly.zip','acts',exportContext);
       toast('Архів протоколів готовий.');
     } catch (error) { toast(error.message, true); }
     finally {
@@ -993,7 +996,7 @@
 
   function snapshotAct() {
     if (!state.items.length && !state.text && !Object.values(state.common).some(value => String(value || '').trim())) return null;
-    return clone({common:state.common,items:state.items,text:state.text,source:state.source,method:state.method,warnings:state.warnings,sequenceEnabled:state.sequenceEnabled,sources:state.sources});
+    return clone({common:state.common,items:state.items,text:state.text,source:state.source,sourceGroup:state.sourceGroup||'',method:state.method,warnings:state.warnings,sequenceEnabled:state.sequenceEnabled,sources:state.sources});
   }
   function restoredSource(value) {
     if (!value || typeof value !== 'object' || !Object.hasOwn(sourceLabels,value.kind)) return null;
@@ -1041,6 +1044,7 @@
     });
     state.text = typeof data.text === 'string' ? data.text : '';
     state.source = typeof data.source === 'string' ? data.source : '';
+    state.sourceGroup=String(data.sourceGroup||'');
     state.method = typeof data.method === 'string' ? data.method : '';
     state.warnings = Array.isArray(data.warnings) ? data.warnings.filter(value => typeof value === 'string') : [];
     state.sequenceEnabled = !!data.sequenceEnabled;
@@ -1048,14 +1052,14 @@
     $('#raw-text').value = state.text;
     $('#review-confirmed').checked = false;
     $('#download-success').hidden = true;
-    const previewNote = state.method === 'manual' ? '' : '<small>Оригінальний файл не зберігається в чернетці. Для звірки відкрийте його на комп’ютері.</small>';
+    const previewNote = state.method === 'manual' ? '' : '<small data-original-missing>Оригінал для цієї чернетки ще не додано. За потреби оберіть його повторно.</small>';
     $('#source-banner').innerHTML = `${icon('file')}<div><strong>${escape(state.source || 'Відновлена чернетка акта')}</strong><small>Чернетку відновлено · Позицій: ${state.items.length}</small>${previewNote}</div>`;
     renderWarnings(state.warnings);
     renderCommon(); renderItems();
     showStage(state.items.length || state.text || Object.values(state.common).some(Boolean) ? 'review' : 'upload');
     document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:state.common.customer}}));
     if (missingTemplates) toast(`У чернетці ${missingTemplates} вибраних шаблонів уже немає в бібліотеці. Оберіть їх повторно.`,true);
-    toast('Чернетку акта відновлено. Перед створенням документів перевірте дані повторно.');
+    if(!window.OZWorkspace.switching)toast('Чернетку акта відновлено. Перед створенням документів перевірте дані повторно.');
   }
   function revealActIssue(issue) {
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
@@ -1069,7 +1073,15 @@
     target.focus?.({preventScroll:true});
   }
   window.OZWorkspace?.register('acts',{
-    title:'Акт і протоколи', snapshot:snapshotAct, restore:restoreAct,
+    title:'Акт і протоколи', snapshot:snapshotAct, restore:restoreAct, isBusy:()=>state.busy,
+    reset:()=>restoreAct({items:[]}),
+    attachFiles:async()=>{
+      if(!state.source||state.method==='manual')return;
+      const file=await window.OZWorkspace.sourceFile('acts',state.source,'source',state.sourceGroup);if(!file)return;
+      revokeSourceUrl();state.sourceUrl=URL.createObjectURL(file);
+      const banner=$('#source-banner');banner.querySelector('[data-original-missing]')?.remove();banner.querySelectorAll('.source-original-link').forEach(link=>link.remove());
+      const link=document.createElement('a');link.className='source-original-link';link.href=state.sourceUrl;link.download=file.name;link.textContent='Завантажити оригінал';banner.append(link);
+    },
     issues:() => formIssues(), reveal:revealActIssue,
   });
 })();

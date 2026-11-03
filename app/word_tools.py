@@ -66,6 +66,7 @@ try {
     $originalUpdateLinks = $word.Options.UpdateLinksAtOpen
     $word.Options.UpdateLinksAtOpen = $false
     foreach ($item in $settings.documents) {
+        if ($settings.cancel_file -and (Test-Path -LiteralPath $settings.cancel_file)) { break }
         $entry = @{ok=$false; pages=0; error=''}
         try {
             $document = $word.Documents.Open([string]$item.input, $false, $true, $false)
@@ -160,11 +161,17 @@ def process_documents(documents: list[tuple[str, bytes]], *, pdf: bool = False) 
                 script = directory / 'office.ps1'
                 script.write_text(_WORD_SCRIPT, encoding='ascii')
                 settings = directory / 'settings.json'
-                settings.write_text(json.dumps({'pdf': pdf, 'documents': jobs}), encoding='utf-8')
+                from . import progress
+                cancel_path = directory / 'cancel.requested'
+                values = {'pdf': pdf, 'documents': jobs}
+                if progress.current.get() is not None:
+                    values['cancel_file'] = str(cancel_path)
+                settings.write_text(json.dumps(values), encoding='utf-8')
                 result_path = directory / 'result.json'
-                completed = subprocess.run(
+                completed = progress.office_process(
                     [_powershell(), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script),
                      '-SettingsPath', str(settings), '-ResultPath', str(result_path)],
+                    result_path=result_path, cancel_path=cancel_path, documents=[name for name, _ in documents],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0,
                 )

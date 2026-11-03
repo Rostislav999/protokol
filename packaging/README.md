@@ -16,7 +16,7 @@ build packages are pinned with SHA-256 hashes in `requirements-windows-build.loc
 That lock preserves the application dependency versions in `requirements.lock`.
 
 Only a successful workflow uploads **Protokol-Windows-Installer**. It contains
-`Protokol-Setup-1.5.0-win64.exe`, `SHA256SUMS.txt`, and
+`Protokol-Setup-1.6.0-win64.exe`, `SHA256SUMS.txt`, and
 `windows-validation.json`. The artifact remains available for 30 days.
 This workflow does not publish a GitHub release or sign the installer.
 
@@ -31,6 +31,12 @@ Version 1.5 adds per-user light/dark/system themes, accent presets, three text
 sizes, compact spacing and a default letter-editor view. The native check also
 verifies live preview, Save/Cancel/reset, persistence after reload and unchanged
 document paper, stamp ink, draft content and approval.
+
+Version 1.6 adds independent document packages, retained sources and outputs,
+letter revision history, cross-document consistency checks, favorite/recent
+templates, cancellable import jobs, technical reports and keyboard shortcuts.
+The native workspace check opens independent packages, restores a selected
+letter revision, cancels a worker and verifies an active package after reload.
 
 The build verifies the Tesseract download against the SHA-256 published by
 Microsoft winget, extracts it without executing its installer, and bundles all
@@ -51,7 +57,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-windows-build.lock
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
-.\.venv\Scripts\python.exe scripts/build_windows.py --version 1.5.0
+.\.venv\Scripts\python.exe scripts/build_windows.py --version 1.6.0
 ```
 
 Generated files go under ignored `build/` and `dist/`. Do not add `.venv`, user

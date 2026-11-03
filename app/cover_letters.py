@@ -150,6 +150,7 @@ def workbook_records(data):
 
 
 def prepare(files, suppliers, exact_pages=False):
+    from . import progress
     records, warnings, documents, books = [], [], [], []
     expanded = 0
     for name, data in files:
@@ -174,7 +175,8 @@ def prepare(files, suppliers, exact_pages=False):
     table = workbook_records(books[0]) if books else {}
     seen = set()
     docx_indices = []
-    for name, data in documents:
+    for file_index, (name, data) in enumerate(documents, 1):
+        progress.file(file_index, len(documents), name)
         expanded += len(data)
         if expanded > 150*1024*1024:
             raise ValueError('Комплект перевищує 150 МБ після розпакування.')
@@ -212,8 +214,10 @@ def prepare(files, suppliers, exact_pages=False):
         records.append(dict(source=name, number=number, date=cells.get('E') or values.get('E',''), supplier=supplier, code=code,
                             pages=pages, pages_source='PDF' if name.lower().endswith('.pdf') else 'metadata'))
     if docx_indices and exact_pages and office_status()['available']:
+        progress.phase('Рахуємо аркуші у локальному редакторі')
         try:
             counted = process_documents([documents[index] for index in docx_indices])
+            progress.check()
             for index, result in zip(docx_indices, counted):
                 if result['pages']:
                     records[index].update(pages=result['pages'], pages_source='Word' if result['engine']=='word' else 'LibreOffice')

@@ -353,6 +353,12 @@ class BackupStore:
                             JournalStore.validate(target)
                         except (ValueError, sqlite3.Error, KeyError) as exc:
                             raise BackupError('Некоректна база журналу вихідних листів.') from exc
+                    elif name.casefold() == 'workbench.sqlite3':
+                        from .workbench_store import WorkStore
+                        try:
+                            WorkStore.validate(target)
+                        except (ValueError, sqlite3.Error, KeyError) as exc:
+                            raise BackupError('Некоректна база пакетів документів та історії листів.') from exc
                     elif target.suffix.lower() == ".docx":
                         _validate_docx(target)
                 return manifest

@@ -14,6 +14,7 @@
   <script src="/static/document-preview.js" defer></script>
   <script src="/static/template-picker.js" defer></script>
   <script src="/static/workspace.js" defer></script>
+  <script src="/static/tasks.js" defer></script>
   <script src="/static/export-tools.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/customer-directory.js" defer></script>
@@ -21,15 +22,20 @@
   <link rel="stylesheet" href="/static/ui-refresh.css">
   <link rel="stylesheet" href="/static/calm-ui.css">
   <link rel="stylesheet" href="/static/appearance.css">
+  <link rel="stylesheet" href="/static/workbench.css">
   <script src="/static/assignments.js" defer></script>
   <script src="/static/printing.js" defer></script>
   <script src="/static/excel.js" defer></script>
   <script src="/static/cover-letters.js" defer></script>
   <script src="/static/signer-profiles.js" defer></script>
   <script src="/static/outgoing.js" defer></script>
+  <script src="/static/packages.js" defer></script>
+  <script src="/static/letter-history.js" defer></script>
   <script src="/static/ui-shell.js" defer></script>
   <script src="/static/calm-ui.js" defer></script>
   <script src="/static/appearance.js" defer></script>
+  <script src="/static/diagnostics.js" defer></script>
+  <script src="/static/keyboard.js" defer></script>
 </head>
 <body>
 <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -53,6 +59,7 @@
  <a href="/" class="brand" aria-label="ОЗтаУСЯ — головна"><span class="brand-mark"><img src="/static/app.ico" alt="" width="42" height="44"></span><span>ОЗтаУСЯ<small>ЛАБОРАТОРНИЙ ПОМІЧНИК</small></span></a>
  <span class="nav-caption">РОБОЧИЙ ПРОСТІР</span>
  <nav aria-label="Основна навігація">
+  <button class="nav-button" data-view="packages"><svg class="icon"><use href="#i-grid"/></svg>Пакети документів</button>
   <button class="nav-button active" data-view="acts" aria-current="page"><svg class="icon"><use href="#i-file"/></svg>Акти відбору</button>
   <button class="nav-button" data-view="assignments"><svg class="icon"><use href="#i-file"/></svg>Завдання<span id="nav-assignment-count" class="nav-count">—</span></button>
   <button class="nav-button" data-view="cover_letters"><svg class="icon"><use href="#i-edit"/></svg>Супровідні<span id="nav-letter-count" class="nav-count">0</span></button>

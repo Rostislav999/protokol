@@ -7,6 +7,9 @@
   let activeSection = 'acts';
   let loaded = false;
   let loadError = '';
+  let scope = 'workspace', packageInfo = null, switching = false;
+  const sectionNames = ['acts','assignments','excel','cover_letters'];
+  const draftBase = (value=scope) => value==='workspace'?'/api/workspace/drafts':`/api/packages/${encodeURIComponent(value)}/drafts`;
   const restoring = new Set();
   const $ = selector => document.querySelector(selector);
   const ui = document.createElement('section');
@@ -62,7 +65,7 @@
   }
   async function load() {
     try {
-      const saved = await request('/api/workspace/drafts');
+      const saved = await request(draftBase());
       for (const section of ['acts', 'assignments', 'excel', 'cover_letters']) {
         const current = state(section);
         current.revision = saved.revisions?.[section] ?? saved.sections?.[section]?.revision ?? 0;
@@ -101,14 +104,15 @@
       try {
         if (snapshot == null && !item.entry) { item.dirty = false; return; }
         const data = snapshot == null
-          ? await request(`/api/workspace/drafts/${section}?expected_revision=${item.revision}`, {method: 'DELETE'})
-          : await request(`/api/workspace/drafts/${section}`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({data: snapshot, expected_revision: item.revision})});
+          ? await request(`${draftBase()}/${section}?expected_revision=${item.revision}`, {method: 'DELETE'})
+          : await request(`${draftBase()}/${section}`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({data: snapshot, expected_revision: item.revision})});
         item.revision = data.revision; item.entry = snapshot == null ? null : data;
         item.dirty = generation !== item.generation;
+        document.dispatchEvent(new CustomEvent('protokol:workspace-saved',{detail:{scope,section}}));
         status(snapshot == null ? 'Порожню чернетку очищено.' : `Чернетку збережено: ${time(data.updated_at)}.`);
       } catch (error) {
         if (error.status === 409) {
-          const latest = await request('/api/workspace/drafts');
+          const latest = await request(draftBase());
           item.revision = latest.revisions?.[section] ?? latest.sections?.[section]?.revision ?? 0;
           item.entry = latest.sections?.[section] || null;
           item.pending = true;
@@ -137,6 +141,7 @@
     if (pane) { pane.inert = true; pane.setAttribute('aria-busy', 'true'); }
     try {
       await provider.restore(JSON.parse(JSON.stringify(item.entry.data)));
+      await provider.attachFiles?.();
       item.pending = false; item.dirty = false;
       status('Чернетку відновлено. Перед експортом перевірте дані й підтвердьте їх повторно.');
       renderDrafts();
@@ -300,7 +305,78 @@
       await persist(section);return true;
     },
     changed, review, flush: saveAll,
+    async flushSection(section){await ready;await persist(section);},
+    get ready(){return ready;},
+    get scope(){return scope;},get package(){return packageInfo;},get switching(){return switching;},
+    get hasData(){return [...providers.values()].some(provider=>provider.snapshot?.()!=null)||[...drafts.values()].some(item=>item.entry!=null);},
+    updatePackage(value){if(value?.id===scope){packageInfo=value;document.dispatchEvent(new CustomEvent('protokol:package-context',{detail:{scope,package:packageInfo}}));}},
+    get busy(){return switching||restoring.size>0||[...providers.values()].some(provider=>provider.isBusy?.())||!!window.OZTasks?.busy||!!window.OZOffice?.busy;},
+    snapshot(section){return JSON.parse(JSON.stringify(providers.get(section)?.snapshot()||{}));},
+    async bundle(){
+      await saveAll();
+      return Object.fromEntries(sectionNames.map(section=>[section,state(section).pending?state(section).entry?.data:providers.get(section)?.snapshot()]).filter(([,value])=>value!=null));
+    },
+    context(section){return {scope,section,draft:this.snapshot(section)};},
+    async retainFiles(files,section,kind='source',context={scope,section}){
+      for(const file of files){
+        const form=new FormData();form.append('file',file);form.append('scope',context.scope);form.append('section',section);form.append('kind',kind);
+        if(context.group)form.append('group',context.group);
+        if(context.draft)form.append('draft',JSON.stringify(context.draft));
+        await request('/api/workbench/files',{method:'POST',body:form});
+      }
+      document.dispatchEvent(new CustomEvent('protokol:package-files',{detail:{scope:context.scope}}));
+    },
+    async sourceFile(section,name,kind='source',group=''){
+      const list=await request('/api/workbench/files?scope='+encodeURIComponent(scope));
+      const entries=list.files.filter(file=>file.section===section&&file.kind===kind&&file.filename===name&&(!group||file.fingerprint===group));
+      const entry=entries.find(file=>file.active)||entries[0];
+      if(!entry)return null;
+      const response=await fetch(`/api/workbench/files/${entry.id}?scope=${encodeURIComponent(scope)}`);
+      if(!response.ok)throw new Error('Не вдалося відкрити збережений вихідний файл.');
+      return new File([await response.blob()],entry.filename,{type:response.headers.get('Content-Type')||''});
+    },
+    async activateScope(next,initialized=false){
+      if(!initialized)await ready;
+      if(this.busy)throw new Error('Дочекайтеся завершення або скасуйте поточну обробку документів.');
+      const previousScope=scope,previousPackage=packageInfo,previousDrafts=new Map(drafts);
+      const previousValues=new Map([...providers].map(([name,provider])=>[name,provider.snapshot?.()]));
+      const panes=sectionNames.map(name=>document.getElementById(name+'-view')).filter(Boolean);
+      switching=true;panes.forEach(pane=>pane.inert=true);sectionNames.forEach(name=>restoring.add(name));
+      try{
+        await saveAll();
+        const nextData=await request(draftBase(next));
+        const nextPackage=next==='workspace'?null:(await request('/api/packages/'+encodeURIComponent(next))).package;
+        if(nextPackage?.status==='archived')throw new Error('Поверніть пакет з архіву в роботу перед редагуванням.');
+        scope=next;packageInfo=nextPackage;drafts.clear();
+        for(const name of sectionNames){
+          const item=state(name),entry=nextData.sections?.[name];
+          item.revision=nextData.revisions?.[name]||entry?.revision||0;item.entry=entry||null;
+          const provider=providers.get(name);
+          if(entry){await provider.restore(JSON.parse(JSON.stringify(entry.data)));await provider.attachFiles?.();}
+          else if(provider.reset)await provider.reset();
+          else await provider.restore({items:[],records:[],letters:[],common:{}});
+          item.pending=false;item.dirty=false;
+        }
+        await request('/api/workbench/session',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope})});
+        window.OZOffice?.clear();
+        loaded=true;loadError='';
+        document.dispatchEvent(new CustomEvent('protokol:package-context',{detail:{scope,package:packageInfo}}));
+        status('Пакет відкрито. Перевірте дані перед створенням документів.');
+      }catch(error){
+        scope=previousScope;packageInfo=previousPackage;drafts.clear();for(const [name,value] of previousDrafts)drafts.set(name,value);
+        for(const [name,value] of previousValues){try{const provider=providers.get(name);if(value)await provider.restore(value);else if(provider.reset)await provider.reset();}catch{}}
+        throw error;
+      }finally{switching=false;sectionNames.forEach(name=>restoring.delete(name));panes.forEach(pane=>pane.inert=false);renderDrafts();}
+    },
     get pending() { return [...drafts.values()].some(item => item.dirty || item.flight); }
   };
-  load();
+  const ready=(async()=>{
+    try{const session=await request('/api/workbench/session');scope=session.scope;packageInfo=session.package;}
+    catch(error){status(errorMessage(error),true);}
+    await load();
+    if(loaded&&scope!=='workspace'){
+      try{await window.OZWorkspace.activateScope(scope,true);}catch(error){status('Не вдалося відкрити пакет: '+errorMessage(error),true);}
+    }
+    document.dispatchEvent(new CustomEvent('protokol:package-context',{detail:{scope,package:packageInfo}}));
+  })();
 })();

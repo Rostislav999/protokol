@@ -159,10 +159,21 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
     """Read ZIP members in memory; archive paths are never extracted to disk."""
     records, warnings = [], []
     protocol_count, expanded = 0, 0
+    from . import progress
+    def count_files(filename, data):
+        if filename.lower().endswith('.zip'):
+            try:
+                with ZipFile(io.BytesIO(data)) as archive:
+                    return sum(not member.is_dir() and member.filename.lower().endswith(('.docx', '.pdf')) for member in archive.infolist())
+            except BadZipFile:
+                return 1
+        return 1
+    files_total = sum(count_files(filename, data) for filename, data in files)
 
     def append(filename, data):
         nonlocal protocol_count, expanded
         protocol_count += 1
+        progress.file(protocol_count, max(files_total, protocol_count), filename)
         expanded += len(data)
         if protocol_count > MAX_RECORDS or expanded > MAX_EXPANDED:
             raise ValueError("Комплект перевищує 100 протоколів або 150 МБ після розпакування.")

@@ -179,7 +179,7 @@
     try {
       const form = new FormData();
       files.forEach(file => form.append('files',file));
-      const data = await (await api('/api/excel/import',{method:'POST',body:form})).json();
+      const data = await window.OZTasks.run('excel',files,{section:'excel'});
       const imported = (data.records || []).map(record => importedRecord(record));
       if (state.records.length + imported.length > 100) throw new Error('Список містить більше 100 протоколів. Створіть окремий комплект.');
       state.records.push(...imported);
@@ -256,9 +256,12 @@
     state.records=state.records.filter(value => value.id !== card.dataset.excelRecord);
     invalidate(); render();
   });
-  $('#excel-template').addEventListener('change',() => {
+  $('#excel-template').addEventListener('change',async() => {
     const file = $('#excel-template').files[0];
-    if (file) { state.templateRequired=false; state.templateWasSelected=true; state.templateName=file.name; }
+    if (file) {
+      try{await window.OZWorkspace.retainFiles([file],'excel','excel_template');}catch(error){showError(error);}
+      state.templateRequired=false; state.templateWasSelected=true; state.templateName=file.name;
+    }
     else if (!state.templateRequired) { state.templateWasSelected=false; state.templateName=''; }
     invalidate(); updateReadiness();
   });
@@ -276,10 +279,12 @@
     if (template && (!/\.xlsx$/i.test(template.name) || !template.size || template.size > 25*1024*1024)) return showError(new Error('Оберіть непорожню таблицю .xlsx розміром до 25 МБ.'));
     $('#excel-error').hidden=true;
     state.busy=true; updateReadiness();
+    const exportContext=window.OZWorkspace.context('excel');
     try {
       const form=new FormData();
       form.append('payload',JSON.stringify({records:state.records.map(({source,values,warnings})=>({source,values,warnings})),confirmed:true,update_existing:$('#excel-update-existing').checked}));
       if (template) form.append('template',template);
+      await window.OZWorkspace.flushSection('excel');
       const data=await (await api('/api/excel/generate',{method:'POST',body:form})).json();
       const decoded=atob(data.workbook_base64 || '');
       const bytes=new Uint8Array(decoded.length);
@@ -295,7 +300,7 @@
       $('#excel-download').download=data.filename || 'Протоколи.xlsx';
       $('#excel-report').href=state.reportUrl;
       $('#excel-success').hidden=false;
-      $('#excel-download').click();
+      await window.OZOffice.deliver(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),data.filename||'Протоколи.xlsx','excel',exportContext);
     } catch (error) { showError(error); }
     finally { state.busy=false; updateReadiness(); }
   });
@@ -306,7 +311,7 @@
   });
   document.addEventListener('protokol:excel-from-act',event => importAct(event.detail));
   window.OZWorkspace?.register('excel',{
-    title:'Таблиця Excel',
+    title:'Таблиця Excel',isBusy:()=>state.busy,
     hasData:() => state.records.length > 0 || state.templateWasSelected || state.templateRequired,
     snapshot:() => state.records.length || state.templateWasSelected || state.templateRequired ? ({records:clone(state.records),warnings:clone(state.warnings),updateExisting:$('#excel-update-existing').checked,
       templateWasSelected:!!($('#excel-template').files[0] || state.templateWasSelected || state.templateRequired),
@@ -329,6 +334,12 @@
       state.templateName=String(data.templateName || '').slice(0,1000);
       $('#excel-update-existing').checked=data.updateExisting !== false;
       invalidate(); render();
+    },
+    reset:async()=>{state.records=[];state.warnings=[];state.templateRequired=false;state.templateWasSelected=false;state.templateName='';$('#excel-template').value='';invalidate();render();},
+    attachFiles:async()=>{
+      if(!state.templateRequired||!state.templateName)return;
+      const file=await window.OZWorkspace.sourceFile('excel',state.templateName,'excel_template');if(!file)return;
+      const transfer=new DataTransfer();transfer.items.add(file);$('#excel-template').files=transfer.files;state.templateRequired=false;render();
     },
     issues:reviewIssues,
     reveal:issue => {
