@@ -99,10 +99,14 @@ def test_keeps_paragraph_spacing_fonts_blank_lines_and_signature_gap(general):
     original = document((ASSETS / ('general.docx' if general else 'company.docx')).read_bytes())
     payload = batch(contact='Ірина Приклад 00 000')
     rendered = document(render_letter(payload.records, payload, general))
-    # Only the variable attachment list changes the number of body paragraphs.
+    # Keep internal blank lines; trailing empty paragraphs are removed to avoid
+    # an extra blank page when the content ends at the bottom of the sheet.
     def fixed_paragraphs(root):
-        return [p for p in root.findall('w:body/w:p', NS)
-                if not text(p).startswith('Додаток:') and not text(p)[:1].isdigit()]
+        paragraphs = [p for p in root.findall('w:body/w:p', NS)
+                      if not text(p).startswith('Додаток:') and not text(p)[:1].isdigit()]
+        while paragraphs and not text(paragraphs[-1]):
+            paragraphs.pop()
+        return paragraphs
     before, after = fixed_paragraphs(original), fixed_paragraphs(rendered)
     assert len(after) == len(before)
     for p, q in zip(before, after):
@@ -124,6 +128,17 @@ def test_keeps_paragraph_spacing_fonts_blank_lines_and_signature_gap(general):
     assert 'ГРАНД КОНСАЛТ' not in text(rendered)
     assert 'Катерина Сержант-Міщенко' not in text(rendered)
     assert '42 029' not in text(rendered)
+
+
+@pytest.mark.parametrize('general', [True, False])
+@pytest.mark.parametrize('contact', ['', 'Ірина Приклад 00 000'])
+def test_letter_ends_at_signature_or_contact_without_empty_page_paragraphs(general, contact):
+    payload = batch(12, contact=contact)
+    rendered = document(render_letter(payload.records, payload, general))
+    paragraphs = rendered.findall('w:body/w:p', NS)
+    expected = contact or (payload.general_signer if general else payload.company_signer)
+    assert ' '.join(text(paragraphs[-1]).split()) == ' '.join(expected.split())
+    assert rendered.find('w:body', NS)[-1].tag == '{' + W + '}sectPr'
 
 
 @pytest.mark.parametrize('general', [True, False])

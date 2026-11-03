@@ -366,6 +366,17 @@ def render_letter(records, batch, general, content=None):
         if paragraph is position and properties.find('w:keepNext', WN) is None:
             properties.insert(0, E.Element(Q('keepNext')))
     _fill_text(contact, content.contact)
+    # Empty paragraphs after the final signature/contact can spill onto an
+    # otherwise blank last page. Keep all spacing before and within the text.
+    for paragraph in reversed(list(body)):
+        if paragraph.tag == Q('sectPr'):
+            continue
+        if (paragraph.tag != Q('p') or _paragraph_text(paragraph).strip()
+                or paragraph.xpath('.//w:drawing | .//w:pict | .//w:object | .//w:br'
+                                   ' | .//w:fldChar | .//w:fldSimple'
+                                   ' | .//w:bookmarkStart | .//w:bookmarkEnd', namespaces=WN)):
+            break
+        body.remove(paragraph)
     parts['word/document.xml'] = E.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
     out = BytesIO()
     with ZipFile(out, 'w', ZIP_DEFLATED) as z:
