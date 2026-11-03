@@ -122,18 +122,19 @@ def test_invalid_outgoing_metadata_never_creates_a_register_entry(client, regist
 def test_profiles_appearance_and_journal_survive_backup_restore(client, tmp_path):
     profile = client.post('/api/signers', json={'name': 'Начальник', 'position': 'Начальник лабораторії', 'signer': 'майор Ірина ПРИКЛАД', 'contact': 'Контакт 00 000'}).json()
     assert client.put('/api/signer-defaults', json={'general_id': profile['id'], 'company_id': profile['id']}).status_code == 200
-    assert client.put('/api/preferences', json={'text_size': 'large'}).status_code == 200
+    appearance = dict(text_size='extra_large', theme='system', density='compact', accent='violet', editor_mode='preview')
+    assert client.patch('/api/preferences', json=appearance).status_code == 200
     assert post(client, 'generate', batch()).status_code == 200
     item = client.get('/api/outgoing').json()['entries'][0]
     original = client.get('/api/outgoing/' + item['id'] + '/docx').content
     saved = client.get('/api/backups/export')
     assert saved.status_code == 200
     assert client.delete('/api/signers/' + profile['id']).status_code == 200
-    client.put('/api/preferences', json={'text_size': 'normal'})
+    client.patch('/api/preferences', json={'text_size': 'normal', 'theme': 'light', 'density': 'comfortable', 'accent': 'sage', 'editor_mode': 'auto'})
     restored = client.post('/api/backups/restore', files={'file': ('backup.zip', saved.content, 'application/zip')}, data={'confirmed': 'true'})
     assert restored.status_code == 200, restored.text
     assert client.get('/api/signers').json()['general_id'] == profile['id']
-    assert client.get('/api/preferences').json()['text_size'] == 'large'
+    assert client.get('/api/preferences').json() == appearance
     assert client.get('/api/outgoing/' + item['id'] + '/docx').content == original
     JournalStore.validate(tmp_path / 'outgoing.sqlite3')
 

@@ -139,9 +139,46 @@ SCRIPT = r'''void (async () => {try {
     await wait(()=>!document.querySelector('#cover_letters-view').hidden && !document.querySelector('#outgoing-letter').open);
     assert(document.querySelector('[data-letter="general"] [data-registration-field="number"]').value==='','Editing a copy reused an official outgoing number');
     assert(document.querySelector('[data-letter="general"] [data-letter-field="signer"]').value===profile.signer,'Copying lost the saved signature');
+    const beforeAppearance=JSON.stringify(providers.cover_letters.snapshot());
+    const beforeMode=document.querySelector('[data-editor-layout]').dataset.mode;
+    document.querySelector('[data-confirm]').checked=true;
+    document.querySelector('[data-appearance-open]').click();
+    await wait(()=>document.querySelector('#appearance-settings[open]'));
+    input('#appearance-settings [name="theme"]','dark','change');
+    input('#appearance-settings [name="text_size"]','extra_large','change');
+    input('#appearance-settings [name="density"]','compact','change');
+    document.querySelector('#appearance-settings [name="accent"][value="blue"]').click();
+    input('#appearance-settings [name="editor_mode"]','preview','change');
+    assert(document.documentElement.dataset.theme==='dark' && document.documentElement.dataset.accent==='blue','Live appearance preview was not applied');
+    await wait(()=>document.querySelector('[data-page-preview] .word-page'));
+    assert(getComputedStyle(document.querySelector('[data-page-preview] .word-page')).backgroundColor==='rgb(255, 255, 255)','Dark theme changed the document paper');
+    assert(getComputedStyle(document.querySelector('[data-page-preview] .word-page')).color==='rgb(0, 0, 0)','Dark theme changed the document ink');
+    assert([...document.querySelectorAll('[data-page-preview] article table span')].filter(node=>node.textContent.trim()).every(node=>getComputedStyle(node).color==='rgb(46, 117, 182)'),'Interface accent changed the stamp ink');
+    assert(document.querySelector('[data-confirm]').checked,'Appearance preview cleared document approval');
+    assert(JSON.stringify(providers.cover_letters.snapshot())===beforeAppearance,'Appearance preview changed the document draft');
+    document.querySelector('#appearance-settings [data-appearance-cancel]').click();
+    await wait(()=>!document.querySelector('#appearance-settings').open);
+    assert(document.documentElement.dataset.theme==='light','Cancel did not restore the saved theme');
+    assert(document.querySelector('[data-editor-layout]').dataset.mode===beforeMode,'Cancel did not restore the editor view');
+    assert((await(await fetch('/api/preferences')).json()).theme==='light','Live preview wrote preferences before Save');
+    document.querySelector('[data-appearance-open]').click();
+    input('#appearance-settings [name="theme"]','dark','change');
+    input('#appearance-settings [name="density"]','compact','change');
+    document.querySelector('#appearance-settings [name="accent"][value="blue"]').click();
+    input('#appearance-settings [name="editor_mode"]','preview','change');
+    document.querySelector('[data-appearance-save]').click();
+    await wait(()=>!document.querySelector('#appearance-settings').open);
+    const appearance=(await(await fetch('/api/preferences')).json());
+    assert(appearance.theme==='dark' && appearance.accent==='blue' && appearance.density==='compact' && appearance.editor_mode==='preview','Appearance settings were not saved');
+    document.querySelector('[data-appearance-open]').click();
+    document.querySelector('[data-appearance-reset]').click();
+    assert(document.documentElement.dataset.theme==='light' && document.documentElement.dataset.density==='comfortable','Default appearance preview failed');
+    document.querySelector('#appearance-settings [data-appearance-cancel]').click();
+    assert(document.documentElement.dataset.theme==='dark' && document.documentElement.dataset.density==='compact','Cancel after reset lost saved preferences');
     input('[data-text-size]','large','change');
     await wait(()=>!document.querySelector('[data-text-size]').disabled);
     assert((await(await fetch('/api/preferences')).json()).text_size==='large','Text size preference was not saved');
+    assert((await(await fetch('/api/preferences')).json()).theme==='dark','Quick text size reset the saved theme');
     assert(getComputedStyle(document.querySelector('[data-letter="general"] [data-letter-field="body"]')).fontSize==='18px','Larger form text was not applied');
     document.querySelector('[data-confirm]').checked=true;
     let automaticCoverDraft=null;
@@ -187,6 +224,8 @@ SCRIPT = r'''void (async () => {try {
     assert(!document.querySelector('#cover_letters-view').hidden,'Cover draft restored into the wrong section');
     await wait(()=>document.querySelector('[data-text-size]').value==='large');
     assert(document.querySelector('[data-text-size]').value==='large','Text size did not survive restart');
+    assert(document.documentElement.dataset.theme==='dark' && document.documentElement.dataset.accent==='blue' && document.documentElement.dataset.density==='compact','Appearance choices did not survive restart');
+    assert(document.querySelector('[data-editor-layout]').dataset.mode==='preview','Default editor view did not survive restart');
     assert((await(await fetch('/api/signers')).json()).profiles[0]?.signer==='майор Ірина ПРИКЛАД','Signer profile was lost after restart');
     assert((await(await fetch('/api/outgoing?status=sent')).json()).total===1,'Outgoing history was lost after restart');
     const letterBody=document.querySelector('[data-letter="general"] [data-letter-field="body"]'),savedBody=letterBody.value;
@@ -205,7 +244,7 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(document.activeElement.dataset.field==='protocol_date','Review link did not focus the incorrect date');
     await window.OZWorkspace.flush();
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','linked date review']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review']}));
   }
 } catch(error) {console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:false,error:error.stack||String(error),viewport:{width:innerWidth,height:innerHeight},editorMode:document.querySelector('[data-editor-layout]')?.dataset.mode,activeView:document.querySelector('.nav-button.active')?.dataset.view}));}})();'''
 

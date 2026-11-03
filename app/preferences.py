@@ -1,7 +1,6 @@
 """Persistent signer profiles and readable interface preferences."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Literal
@@ -50,7 +49,11 @@ class SignerState(SignerDefaults):
 
 class Appearance(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    text_size: Literal['normal', 'large'] = 'normal'
+    text_size: Literal['normal', 'large', 'extra_large'] = 'normal'
+    theme: Literal['light', 'dark', 'system'] = 'light'
+    density: Literal['comfortable', 'compact'] = 'comfortable'
+    accent: Literal['sage', 'blue', 'violet', 'slate'] = 'sage'
+    editor_mode: Literal['auto', 'edit', 'preview', 'split'] = 'auto'
 
 
 def _read(path: Path, model):
@@ -136,8 +139,16 @@ def preferences_router(directory: Path) -> APIRouter:
             raise HTTPException(422, str(exc)) from exc
 
     @router.put('/preferences')
+    @router.patch('/preferences')
     def update_appearance(values: Appearance):
-        _write(appearance_path, values)
-        return values
+        try:
+            # Older versions send only text_size. Merge only supplied fields so
+            # a quick font change cannot reset theme, density or editor choices.
+            current = _read(appearance_path, Appearance)
+            merged = Appearance.model_validate({**current.model_dump(), **values.model_dump(exclude_unset=True)})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        _write(appearance_path, merged)
+        return merged
 
     return router

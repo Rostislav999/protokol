@@ -143,11 +143,13 @@
       <details class="letter-extra"><summary>Підпис і контакти</summary><div class="letter-signature-fields"><label class="field"><span>Збережений підпис</span><select data-apply-profile="individual"><option value="">Вручну</option></select></label>${fieldMarkup('position')}${fieldMarkup('signer')}${fieldMarkup('contact')}<button type="button" class="text-button" data-save-current-signer>Зберегти цей підпис як профіль</button></div></details>
     </div>`;
   }
+  let editorModeManuallyChosen=false;
   function renderLetters() {
     if(!letters.some(letter=>letter.id===selectedLetterId))selectedLetterId=letters[0]?.id||'';
-    const mode=matchMedia('(max-width:1100px)').matches?'edit':'split';
+    const mode=window.OZAppearance?.editorMode()||(matchMedia('(max-width:1100px)').matches?'edit':'split');
+    editorModeManuallyChosen=false;
     editor.innerHTML=letters.length?`<div class="cover-workbench"><section class="letter-document-area">
-      <div class="letter-toolbar"><div class="letter-switcher"><label class="field"><span>Лист</span><select data-letter-select aria-label="Лист комплекту">${letters.map(letter=>`<option value="${esc(letter.id)}">${esc(letter.title)}</option>`).join('')}</select></label><div class="letter-paging"><button type="button" class="button quiet" data-letter-move="-1" aria-label="Попередній лист">←</button><span data-letter-index></span><button type="button" class="button quiet" data-letter-move="1" aria-label="Наступний лист">→</button></div></div><h2 class="sr-only" data-letter-title></h2><div class="letter-mobile-tabs" role="group" aria-label="Вигляд редактора"><button type="button" class="button quiet ${mode==='edit'?'active':''}" data-editor-mode="edit">Текст</button><button type="button" class="button quiet" data-editor-mode="preview">Сторінка</button><button type="button" class="button quiet ${mode==='split'?'active':''}" data-editor-mode="split">Поруч</button></div></div>
+      <div class="letter-toolbar"><div class="letter-switcher"><label class="field"><span>Лист</span><select data-letter-select aria-label="Лист комплекту">${letters.map(letter=>`<option value="${esc(letter.id)}">${esc(letter.title)}</option>`).join('')}</select></label><div class="letter-paging"><button type="button" class="button quiet" data-letter-move="-1" aria-label="Попередній лист">←</button><span data-letter-index></span><button type="button" class="button quiet" data-letter-move="1" aria-label="Наступний лист">→</button></div></div><h2 class="sr-only" data-letter-title></h2><div class="letter-mobile-tabs" role="group" aria-label="Вигляд редактора"><button type="button" class="button quiet ${mode==='edit'?'active':''}" data-editor-mode="edit">Текст</button><button type="button" class="button quiet ${mode==='preview'?'active':''}" data-editor-mode="preview">Сторінка</button><button type="button" class="button quiet ${mode==='split'?'active':''}" data-editor-mode="split">Поруч</button></div></div>
       <div class="letter-editor-layout" data-editor-layout data-mode="${mode}"><div class="letter-fields">${letters.map(letterMarkup).join('')}</div><aside class="letter-preview"><div class="preview-heading"><span data-page-status role="status">Готуємо сторінку…</span><label><span class="sr-only">Масштаб сторінки</span><select data-page-zoom aria-label="Масштаб сторінки"><option value="fit">За шириною</option><option value="75">75%</option><option value="100">100%</option></select></label></div><div class="word-preview" data-page-preview></div><p class="preview-note">Попередній вигляд. Точний макет — у Word та експортованому PDF.</p></aside></div>
     </section></div>`:'';
     for(const letter of letters){
@@ -182,7 +184,18 @@
       if(field?.offsetWidth){field.style.height='0px';field.style.height=Math.min(340,Math.max(44,field.scrollHeight+2))+'px';}
     }
   }
-  document.addEventListener('protokol:appearance-changed',fitShortFields);
+  function setEditorMode(mode) {
+    const layout=$('[data-editor-layout]');if(!layout)return;
+    layout.dataset.mode=mode;
+    editor.querySelectorAll('[data-editor-mode]').forEach(button=>button.classList.toggle('active',button.dataset.editorMode===mode));
+    fitShortFields();window.OZDocumentPreview.fit($('[data-page-preview]'),$('[data-page-zoom]').value);
+    if(mode!=='edit')queuePreview(0);
+  }
+  document.addEventListener('protokol:appearance-changed',event=>{
+    const detail=event.detail||{};
+    if(detail.editorMode && (detail.reason!=='load'||!editorModeManuallyChosen))setEditorMode(detail.editorMode);
+    fitShortFields();if($('[data-page-preview]'))window.OZDocumentPreview.fit($('[data-page-preview]'),$('[data-page-zoom]')?.value);
+  });
   window.addEventListener('resize',fitShortFields);
   function queuePreview(delay=500) {
     clearTimeout(previewTimer);previewController?.abort();previewGeneration++;
@@ -215,7 +228,7 @@
     const move=event.target.closest('[data-letter-move]');
     if(move){const index=letters.findIndex(letter=>letter.id===selectedLetterId);selectLetter(letters[(index+Number(move.dataset.letterMove)+letters.length)%letters.length].id);}
     const mode=event.target.closest('[data-editor-mode]');
-    if(mode){$('[data-editor-layout]').dataset.mode=mode.dataset.editorMode;editor.querySelectorAll('[data-editor-mode]').forEach(button=>button.classList.toggle('active',button===mode));fitShortFields();window.OZDocumentPreview.fit($('[data-page-preview]'),$('[data-page-zoom]').value);if(mode.dataset.editorMode!=='edit')queuePreview(0);}
+    if(mode){editorModeManuallyChosen=true;setEditorMode(mode.dataset.editorMode);}
   });
   editor.addEventListener('change',event=>{
     if(event.target.matches('[data-letter-select]'))selectLetter(event.target.value);
