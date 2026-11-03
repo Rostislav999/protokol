@@ -127,9 +127,9 @@ def packages_router(directory: Path, template_exists):
         out, seen = BytesIO(), set()
         def write(archive, folder, filename, data):
             name = folder + '/' + safe_filename(filename)
-            base, suffix, n = Path(name).stem, Path(name).suffix, 2
+            n = 2
             while name.casefold() in seen:
-                name = folder + '/' + base + f' ({n})' + suffix
+                name = folder + '/' + safe_filename(filename, f' ({n})')
                 n += 1
             seen.add(name.casefold())
             archive.writestr(name, data)
@@ -158,7 +158,7 @@ def packages_router(directory: Path, template_exists):
             lines.extend(('ПОМИЛКА: ' if issue['level'] == 'error' else 'УВАГА: ') + issue['message'] for issue in report['issues'])
             lines.append('\nЦе перевірка узгодженості реквізитів. Результати випробувань та правильність змісту перевіряє відповідальна особа.')
             archive.writestr('ПЕРЕВІРКА.txt', '\n'.join(lines))
-        filename = safe_filename(package['title']) + '.zip'
+        filename = safe_filename(package['title'].replace('/', '_').replace('\\', '_') + '.zip')
         return Response(out.getvalue(), media_type='application/zip', headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(filename)})
 
     @router.get('/api/workbench/session')

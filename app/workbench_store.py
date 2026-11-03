@@ -42,12 +42,26 @@ def fingerprint(data):
     return sha256(json.dumps(clean(data), ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
-def safe_filename(value):
+def safe_filename(value, unique_suffix=''):
     name = str(value).replace('\\', '/').rsplit('/', 1)[-1]
-    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '_', name).strip('. ')[:200]
+    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '_', name).strip('. ')
     if not name or name.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}:
         name = 'Документ_' + name
-    return name
+    extension = Path(name).suffix
+    if len(extension.encode('utf-16-le')) > 40:
+        extension = ''
+    stem = name[:-len(extension)] if extension else name
+    # Windows counts UTF-16 units. Keep valid source names intact, including the
+    # extension, and leave room for a duplicate counter inside package ZIPs.
+    remaining = 255 - len((unique_suffix + extension).encode('utf-16-le')) // 2
+    result = []
+    for char in stem:
+        units = 2 if ord(char) > 0xFFFF else 1
+        if units > remaining:
+            break
+        result.append(char)
+        remaining -= units
+    return ''.join(result).rstrip('. ') + unique_suffix + extension
 
 
 def letter_content(value):

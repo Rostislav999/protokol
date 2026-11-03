@@ -114,7 +114,7 @@
   view.addEventListener('click',async event=>{
     try{
       const target=event.target.closest('button');if(!target)return;
-      const id=selected,packageValue=detail?.package,checkedReport=report;
+      const id=selected,checkedReport=report;
       if(target.matches('[data-package-new]'))openForm();
       if(target.matches('[data-package-select]'))await showDetail(target.dataset.packageSelect);
       if(target.matches('[data-package-back]')){detailRequest++;selected='';detail=null;$('[data-package-list-view]').hidden=false;$('[data-package-detail]').hidden=true;await listing();}
@@ -136,7 +136,9 @@
         target.disabled=true;try{
           if(window.OZWorkspace.scope===id)await window.OZWorkspace.flush();
           const response=await fetch('/api/packages/'+id+'/download');if(!response.ok)throw new Error('Не вдалося зібрати ZIP пакета. Збережіть технічний звіт.');
-          window.OZOffice.download(await response.blob(),packageValue.title.replace(/[\\/:*?"<>|]/g,'_')+'.zip');
+          const encoded=/filename\*=UTF-8''([^;]+)/i.exec(response.headers.get('Content-Disposition')||'');
+          const filename=encoded?decodeURIComponent(encoded[1]):'Пакет документів.zip';
+          window.OZOffice.download(await response.blob(),filename);
         }finally{target.disabled=false;}
       }
     }catch(exc){error(exc);}

@@ -10,7 +10,7 @@ import pytest
 
 from app.main import create_app
 from app.package_checks import check_package
-from app.workbench_store import WorkStore, fingerprint
+from app.workbench_store import WorkStore, fingerprint, safe_filename
 
 
 @pytest.fixture
@@ -242,3 +242,19 @@ def test_restore_provenance_flags_do_not_make_an_unchanged_document_stale():
 def test_consistency_report_preserves_partial_import_warnings():
     result = check_package({'excel': {'records': [], 'warnings': ['Не прочитано damaged.pdf']}}, [])
     assert any(issue['code'] == 'source-warning' and 'damaged.pdf' in issue['message'] for issue in result['issues'])
+
+
+def test_long_windows_source_names_keep_extensions_and_case_zip_names_are_unique(client):
+    package = create(client)
+    name = 'Д' * 250 + '.docx'
+    first = upload(client, package['id'], name=name, data=b'first')
+    assert first['filename'] == name
+    upload(client, package['id'], name=name, data=b'second')
+    response = client.get('/api/packages/' + package['id'] + '/download')
+    with ZipFile(BytesIO(response.content)) as archive:
+        documents = [value for value in archive.namelist() if value.endswith('.docx')]
+        assert len(documents) == 2 and len(set(documents)) == 2
+        assert {archive.read(value) for value in documents} == {b'first', b'second'}
+        assert all(len(value.rsplit('/', 1)[-1].encode('utf-16-le')) // 2 <= 255 for value in documents)
+    assert safe_filename('😀' * 200 + '.pdf').endswith('.pdf')
+    assert len(safe_filename('😀' * 200 + '.pdf').encode('utf-16-le')) // 2 <= 255
