@@ -20,6 +20,7 @@ S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS = {"s": S}
+DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "assets/excel/summary.xlsx"
 FIELDS = [
     ("D", "Номер протоколу"),
     ("E", "Дата протоколу"),
@@ -510,51 +511,14 @@ def report_text(report: dict) -> str:
 
 
 def make_template(path: Path) -> None:
-    """Create a valid, styled workbook using the original D–N positions."""
-    worksheet = ET.Element(f"{{{S}}}worksheet", nsmap={None: S})
-    ET.SubElement(worksheet, f"{{{S}}}dimension", ref="A1:N2")
-    views = ET.SubElement(worksheet, f"{{{S}}}sheetViews")
-    view = ET.SubElement(views, f"{{{S}}}sheetView", workbookViewId="0", showGridLines="0")
-    ET.SubElement(view, f"{{{S}}}pane", ySplit="1", topLeftCell="D2", activePane="bottomLeft", state="frozen")
-    cols = ET.SubElement(worksheet, f"{{{S}}}cols")
-    ET.SubElement(cols, f"{{{S}}}col", min="1", max="3", width="3", hidden="1")
-    for index, (col, _) in enumerate(FIELDS, 4):
-        width = "58" if col in {"G", "M"} else "24" if col == "D" else "20"
-        ET.SubElement(cols, f"{{{S}}}col", min=str(index), max=str(index), width=width, customWidth="1")
-    data = ET.SubElement(worksheet, f"{{{S}}}sheetData")
-    header = ET.SubElement(data, f"{{{S}}}row", r="1", ht="42", customHeight="1")
-    empty = ET.SubElement(data, f"{{{S}}}row", r="2")
-    for col, label in FIELDS:
-        cell = ET.SubElement(header, f"{{{S}}}c", r=col + "1", t="inlineStr", s="2")
-        ET.SubElement(ET.SubElement(cell, f"{{{S}}}is"), f"{{{S}}}t").text = label
-        ET.SubElement(empty, f"{{{S}}}c", r=col + "2", s="1" if col in DATES else "0")
-    ET.SubElement(worksheet, f"{{{S}}}autoFilter", ref="D1:N2")
-    ET.SubElement(worksheet, f"{{{S}}}pageMargins", left="0.25", right="0.25", top="0.5", bottom="0.5", header="0.2", footer="0.2")
-    styles = f'''<styleSheet xmlns="{S}"><numFmts count="1"><numFmt numFmtId="164" formatCode="dd.mm.yyyy"/></numFmts>
-<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts>
-<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF164B5B"/><bgColor indexed="64"/></patternFill></fill></fills>
-<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
-<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs>
-<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'''
-    workbook = f'<workbook xmlns="{S}" xmlns:r="{R}"><bookViews><workbookView/></bookViews><sheets><sheet name="Протоколи" sheetId="1" r:id="rSheet"/></sheets></workbook>'
-    package_rels = "http://schemas.openxmlformats.org/package/2006/relationships"
-    content_types = '''<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'''
-    parts = {
-        "[Content_Types].xml": content_types.encode(),
-        "_rels/.rels": f'<Relationships xmlns="{package_rels}"><Relationship Id="rWorkbook" Type="{R}/officeDocument" Target="xl/workbook.xml"/></Relationships>'.encode(),
-        "xl/workbook.xml": workbook.encode(),
-        "xl/_rels/workbook.xml.rels": f'<Relationships xmlns="{package_rels}"><Relationship Id="rSheet" Type="{R}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rStyles" Type="{R}/styles" Target="styles.xml"/></Relationships>'.encode(),
-        "xl/worksheets/sheet1.xml": ET.tostring(worksheet, xml_declaration=True, encoding="UTF-8", standalone=True),
-        "xl/styles.xml": styles.encode(),
-    }
-    with zipfile.ZipFile(path, "x", zipfile.ZIP_DEFLATED) as archive:
-        for name, content in parts.items():
-            archive.writestr(name, content)
+    """Copy the bundled UBHP summary form without overwriting an existing file."""
+    data = DEFAULT_TEMPLATE.read_bytes()
+    with path.open("xb") as target:
+        target.write(data)
 
 
 def write_excel_bytes(template: bytes | None, records: list[Record], on_duplicate: str = "update") -> tuple[bytes, dict]:
-    """Return a new copy without persisting uploaded source files."""
+    """Return a new workbook, using the bundled summary form by default."""
     with tempfile.TemporaryDirectory(prefix="protokol-excel-") as directory:
         source = Path(directory) / "source.xlsx"
         target = Path(directory) / "result.xlsx"

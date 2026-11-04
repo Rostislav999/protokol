@@ -166,6 +166,10 @@ def check_application(server: LocalServer) -> bytes:
         cell = sheet.find(".//s:c[@r='M2']", NS)
         if cell is None or cell.get("t") != "inlineStr" or cell_text(cell, []) != "00001234":
             raise RuntimeError("Не пройдено перевірку експорту Excel.")
+        table = etree.fromstring(archive.read("xl/tables/table1.xml"))
+        style = table.find("s:tableStyleInfo", NS)
+        if style is None or style.get("name") != "TableStyleMedium2":
+            raise RuntimeError("Не пройдено перевірку вбудованої форми зведеної таблиці.")
     LOG.info("Bundled application check passed: OCR, templates, HTTP, Excel")
     return workbook
 

@@ -284,7 +284,7 @@ def excel_router(settings: SettingsStore) -> APIRouter:
                                                    "update" if values.update_existing else "skip")
             if len(data) > MAX_FILE:
                 raise ValueError("Результат перевищує 25 МБ. Розділіть комплект на менші частини.")
-            return {"filename": "Протоколи.xlsx", "workbook_base64": base64.b64encode(data).decode("ascii"),
+            return {"filename": "Додаток_зведена_таблиця.xlsx", "workbook_base64": base64.b64encode(data).decode("ascii"),
                     "report_text": report_text(report),
                     "counts": {key: len(report[key]) for key in ("added", "updated", "skipped")}}
         except (ValueError, ValidationError) as exc:

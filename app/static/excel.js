@@ -6,7 +6,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const uid = () => globalThis.crypto?.randomUUID?.() || `excel-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, busy:false, result:null, fileUrl:'', reportUrl:'', templateRequired:false, templateWasSelected:false, templateName:''};
+  const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, busy:false, result:null, fileUrl:'', reportUrl:'', legacyTemplateName:''};
   const changed = () => window.OZWorkspace?.changed('excel');
   const clone = value => JSON.parse(JSON.stringify(value));
   const originText = source => source?.label || ({act:'З акта',protocol:'Із протоколу',manual:'Введено вручну',directory:'Із довідника',template:'Із шаблону',derived:'Обчислено з даних джерела'})[source?.kind] || 'Джерело не збережено';
@@ -23,7 +23,7 @@
     <section id="excel-processing" class="panel processing" hidden aria-live="polite"><div class="spinner"></div><h2>Читаємо протоколи</h2><p>Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.</p></section>
     <div id="excel-warnings" class="notice warning" hidden></div>
     <fieldset id="excel-editor" style="border:0;padding:0;min-width:0;margin:0">
-      <section class="panel common-panel"><div class="panel-heading"><div><h2>Таблиця Excel</h2><p>Можна продовжити вашу таблицю або створити нову.</p></div></div><div class="form-grid"><label class="field wide"><span>Вихідна таблиця .xlsx (за потреби)</span><input id="excel-template" type="file" accept=".xlsx"><small>Без файлу буде створено нову таблицю з тими самими стовпцями D–N. Оригінал завантаженої таблиці не змінюється.</small></label><div id="excel-template-restore" class="notice warning wide" hidden><p></p><button id="excel-new-workbook" type="button" class="text-button">Створити нову таблицю замість попередньої</button></div><label class="confirmation"><input id="excel-update-existing" type="checkbox" checked><span>Оновлювати рядки з тим самим номером протоколу. Якщо дані не знайдено, зберігати попереднє значення клітинки.</span></label></div></section>
+      <section class="panel common-panel"><div class="panel-heading"><div><h2>Зведена таблиця</h2><p>Excel створюється за формою УБХП: з готовою шапкою, оформленням рядків і форматами клітинок. Достатньо перевірити дані та натиснути «Створити Excel».</p></div></div><div id="excel-legacy-template" class="notice warning" hidden><p></p></div></section>
       <div class="section-heading"><div><h2>Протоколи <span id="excel-record-count" class="count-pill">0</span></h2><p>Перевірте назви, дати, масу в кг та коди організацій перед збереженням.</p></div></div>
       <div id="excel-records"></div>
       <div id="excel-empty" class="panel empty-state"><h3>Дані ще не додані</h3><p>Перенесіть дані кнопкою «Підготувати Excel за цим актом» або завантажте готові протоколи.</p></div>
@@ -31,7 +31,7 @@
       <section class="panel generation-panel"><div><label class="confirmation"><input id="excel-confirmed" type="checkbox"><span>Я перевірив(-ла) витягнуті дані та попередження.</span></label><p id="excel-generation-help" class="generation-help"></p></div><button id="excel-generate" type="button" class="button primary" disabled>${icon('download')}Створити Excel</button></section>
     </fieldset>
     <div id="excel-error" class="notice warning" role="alert" hidden></div>
-    <section id="excel-success" class="notice success" hidden role="status"><div><strong id="excel-success-message"></strong><p>Збережіть таблицю та за потреби звіт перевірки.</p><div class="source-actions"><a id="excel-download" class="button secondary" download="Протоколи.xlsx">Завантажити Excel повторно</a><a id="excel-report" class="text-button" download="Звіт_Excel.txt">Завантажити звіт</a></div></div></section>`;
+    <section id="excel-success" class="notice success" hidden role="status"><div><strong id="excel-success-message"></strong><p>Збережіть таблицю та за потреби звіт перевірки.</p><div class="source-actions"><a id="excel-download" class="button secondary" download="Додаток_зведена_таблиця.xlsx">Завантажити Excel повторно</a><a id="excel-report" class="text-button" download="Звіт_Excel.txt">Завантажити звіт</a></div></div></section>`;
   $('.main-content').append(section);
 
   async function api(url, options = {}) {
@@ -91,7 +91,6 @@
     const add = (message,selector,level = 'error') => result.push({message,selector,level,section:'excel'});
     if (!state.loaded) add('Не завантажено структуру таблиці Excel.','#excel-retry');
     if (!state.records.length) add('Додайте принаймні один протокол або перенесіть дані акта.','#excel-upload');
-    if (state.templateRequired && !$('#excel-template').files[0]) add(`Повторно оберіть вихідну таблицю «${state.templateName || 'Excel'}» або явно створіть нову. Файл не зберігається в чернетці.`,'#excel-template');
     const seen = new Set();
     state.records.forEach((record,index) => {
       const base = recordSelector(record);
@@ -132,8 +131,8 @@
     $('#excel-generate').innerHTML = state.busy ? 'Опрацьовуємо…' : `${icon('download')}Створити Excel`;
     $('#excel-generation-help').textContent = state.busy ? 'Дочекайтеся завершення операції.' : missing.length ? `Потрібно: ${missing.slice(0,3).join('; ')}.` : !$('#excel-confirmed').checked ? 'Підтвердьте перевірку даних.' : `До таблиці буде передано ${state.records.length} протоколів.`;
     $('#excel-generation-help').classList.toggle('ready', !state.busy && !missing.length && $('#excel-confirmed').checked);
-    $('#excel-template-restore').hidden = !state.templateRequired;
-    $('#excel-template-restore p').textContent = `Чернетка використовувала таблицю «${state.templateName || 'Excel'}». Оберіть цей файл повторно, щоб продовжити доповнення книги. У чернетці збережені лише значення полів.`;
+    $('#excel-legacy-template').hidden = !state.legacyTemplateName;
+    $('#excel-legacy-template p').textContent = `Ця чернетка раніше доповнювала книгу «${state.legacyTemplateName}». Тепер буде створено нову зведену таблицю лише з протоколами поточного списку. Попередня книга не змінюється.`;
   }
   function render() {
     $('#excel-record-count').textContent = state.records.length;
@@ -222,6 +221,7 @@
       invalidate();
       state.records = imported;
       state.warnings = data.warnings || [];
+      state.legacyTemplateName = '';
       render();
       changed();
     } catch (error) { showError(error); }
@@ -231,7 +231,7 @@
   $('#excel-files').addEventListener('change',async event => { const files=[...event.target.files]; event.target.value=''; await importFiles(files); });
   $('#excel-clear').addEventListener('click',() => {
     if (state.busy || state.records.length && !window.confirm('Очистити список протоколів для Excel?')) return;
-    state.records=[]; state.warnings=[]; state.templateRequired=false; state.templateWasSelected=false; state.templateName=''; $('#excel-template').value=''; invalidate(); render();
+    state.records=[]; state.warnings=[]; state.legacyTemplateName=''; invalidate(); render();
   });
   $('#excel-records').addEventListener('input',event => {
     const column=event.target.dataset.excelColumn;
@@ -256,34 +256,16 @@
     state.records=state.records.filter(value => value.id !== card.dataset.excelRecord);
     invalidate(); render();
   });
-  $('#excel-template').addEventListener('change',async() => {
-    const file = $('#excel-template').files[0];
-    if (file) {
-      try{await window.OZWorkspace.retainFiles([file],'excel','excel_template');}catch(error){showError(error);}
-      state.templateRequired=false; state.templateWasSelected=true; state.templateName=file.name;
-    }
-    else if (!state.templateRequired) { state.templateWasSelected=false; state.templateName=''; }
-    invalidate(); updateReadiness();
-  });
-  $('#excel-update-existing').addEventListener('change',() => { invalidate(); updateReadiness(); });
-  $('#excel-new-workbook').addEventListener('click',() => {
-    if (!window.confirm('Створити нову таблицю? Попередню вихідну книгу не буде доповнено.')) return;
-    state.templateRequired=false; state.templateWasSelected=false; state.templateName=''; $('#excel-template').value='';
-    invalidate(); updateReadiness();
-  });
   $('#excel-confirmed').addEventListener('change',updateReadiness);
   $('#excel-retry').addEventListener('click',load);
   $('#excel-generate').addEventListener('click',async () => {
     if (state.busy || issues().length || !$('#excel-confirmed').checked) return;
-    const template=$('#excel-template').files[0];
-    if (template && (!/\.xlsx$/i.test(template.name) || !template.size || template.size > 25*1024*1024)) return showError(new Error('Оберіть непорожню таблицю .xlsx розміром до 25 МБ.'));
     $('#excel-error').hidden=true;
     state.busy=true; updateReadiness();
     const exportContext=window.OZWorkspace.context('excel');
     try {
       const form=new FormData();
-      form.append('payload',JSON.stringify({records:state.records.map(({source,values,warnings})=>({source,values,warnings})),confirmed:true,update_existing:$('#excel-update-existing').checked}));
-      if (template) form.append('template',template);
+      form.append('payload',JSON.stringify({records:state.records.map(({source,values,warnings})=>({source,values,warnings})),confirmed:true}));
       await window.OZWorkspace.flushSection('excel');
       const data=await (await api('/api/excel/generate',{method:'POST',body:form})).json();
       const decoded=atob(data.workbook_base64 || '');
@@ -295,12 +277,12 @@
       state.reportUrl=URL.createObjectURL(new Blob([data.report_text || ''],{type:'text/plain;charset=utf-8'}));
       state.result=data;
       const counts=data.counts || {};
-      $('#excel-success-message').textContent=`Excel готовий. Додано: ${counts.added || 0}; оновлено: ${counts.updated || 0}; пропущено: ${counts.skipped || 0}.`;
+      $('#excel-success-message').textContent=`Зведена таблиця готова. Протоколів: ${counts.added || 0}.`;
       $('#excel-download').href=state.fileUrl;
-      $('#excel-download').download=data.filename || 'Протоколи.xlsx';
+      $('#excel-download').download=data.filename || 'Додаток_зведена_таблиця.xlsx';
       $('#excel-report').href=state.reportUrl;
       $('#excel-success').hidden=false;
-      await window.OZOffice.deliver(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),data.filename||'Протоколи.xlsx','excel',exportContext);
+      await window.OZOffice.deliver(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),data.filename||'Додаток_зведена_таблиця.xlsx','excel',exportContext);
     } catch (error) { showError(error); }
     finally { state.busy=false; updateReadiness(); }
   });
@@ -312,10 +294,8 @@
   document.addEventListener('protokol:excel-from-act',event => importAct(event.detail));
   window.OZWorkspace?.register('excel',{
     title:'Таблиця Excel',isBusy:()=>state.busy,
-    hasData:() => state.records.length > 0 || state.templateWasSelected || state.templateRequired,
-    snapshot:() => state.records.length || state.templateWasSelected || state.templateRequired ? ({records:clone(state.records),warnings:clone(state.warnings),updateExisting:$('#excel-update-existing').checked,
-      templateWasSelected:!!($('#excel-template').files[0] || state.templateWasSelected || state.templateRequired),
-      templateName:$('#excel-template').files[0]?.name || state.templateName}) : null,
+    hasData:() => state.records.length > 0 || !!state.legacyTemplateName,
+    snapshot:() => state.records.length || state.legacyTemplateName ? ({records:clone(state.records),warnings:clone(state.warnings),legacyTemplateName:state.legacyTemplateName}) : null,
     restore:async data => {
       if (state.busy) throw new Error('Дочекайтеся завершення поточної операції Excel.');
       if (!await load()) throw new Error('Не вдалося завантажити структуру Excel для відновлення чернетки.');
@@ -328,19 +308,10 @@
         sources:saved.sources && typeof saved.sources === 'object' ? clone(saved.sources) : {}
       }));
       state.warnings = Array.isArray(data.warnings) ? data.warnings.map(String).slice(0,200) : [];
-      $('#excel-template').value='';
-      state.templateWasSelected=!!data.templateWasSelected;
-      state.templateRequired=!!data.templateWasSelected;
-      state.templateName=String(data.templateName || '').slice(0,1000);
-      $('#excel-update-existing').checked=data.updateExisting !== false;
+      state.legacyTemplateName=String(data.legacyTemplateName || (data.templateWasSelected ? data.templateName || 'Excel' : '')).slice(0,1000);
       invalidate(); render();
     },
-    reset:async()=>{state.records=[];state.warnings=[];state.templateRequired=false;state.templateWasSelected=false;state.templateName='';$('#excel-template').value='';invalidate();render();},
-    attachFiles:async()=>{
-      if(!state.templateRequired||!state.templateName)return;
-      const file=await window.OZWorkspace.sourceFile('excel',state.templateName,'excel_template');if(!file)return;
-      const transfer=new DataTransfer();transfer.items.add(file);$('#excel-template').files=transfer.files;state.templateRequired=false;render();
-    },
+    reset:async()=>{state.records=[];state.warnings=[];state.legacyTemplateName='';invalidate();render();},
     issues:reviewIssues,
     reveal:issue => {
       document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));

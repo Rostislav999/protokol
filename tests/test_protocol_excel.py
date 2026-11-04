@@ -157,7 +157,7 @@ def test_append_expands_tables_with_original_column_boundary(tmp_path, complianc
         assert table.find("s:autoFilter", NS).get("ref") == f"A1:{last}3"
 
 
-def test_new_workbook_ends_n_dates_and_numbers_are_typed_and_text_is_not_formula():
+def test_new_workbook_uses_summary_form_with_typed_values_and_empty_compliance_cells():
     record = extract_text(TEXT)
     record.values["G"] = '=HYPERLINK("https://example.com")'
     data, report = write_excel_bytes(None, [record])
@@ -165,16 +165,17 @@ def test_new_workbook_ends_n_dates_and_numbers_are_typed_and_text_is_not_formula
     with ZipFile(BytesIO(data)) as archive:
         assert "[Content_Types].xml" in archive.namelist()
         root = xml(archive.read("xl/worksheets/sheet1.xml"))
-        assert root.find("s:dimension", NS).get("ref") == "A1:N2"
+        assert root.find("s:dimension", NS).get("ref") == "A1:Q56"
         assert not root.findall(".//s:f", NS)
         assert cell_text(root.find(".//s:c[@r='G2']", NS), []) == record.values["G"]
         assert root.find(".//s:c[@r='G2']", NS).get("t") == "inlineStr"
         assert cell_text(root.find(".//s:c[@r='L2']", NS), []) == "0.525"
-        assert root.find(".//s:c[@r='E2']", NS).get("s") == "1"
+        assert root.find(".//s:c[@r='E2']", NS).get("s") == "7"
         assert cell_text(root.find(".//s:c[@r='E2']", NS), []) == str((date(2026, 10, 29)-date(1899, 12, 30)).days)
         assert cell_text(root.find(".//s:c[@r='M2']", NS), []) == "00123456"
-        assert root.find(".//s:c[@r='O1']", NS) is None
-        assert root.find(".//s:c[@r='P1']", NS) is None
+        for col in ('O', 'P'):
+            assert root.find(f".//s:c[@r='{col}1']", NS) is not None
+            assert not cell_text(root.find(f".//s:c[@r='{col}2']", NS), [])
 
 
 def test_1904_dates_duplicate_skip_update_and_unsourced_retention(tmp_path):

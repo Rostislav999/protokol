@@ -110,7 +110,7 @@ def test_explicit_supplier_code_wins_and_ambiguous_manufacturer_remains_blank(cl
     assert record["warnings"]
 
 
-def test_direct_act_preview_produces_xlsx_after_review_with_no_compliance_columns(client):
+def test_direct_act_preview_produces_summary_xlsx_with_empty_compliance_cells(client):
     payload = act_payload()
     payload["common"]["supplier"] = "ТОВ «Тест», код ЄДРПОУ: 00001234"
     records = preview(client, payload)
@@ -130,8 +130,9 @@ def test_direct_act_preview_produces_xlsx_after_review_with_no_compliance_column
         assert cell_text(sheet.find(".//s:c[@r='M2']", NS), []) == "00001234"
         assert sheet.find(".//s:c[@r='M2']", NS).get("t") == "inlineStr"
         assert sheet.find(".//s:c[@r='E2']", NS).get("t") == "n"
-        assert sheet.find(".//s:c[@r='O1']", NS) is None
-        assert sheet.find(".//s:c[@r='P1']", NS) is None
+        for col in ('O', 'P'):
+            assert sheet.find(f".//s:c[@r='{col}1']", NS) is not None
+            assert not cell_text(sheet.find(f".//s:c[@r='{col}2']", NS), [])
 
 
 @pytest.mark.parametrize("count", [0, 101])

@@ -55,7 +55,7 @@ def test_original_excel_fields_stop_at_n_and_docx_zip_import_keeps_only_supplier
     assert record["values"]["H"] == record["values"]["I"] == "20.10.2026"
 
 
-def test_excel_generate_download_is_valid_xlsx_with_dates_numbers_and_no_compliance(client):
+def test_excel_generate_without_upload_uses_summary_form_and_leaves_compliance_empty(client):
     client.post("/api/settings/suppliers", json={"name": "ТОВ «Постачальник»", "code": "015", "edrpou": "00123456"})
     record = import_record(client)
     payload = {"confirmed": True, "records": [record], "update_existing": True}
@@ -67,8 +67,9 @@ def test_excel_generate_download_is_valid_xlsx_with_dates_numbers_and_no_complia
     with ZipFile(BytesIO(base64.b64decode(response["workbook_base64"]))) as archive:
         sheet = xml(archive.read("xl/worksheets/sheet1.xml"))
         assert sheet.find(".//s:c[@r='N1']", NS) is not None
-        assert sheet.find(".//s:c[@r='O1']", NS) is None
-        assert sheet.find(".//s:c[@r='P1']", NS) is None
+        for col in ('O', 'P'):
+            assert sheet.find(f".//s:c[@r='{col}1']", NS) is not None
+            assert not cell_text(sheet.find(f".//s:c[@r='{col}2']", NS), [])
         assert cell_text(sheet.find(".//s:c[@r='L2']", NS), []) == "0.525"
         assert sheet.find(".//s:c[@r='E2']", NS).get("t") == "n"
         assert sheet.find(".//s:c[@r='M2']", NS).get("t") == "inlineStr"
@@ -87,7 +88,10 @@ def test_existing_excel_updates_without_touching_last_two_columns(client):
                 root = ET.fromstring(data)
                 row = root.find(".//{" + S + "}row[@r='2']")
                 for column, value in (("O", "Не змінювати відповідність"), ("P", "Не змінювати Каталог")):
-                    cell = ET.SubElement(row, "{" + S + "}c", {"r": column + "2", "t": "inlineStr"})
+                    cell = row.find("{" + S + "}c[@r='" + column + "2']")
+                    if cell is None:
+                        cell = ET.SubElement(row, "{" + S + "}c", {"r": column + "2"})
+                    cell.set('t', 'inlineStr')
                     ET.SubElement(ET.SubElement(cell, "{" + S + "}is"), "{" + S + "}t").text = value
                 data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             target.writestr(info, data)

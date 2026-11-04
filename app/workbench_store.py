@@ -173,7 +173,8 @@ class WorkStore:
                                     continue
                                 if not section.get('sourceGroup') and row['filename'] != section['source']:
                                     continue
-                        if row['kind'] == 'excel_template' and not (section or {}).get('templateWasSelected'):
+                        if row['kind'] == 'excel_template' and not (
+                                (section or {}).get('templateWasSelected') or (section or {}).get('legacyTemplateName')):
                             continue
                     connection.execute('INSERT INTO package_files VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                                        (uuid4().hex, package_id, row['section'], row['kind'], row['filename'], row['digest'], row['size'], row['data'], row['fingerprint'], row['active'], row['created_at']))

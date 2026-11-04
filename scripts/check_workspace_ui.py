@@ -28,7 +28,7 @@ SCRIPT = r'''void (async () => {try {
     assert(Object.values(providers.assignments.snapshot().items[0].departments).some(value=>value.sample_weight==='7 кг'),'Package restart lost a manual assignment weight');
     assert((await(await fetch('/api/template-choices')).json()).choices.some(value=>value.template_id==='sample-1053' && value.favorite),'Favorite template was lost on restart');
     assert((await(await fetch('/api/workbench/files?scope='+session.scope)).json()).files.some(value=>value.kind==='source'),'Package lost its original files');
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','workbook reselect guard','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports']}));
     return;
   }
   if (!__RESTORE_PHASE__) {
@@ -225,7 +225,10 @@ SCRIPT = r'''void (async () => {try {
     assert(!document.querySelector('#assignment-confirmed').checked,'Assignment approval survived restore');
     assert(!document.querySelector('#excel-confirmed').checked,'Excel approval survived restore');
     assert(providers.excel.snapshot().records[0].values.M==='00001234','Excel code did not restore');
-    assert(providers.excel.issues().some(issue=>issue.selector==='#excel-template' && issue.level==='error'),'Missing source workbook did not block export');
+    assert(!document.querySelector('#excel-template'),'Excel template upload should be removed');
+    assert(!providers.excel.issues().some(issue=>issue.level==='error'),'Built-in Excel form still requires an uploaded workbook');
+    assert(providers.excel.snapshot().legacyTemplateName==='old.xlsx','Legacy workbook notice was lost after restart');
+    assert(!document.querySelector('#excel-legacy-template').hidden,'Legacy workbook migration notice is hidden');
     const selection=Object.values(providers.assignments.snapshot().items[0].departments).find(value=>value.enabled);
     assert(selection.sample_weight==='7 кг' && selection.weight_edited,'Manual assignment weight did not restore');
     assert(selection.template_id,'Manual template choice did not restore');

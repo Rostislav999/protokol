@@ -105,6 +105,19 @@ def test_copy_current_workspace_omits_other_acts_and_stale_outputs(client):
     assert client.get(f'/api/packages/{package["id"]}/drafts').json()['sections']['acts']['data'] == current
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_creating_package_keeps_old_workbook_only_when_migrated_draft_references_it(client, legacy):
+    original = b'previous uploaded workbook'
+    upload(client, 'workspace', section='excel', kind='excel_template', name='old.xlsx', data=original)
+    current = {'records': [{'values': {'D': '001'}}], 'legacyTemplateName': 'old.xlsx' if legacy else ''}
+    package = create(client, drafts={'excel': current}, copy_scope='workspace')
+    files = client.get('/api/workbench/files?scope=' + package['id']).json()['files']
+    assert len(files) == int(legacy)
+    if legacy:
+        assert files[0]['filename'] == 'old.xlsx'
+        assert client.get(f'/api/workbench/files/{files[0]["id"]}?scope={package["id"]}').content == original
+
+
 def test_letter_history_is_automatic_bounded_and_scoped(client, tmp_path, monkeypatch):
     import app.workbench_store as module
     monkeypatch.setattr(module, 'HISTORY_LIMIT', 3)
