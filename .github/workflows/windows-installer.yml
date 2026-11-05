@@ -51,7 +51,10 @@ jobs:
           python scripts/prepare_ocr.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run application tests
-        run: python -m pytest -q
+        run: python -m pytest -q --junitxml=build/windows/tests.xml
+      - name: Summarize failed application tests
+        if: failure()
+        run: python -m scripts.report_test_failures
       - name: Check drafts and review in the native renderer
         run: python -m scripts.check_workspace_ui
       - name: Build installer and test installed application
@@ -70,6 +73,7 @@ jobs:
           name: Windows-build-diagnostics
           path: |
             build/windows/**/*.log
+            build/windows/tests.xml
             build/windows/native-ui-*
             build/protokol/warn-protokol.txt
           if-no-files-found: ignore
