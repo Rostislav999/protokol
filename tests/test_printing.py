@@ -227,7 +227,7 @@ if ($document.Calls -ne 1) { throw 'Print method not invoked exactly once' }
 
 
 @pytest.mark.skipif(not (shutil.which('powershell.exe') or shutil.which('pwsh')), reason='Requires PowerShell only')
-def test_word_printer_setup_uses_named_variants_without_changing_system_default(tmp_path):
+def test_word_printer_setup_uses_complete_variants_without_changing_system_default(tmp_path):
     helper = printing._PRINT_SCRIPT.split('$ErrorActionPreference', 1)[0].split('\n', 1)[1]
     script = r'''$ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'

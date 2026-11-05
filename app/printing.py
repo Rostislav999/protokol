@@ -129,11 +129,13 @@ function Invoke-WordPrint([object]$Document, [int]$Copies) {
 function Set-WordPrinter([object]$Word, [string]$Printer, [string[]]$Installed) {
     $basic = $Word.WordBasic
     try {
-        [object[]]$arguments = @($Printer, 1)
-        [string[]]$names = @('Printer', 'DoNotSetAsSysDefault')
-        $flags = [System.Reflection.BindingFlags]::InvokeMethod -bor [System.Reflection.BindingFlags]::OptionalParamBinding
-        [void]$basic.GetType().InvokeMember('FilePrintSetup', $flags, $null, $basic,
-            $arguments, $null, $null, $names)
+        # Supply every optional VARIANT. The .NET Framework binder used by
+        # Windows PowerShell 5.1 cannot safely reorder omitted ref arguments.
+        # FilePrintSetup: Printer, Options, Network, DoNotSetAsSysDefault.
+        $missing = [System.Type]::Missing
+        [object[]]$arguments = @($Printer, $missing, $missing, 1)
+        [void]$basic.GetType().InvokeMember('FilePrintSetup',
+            [System.Reflection.BindingFlags]::InvokeMethod, $null, $basic, $arguments)
     } finally {
         if ($null -ne $basic -and [System.Runtime.InteropServices.Marshal]::IsComObject($basic)) {
             [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($basic)
