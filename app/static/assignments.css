@@ -8,3 +8,5 @@
 
 .assignment-heading-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:720px){.assignment-heading-actions{flex-direction:column;align-items:stretch;flex-shrink:0;max-width:58%}.assignment-heading-actions .button{white-space:normal;text-align:center;padding:9px;font-size:10px}}
+
+.assignment-print-dialog{width:min(620px,calc(100% - 24px));max-height:90vh}.print-dialog-frame{display:flex;flex-direction:column;max-height:calc(90vh - 2px)}.assignment-print-dialog .modal-heading,.assignment-print-dialog .modal-footer{flex-shrink:0}.assignment-print-dialog .modal-body{overflow:auto;min-height:0}.assignment-print-dialog .field{margin:20px 0 10px}.assignment-print-dialog .modal-body>p,.assignment-print-dialog .modal-body>small{font-size:var(--label-font,14px);line-height:1.7;color:var(--muted);overflow-wrap:anywhere}.assignment-print-dialog .modal-footer{gap:10px}

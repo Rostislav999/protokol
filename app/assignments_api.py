@@ -13,7 +13,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .assignment_library import AssignmentLibrary, DEPARTMENTS, SCOPES
 from .assignment_matching import rank_assignments
@@ -60,8 +60,16 @@ class AssignmentGeneration(BaseModel):
 
 class AssignmentPrint(BaseModel):
     generation: AssignmentGeneration
+    printer: str = Field(min_length=1, max_length=1024)
     copies: Literal[2] = 2
     confirmed: bool = False
+
+    @field_validator('printer')
+    @classmethod
+    def printable_printer(cls, value):
+        if not value.strip() or any(ord(char) < 32 for char in value):
+            raise ValueError('Виберіть принтер зі списку.')
+        return value
 
 
 class NumberSetting(BaseModel):
@@ -182,7 +190,7 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
             cached = numbering.get_cached(generation.job_id, [item.id for item in generation.items], payload_hash=fingerprint)
             if cached is None:
                 raise NumberingError("Спочатку створіть та перевірте завдання. Друк не присвоює нових номерів.")
-            return print_assignments(cached[0], copies=values.copies)
+            return print_assignments(cached[0], copies=values.copies, printer=values.printer)
         except (NumberingError, PrintError) as exc:
             raise HTTPException(422, str(exc)) from exc
 

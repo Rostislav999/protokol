@@ -59,6 +59,39 @@ def _ocr_image(image, language: str, psm: int = 3) -> str:
     return ocr_image(image, language, psm)
 
 
+def _orient_image(image, language: str):
+    """Find right-angle orientation before table detection, using bounded OCR probes.
+
+    Rotate only when several readable document labels clearly beat the other
+    orientations. Blank pages and uncertain text keep their original orientation.
+    """
+    from PIL import ImageOps
+    image = ImageOps.exif_transpose(image)
+    if image.width * image.height > MAX_PIXELS:
+        raise ValueError("Зображення завелике: не більше 40 млн пікселів на сторінку.")
+    preview = image.copy()
+    preview.thumbnail((1800, 1800))
+    roots = ('акт', 'зраз', 'відбор', 'продукт', 'харчов', 'виготов', 'вироб', 'парті',
+             'дослідж', 'примірник', 'випробув', 'постачальн', 'консерв', 'кількіст',
+             'наймен', 'назва', 'дата', 'ідентифікац', 'образ', 'изготов', 'произво', 'испытан')
+    def score(text):
+        text = text.casefold()
+        anchors = sum(bool(re.search(r'\b' + root, text)) for root in roots)
+        words = len(re.findall(r'\b[а-яіїєґa-z]{3,}\b', text))
+        return anchors, anchors * 12 + min(words, 60)
+    candidates = [(0, *score(_ocr_image(preview, language, psm=6)))]
+    if candidates[0][1] >= 4:
+        return image, 0
+    for angle in (90, 270, 180):
+        candidates.append((angle, *score(_ocr_image(preview.rotate(angle, expand=True), language, psm=6))))
+    ordered = sorted(candidates, key=lambda entry: entry[2], reverse=True)
+    best, second = ordered[:2]
+    if (best[0] and best[1] >= 4 and best[1] >= candidates[0][1] + 2
+            and best[2] >= candidates[0][2] + 24 and best[2] >= second[2] + 12):
+        return image.rotate(best[0], expand=True), best[0]
+    return image, 0
+
+
 def _ocr_table(image, language: str, previous_header=None):
     """Read ruled tables cell by cell, preserving columns across PDF pages.
 
@@ -117,6 +150,24 @@ def _ocr_table(image, language: str, previous_header=None):
         return [round(np.mean(group)) for group in groups if len(group)]
     xs = peaks(np.sum(v > 0, axis=0), table_height * .4)
     ys = peaks(np.sum(h > 0, axis=1), table_width * .4)
+    # The perspective warp can clip a thin outer border. Its quadrilateral
+    # already gives that boundary; retain the final row/column even when the
+    # morphology projection misses the edge itself.
+    def with_edges(values, length):
+        tolerance = max(4, round(length * .006))
+        values = list(values)
+        if not values:
+            return values
+        if values[0] <= tolerance:
+            values[0] = 0
+        else:
+            values.insert(0, 0)
+        if values[-1] >= length - 1 - tolerance:
+            values[-1] = length - 1
+        else:
+            values.append(length - 1)
+        return values
+    xs, ys = with_edges(xs, table_width), with_edges(ys, table_height)
     if not 5 <= len(xs) - 1 <= 20 or not 1 <= len(ys) - 1 <= 60:
         return None
     pad = max(3, width // 500)
@@ -146,7 +197,7 @@ def _ocr_table(image, language: str, previous_header=None):
         # column. Read that labelled column explicitly rather than dropping it
         # or treating its numbers as sample/protocol IDs.
         last = len(fields) - 1
-        narrow = ys[1] - ys[0] > (xs[last + 1] - xs[last]) * 1.4
+        narrow = ys[1] - ys[0] > (xs[last + 1] - xs[last]) * 1.15
         if narrow and (fields[last] is None or "сейф" in first_row[last].lower()):
             for rotation in (90, 270):
                 if _header_field(cell(0, last, rotation)) == "seal_number":
@@ -162,11 +213,22 @@ def _ocr_table(image, language: str, previous_header=None):
     if "product_name" not in fields:
         return None
     rows = []
+    warnings = []
     for row in range(1 if has_header else 0, len(ys) - 1):
         item = _empty_item()
         for column, field in enumerate(fields):
             if field:
                 item[field] = cell(row, column, rotations.get(column, 0))
+                if (field == 'seal_number' and not re.search(r'\d{4,}', item[field])
+                        and ys[row + 1] - ys[row] > (xs[column + 1] - xs[column]) * 1.15):
+                    candidates = [cell(row, column, angle) for angle in (90, 270)]
+                    readable = [value for value in candidates if re.search(r'\d{4,}', value)]
+                    ids = {first_seal_number(value) for value in readable}
+                    if len(ids) == 1:
+                        item[field] = readable[0]
+                    elif len(ids) > 1:
+                        item[field] = ''
+                        warnings.append('Номер пломби у вертикальній комірці прочитано неоднозначно. Внесіть його вручну за сканом.')
         if not item["product_name"]:
             continue
         item["manufacturer"] = re.sub(r"^виробник\s*:\s*", "", item["manufacturer"], flags=re.I)
@@ -182,7 +244,6 @@ def _ocr_table(image, language: str, previous_header=None):
     for index, item in enumerate(rows, 1):
         lines.append(" | ".join([str(index)] + [item[field].replace("|", " ") for field in ITEM_FIELDS]))
     header_text = ""
-    warnings = []
     min_y = round(float(np.min(points[:, 1])))
     if min_y > height * .15:
         header_image = image.crop((0, 0, image.width, max(1, round((min_y - pad) * ratio))))
@@ -266,6 +327,9 @@ def extract_text(data: bytes, filename: str) -> dict:
                         raise ValueError("Сторінка PDF завелика для OCR (40 млн пікселів).")
                     pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                     image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+                    image, angle = _orient_image(image, language)
+                    if angle:
+                        warnings.append(f"Сторінку {page_index} автоматично повернуто на {angle}° перед розпізнаванням. Перевірте результат за оригіналом.")
                     table_result = _ocr_table(image, language, table_header)
                     if table_result:
                         text = table_result["text"]
@@ -295,14 +359,17 @@ def extract_text(data: bytes, filename: str) -> dict:
                 image.seek(index)
                 if image.width * image.height > MAX_PIXELS:
                     raise ValueError("Зображення завелике: не більше 40 млн пікселів.")
-                result = _ocr_table(image.copy(), language, table_header)
+                oriented, angle = _orient_image(image.copy(), language)
+                if angle:
+                    warnings.append(f"Сторінку {index + 1} автоматично повернуто на {angle}° перед розпізнаванням. Перевірте результат за оригіналом.")
+                result = _ocr_table(oriented, language, table_header)
                 if result:
                     texts.append(result["text"])
                     table_header = result["header"]
                     warnings.extend(result.get("warnings", []))
                     warnings.append("Таблицю розпізнано по комірках. Рукописні номери внесіть вручну.")
                 else:
-                    texts.append(_ocr_image(image.copy(), language))
+                    texts.append(_ocr_image(oriented, language))
             image.close()
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
             raise ValueError("Не вдалося прочитати зображення або воно завелике.") from exc
@@ -365,9 +432,10 @@ def _table_columns(line: str) -> list[str] | None:
 
 def _header_field(value: str) -> str | None:
     v = _normalize(value).lower().strip(".:")
+    v = re.sub(r'(?<=[а-яіїєґ])[-\u00ad]\s*(?=[а-яіїєґ])', '', v)
     if re.search(r"(?:вага|маса).*?(?:відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
         return "sample_weight"
-    if re.search(r"кількість.*?(?:одиниць|відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
+    if re.search(r"(?:кількість|од[иі][нч][иі]ць).*?(?:одиниць|відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
         return "sample_quantity"
     if re.search(r"пломб|сейф[\s-]*пакет|^пакет$", v):
         return "seal_number"
@@ -375,7 +443,7 @@ def _header_field(value: str) -> str | None:
         return "standard"
     if re.search(r"найменування|назва.*(?:продук|зраз)|наименование", v):
         return "product_name"
-    if re.search(r"виробник|виготовлювач|производител", v):
+    if re.search(r"виробник|виготовлювач|производител|[пн]ідприємств.*(?:країн|єдрпоу)", v):
         return "manufacturer"
     if re.search(r"дата.*(?:виготов|виробниц|изготов)|термін.*придат|вжити до", v):
         return "manufacture_date"

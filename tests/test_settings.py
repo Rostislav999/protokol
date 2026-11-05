@@ -94,12 +94,12 @@ def test_selected_issuer_is_rendered_and_cached_even_after_deletion(client):
 
 def test_print_uses_exact_cached_documents_without_consuming_numbers(client, monkeypatch):
     printed = []
-    def print_documents(archive, copies):
-        printed.append((archive, copies))
-        return {"documents": 3, "copies": copies, "total_copies": 6, "printer": "Test printer"}
+    def print_documents(archive, copies, printer):
+        printed.append((archive, copies, printer))
+        return {"documents": 3, "copies": copies, "total_copies": 6, "printer": printer}
     monkeypatch.setattr(assignment_api, "print_assignments", print_documents)
     payload = assignment_payload(client)
-    print_request = {"generation": payload, "copies": 2, "confirmed": True}
+    print_request = {"generation": payload, "printer": "Test printer", "copies": 2, "confirmed": True}
     assert client.post("/api/assignments/print", json=print_request).status_code == 422
     assert not printed
     generated = client.post("/api/assignments/generate", json=payload)
@@ -107,9 +107,16 @@ def test_print_uses_exact_cached_documents_without_consuming_numbers(client, mon
     result = client.post("/api/assignments/print", json=print_request)
     assert result.status_code == 200, result.text
     assert result.json()["total_copies"] == 6
-    assert printed == [(generated.content, 2)]
+    assert printed == [(generated.content, 2, 'Test printer')]
     assert client.get("/api/assignments/numbering").json()["next_number"] == 1401
     assert client.post("/api/assignments/print", json={**print_request, "confirmed": False}).status_code == 422
     changed = {**print_request, "generation": {**payload, "start_number": 1500}}
     assert client.post("/api/assignments/print", json=changed).status_code == 422
     assert len(printed) == 1
+    alternate = client.post('/api/assignments/print', json={**print_request, 'printer': 'Other printer'})
+    assert alternate.status_code == 200
+    assert printed[-1] == (generated.content, 2, 'Other printer')
+    assert client.get('/api/assignments/numbering').json()['next_number'] == 1401
+    for printer in ('', ' ', 'bad\nprinter', 'x' * 1025):
+        assert client.post('/api/assignments/print', json={**print_request, 'printer': printer}).status_code == 422
+    assert len(printed) == 2

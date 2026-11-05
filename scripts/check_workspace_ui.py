@@ -28,11 +28,53 @@ SCRIPT = r'''void (async () => {try {
     assert(Object.values(providers.assignments.snapshot().items[0].departments).some(value=>value.sample_weight==='7 кг'),'Package restart lost a manual assignment weight');
     assert((await(await fetch('/api/template-choices')).json()).choices.some(value=>value.template_id==='sample-1053' && value.favorite),'Favorite template was lost on restart');
     assert((await(await fetch('/api/workbench/files?scope='+session.scope)).json()).files.some(value=>value.kind==='source'),'Package lost its original files');
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback']}));
     return;
   }
   if (!__RESTORE_PHASE__) {
     await wait(()=>document.querySelector('#nav-template-count').textContent==='22');
+    // Exercise printer choices without calling the real print worker or queue.
+    const realFetch=window.fetch, printCalls=[];
+    let printerNames=['Printer A','Printer B'];
+    window.fetch=async (url,options)=>{
+      if(String(url)==='/api/printing/status')return new Response(JSON.stringify({available:printerNames.length>0,printer:'Printer A',printers:printerNames.map(name=>({name,is_default:name==='Printer A',selectable:true})),reason:'No printers'}),{status:200});
+      if(String(url)==='/api/assignments/print'){
+        const request=JSON.parse(options.body);printCalls.push(request);
+        return new Response(JSON.stringify({documents:1,copies:2,total_copies:2,printer:request.printer}),{status:200});
+      }
+      return realFetch(url,options);
+    };
+    try {
+      document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'assignments'}}));
+      document.dispatchEvent(new CustomEvent('protokol:assignments-ready',{detail:{payload:{job_id:'printer-ui-check',confirmed:true,items:[{id:'one',departments:{vet:{template_id:'check'}}}]}}}));
+      await wait(()=>!document.querySelector('#assignment-print').disabled);
+      document.querySelector('#assignment-print').click();
+      await wait(()=>!document.querySelector('#assignment-print-confirm').disabled);
+      assert(document.querySelector('#assignment-printer').value==='Printer A','Initial Windows default was not offered');
+      input('#assignment-printer','Printer B','change');
+      document.querySelector('#assignment-print-dialog [data-print-close]').click();
+      await new Promise(resolve=>setTimeout(resolve,0));
+      assert(printCalls.length===0,'Cancel started a print job');
+      document.querySelector('#assignment-print').click();
+      await wait(()=>!document.querySelector('#assignment-print-confirm').disabled);
+      input('#assignment-printer','Printer B','change');document.querySelector('#assignment-print-confirm').click();
+      await wait(()=>!document.querySelector('#assignment-print-dialog').open);
+      assert(printCalls.length===1&&printCalls[0].printer==='Printer B','Selected printer was not sent to the API');
+      document.querySelector('#assignment-print').click();
+      await wait(()=>!document.querySelector('#assignment-print-confirm').disabled);
+      assert(document.querySelector('#assignment-printer').value==='Printer B','Last printer was not retained');
+      printerNames=['Printer A','Printer C'];document.querySelector('[data-print-refresh]').click();
+      await wait(()=>document.querySelector('#assignment-printer option[value="Printer C"]'));
+      assert(document.querySelector('#assignment-printer').value===''&&document.querySelector('#assignment-print-confirm').disabled,'A missing printer silently switched to another device');
+      input('#assignment-printer','Printer C','change');document.querySelector('#assignment-print-confirm').click();
+      await wait(()=>!document.querySelector('#assignment-print-dialog').open);
+      assert(printCalls.length===2&&printCalls[1].printer==='Printer C','Refresh did not allow a newly connected printer');
+      assert(printCalls[0].generation.job_id===printCalls[1].generation.job_id,'Printer selection changed the issued assignment generation');
+    } finally {
+      window.fetch=realFetch;
+      document.dispatchEvent(new CustomEvent('protokol:assignments-invalidated'));
+      document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
+    }
     document.querySelector('#start-manual').click();
     input('[data-common="customer"]','Замовник Ω');
     input('[data-common="sampling_description"]','Відібрано замовником');

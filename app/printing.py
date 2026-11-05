@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -48,21 +49,67 @@ def _powershell() -> str | None:
     return shutil.which("powershell.exe")
 
 
+def _printer_names() -> list[str]:
+    """Read installed local/connected queues from the Windows spooler each time."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PrinterInfo(ctypes.Structure):
+        _fields_ = [('name', wintypes.LPWSTR), ('server', wintypes.LPWSTR), ('attributes', wintypes.DWORD)]
+
+    enum = ctypes.WinDLL('winspool.drv', use_last_error=True).EnumPrintersW
+    enum.argtypes = [wintypes.DWORD, wintypes.LPWSTR, wintypes.DWORD, wintypes.LPVOID,
+                     wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+    enum.restype = wintypes.BOOL
+    needed, count = wintypes.DWORD(), wintypes.DWORD()
+    if not enum(6, None, 4, None, 0, ctypes.byref(needed), ctypes.byref(count)):
+        if ctypes.get_last_error() != 122:  # ERROR_INSUFFICIENT_BUFFER
+            raise PrintError('Не вдалося прочитати список принтерів Windows. Перевірте службу друку та оновіть список.')
+    for _ in range(3):
+        if not needed.value:
+            return []
+        if needed.value > 16 * 1024 * 1024:
+            raise PrintError('Список принтерів завеликий. Перевірте налаштування друку Windows.')
+        buffer = ctypes.create_string_buffer(needed.value)
+        if enum(6, None, 4, buffer, len(buffer), ctypes.byref(needed), ctypes.byref(count)):
+            entries = ctypes.cast(buffer, ctypes.POINTER(PrinterInfo))
+            names = {entries[index].name for index in range(count.value) if entries[index].name}
+            return sorted(names, key=str.casefold)
+        if ctypes.get_last_error() != 122:
+            break
+    raise PrintError('Список принтерів змінився або недоступний. Натисніть «Оновити список».')
+
+
+def _file_output_printer(name: str) -> bool:
+    return bool(re.search(r'Microsoft Print to PDF|Microsoft XPS Document Writer', name, re.I))
+
+
 def printing_status() -> dict:
     """Inspect local prerequisites without opening Word or sending any print job."""
     if not _is_windows():
-        return {"available": False, "platform": "other", "printer": "", "copies": 2,
+        return {"available": False, "platform": "other", "printer": "", "printers": [], "copies": 2,
                 "reason": "Прямий друк доступний у Windows з установленим Microsoft Word. "
                           "На цьому комп’ютері завантажте Word-файли та надрукуйте їх у редакторі."}
     if not _powershell():
-        return {"available": False, "platform": "windows", "printer": "", "copies": 2,
+        return {"available": False, "platform": "windows", "printer": "", "printers": [], "copies": 2,
                 "reason": "Не знайдено Windows PowerShell, потрібний для друку через Microsoft Word."}
     if not _word_registered():
-        return {"available": False, "platform": "windows", "printer": "", "copies": 2,
+        return {"available": False, "platform": "windows", "printer": "", "printers": [], "copies": 2,
                 "reason": "Для прямого друку встановіть настільний Microsoft Word. "
-                          "Потім перезапустіть програму або перевірте доступність друку знову."}
-    return {"available": True, "platform": "windows", "printer": _default_printer(), "copies": 2,
-            "reason": ""}
+                          "Потім натисніть «Оновити список» у вікні друку."}
+    default = _default_printer()
+    try:
+        names = _printer_names()
+    except (PrintError, OSError) as exc:
+        return {"available": False, "platform": "windows", "printer": default, "printers": [],
+                "copies": 2, "reason": str(exc)}
+    printers = [{"name": name, "is_default": name.casefold() == default.casefold(),
+                 "selectable": not _file_output_printer(name),
+                 "reason": "Для PDF/XPS збережіть документи у файли." if _file_output_printer(name) else ""}
+                for name in names]
+    available = any(printer['selectable'] for printer in printers)
+    return {"available": available, "platform": "windows", "printer": default, "printers": printers, "copies": 2,
+            "reason": "" if available else "Не знайдено принтера для друку на папері. Підключіть принтер у Windows і натисніть «Оновити список»."}
 
 
 # This is fixed source code. Paths, copies and document names are data in a UTF-8
@@ -79,6 +126,28 @@ function Invoke-WordPrint([object]$Document, [int]$Copies) {
     [void]$Document.GetType().InvokeMember('PrintOut',
         [System.Reflection.BindingFlags]::InvokeMethod, $null, $Document, $arguments)
 }
+function Set-WordPrinter([object]$Word, [string]$Printer, [string[]]$Installed) {
+    $basic = $Word.WordBasic
+    try {
+        [object[]]$arguments = @($Printer, 1)
+        [string[]]$names = @('Printer', 'DoNotSetAsSysDefault')
+        $flags = [System.Reflection.BindingFlags]::InvokeMethod -bor [System.Reflection.BindingFlags]::OptionalParamBinding
+        [void]$basic.GetType().InvokeMember('FilePrintSetup', $flags, $null, $basic,
+            $arguments, $null, $null, $names)
+    } finally {
+        if ($null -ne $basic -and [System.Runtime.InteropServices.Marshal]::IsComObject($basic)) {
+            [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($basic)
+        }
+    }
+    # Word appends a localized port suffix. Resolve the longest installed name
+    # to distinguish e.g. "HP" from "HP Copy", and never fall back to a default.
+    $active = [string]$Word.ActivePrinter
+    $matched = @($Installed | Where-Object {
+        $active.Equals($_, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $active.StartsWith($_ + ' ', [System.StringComparison]::OrdinalIgnoreCase)
+    } | Sort-Object -Property @{Expression={$_.Length}; Descending=$true})
+    if ($matched.Count -eq 0 -or $matched[0] -ne $Printer) { throw 'PRINTER_SELECTION_FAILED' }
+}
 $ErrorActionPreference = 'Stop'
 $word = $null
 $document = $null
@@ -88,17 +157,22 @@ $result = @{ok=$false; documents=0; copies=2; printer=''; error=''; stage='start
 try {
     $settings = [System.IO.File]::ReadAllText($SettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     $result.copies = [int]$settings.copies
+    $result.printer = [string]$settings.printer
+    Add-Type -AssemblyName System.Drawing
+    [string[]]$installed = @([System.Drawing.Printing.PrinterSettings]::InstalledPrinters)
+    if ([string]::IsNullOrWhiteSpace($result.printer) -or $installed -notcontains $result.printer) {
+        throw 'PRINTER_NOT_FOUND'
+    }
+    if ($result.printer -match '(?i)Microsoft Print to PDF|Microsoft XPS Document Writer') {
+        throw 'FILE_OUTPUT_PRINTER'
+    }
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
     $word.DisplayAlerts = 0
     $word.AutomationSecurity = 3
     $originalUpdateLinks = $word.Options.UpdateLinksAtOpen
     $word.Options.UpdateLinksAtOpen = $false
-    $result.printer = [string]$word.ActivePrinter
-    if ([string]::IsNullOrWhiteSpace($result.printer)) { throw 'NO_DEFAULT_PRINTER' }
-    if ($result.printer -match '(?i)Microsoft Print to PDF|Microsoft XPS Document Writer') {
-        throw 'FILE_OUTPUT_PRINTER'
-    }
+    Set-WordPrinter $word $result.printer $installed
     $result.stage = 'printing'
     foreach ($path in $settings.documents) {
         $document = $word.Documents.Open([string]$path, $false, $true, $false)
@@ -164,10 +238,12 @@ def _read_result(path: Path) -> dict:
 
 def _failure(result: dict, fallback: str) -> str:
     error = str(result.get("error") or "")[:1200]
-    if error == "NO_DEFAULT_PRINTER":
-        message = "Не вибрано принтер. У налаштуваннях Windows установіть принтер за замовчуванням."
+    if error == "PRINTER_NOT_FOUND":
+        message = "Вибраний принтер більше не доступний. Оновіть список і виберіть принтер знову."
+    elif error == "PRINTER_SELECTION_FAILED":
+        message = "Microsoft Word не зміг вибрати потрібний принтер. Документи не передано до друку; оновіть список і повторіть вибір."
     elif error == "FILE_OUTPUT_PRINTER":
-        message = "Для прямого друку виберіть у Windows принтер за замовчуванням, який друкує на папері. " \
+        message = "Для прямого друку виберіть принтер, який друкує на папері. " \
                   "Microsoft Print to PDF та XPS потребують окремого збереження файлів."
     else:
         message = fallback + (" Причина: " + error if error else "")
@@ -178,8 +254,8 @@ def _failure(result: dict, fallback: str) -> str:
     return message
 
 
-def print_assignments(archive: bytes, copies: int = 2) -> dict:
-    """Queue exactly two copies of each generated assignment on the default printer.
+def print_assignments(archive: bytes, copies: int = 2, printer: str = '') -> dict:
+    """Queue exactly two copies on the explicitly selected installed printer.
 
     The caller must require an explicit print request after document review.
     This function never generates files, assigns sample numbers or retries jobs.
@@ -190,6 +266,11 @@ def print_assignments(archive: bytes, copies: int = 2) -> dict:
     status = printing_status()
     if not status["available"]:
         raise PrintError(status["reason"])
+    selected = next((entry for entry in status.get('printers', []) if entry['name'] == printer), None)
+    if selected is None:
+        raise PrintError('Виберіть принтер зі списку. Якщо його немає, натисніть «Оновити список».')
+    if not selected['selectable']:
+        raise PrintError('Для прямого друку виберіть принтер, який друкує на папері. Для PDF/XPS збережіть документи у файли.')
     executable = _powershell()
     if not executable:
         raise PrintError("Windows PowerShell більше не доступний. Перевірте запуск програми.")
@@ -204,7 +285,7 @@ def print_assignments(archive: bytes, copies: int = 2) -> dict:
         script = directory / "print.ps1"
         script.write_text(_PRINT_SCRIPT, encoding="ascii")
         settings = directory / "settings.json"
-        settings.write_text(json.dumps({"documents": paths, "copies": copies}, ensure_ascii=False), encoding="utf-8")
+        settings.write_text(json.dumps({"documents": paths, "copies": copies, "printer": printer}, ensure_ascii=False), encoding="utf-8")
         result_path = directory / "result.json"
         try:
             process = subprocess.run(
@@ -221,9 +302,10 @@ def print_assignments(archive: bytes, copies: int = 2) -> dict:
         except OSError as exc:
             raise PrintError("Не вдалося запустити Microsoft Word для друку: " + str(exc)[:1200]) from exc
         result = _read_result(result_path)
-        if process.returncode or result.get("ok") is not True or result.get("documents") != len(documents):
+        if (process.returncode or result.get("ok") is not True or result.get("documents") != len(documents)
+                or result.get('printer') != printer):
             if not result.get("error"):
                 result["error"] = ((process.stderr or "") + "\n" + (process.stdout or "")).strip()[:1200]
             raise PrintError(_failure(result, "Microsoft Word не зміг надрукувати весь комплект."))
         return {"documents": len(documents), "copies": copies, "total_copies": len(documents) * copies,
-                "printer": str(result.get("printer") or status.get("printer") or "Принтер за замовчуванням")}
+                "printer": printer}

@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.6.2"
+  #define AppVersion "1.6.3"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\Protokol"
