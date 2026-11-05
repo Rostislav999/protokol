@@ -27,6 +27,8 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 45
+    outputs:
+      test_failures: ${{ steps.test_report.outputs.failures }}
     env:
       # Hosted Windows redirects Python output using a Western code page unless
       # specified explicitly. OCR preparation and diagnostics contain Cyrillic.
@@ -53,6 +55,7 @@ jobs:
       - name: Run application tests
         run: python -m pytest -q --junitxml=build/windows/tests.xml
       - name: Summarize failed application tests
+        id: test_report
         if: failure()
         run: python -m scripts.report_test_failures
       - name: Check drafts and review in the native renderer
@@ -78,3 +81,15 @@ jobs:
             build/protokol/warn-protokol.txt
           if-no-files-found: ignore
           retention-days: 7
+
+  test-failure-details:
+    needs: build
+    if: always() && needs.build.result == 'failure' && needs.build.outputs.test_failures != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.build.outputs.test_failures) }}
+    name: "${{ matrix.test }} — ${{ matrix.reason }}"
+    steps:
+      - name: Failure details are shown in the job title
+        run: exit 1
