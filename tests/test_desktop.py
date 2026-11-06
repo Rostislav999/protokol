@@ -91,3 +91,12 @@ def test_in_process_server_exports_real_workbook_and_releases_listener(tmp_path,
 def test_import_and_runtime_checks_do_not_require_graphical_dependencies():
     # Qt is imported only by run_window or error dialogs, never by --check helpers.
     assert "PySide6.QtWidgets" not in sys.modules
+
+
+def test_print_worker_dispatch_does_not_start_main_window_or_ocr(monkeypatch):
+    from app import print_worker
+    calls = []
+    monkeypatch.setattr(print_worker, 'main', lambda arguments: calls.append(arguments) or 0)
+    monkeypatch.setattr(desktop, 'prepare_runtime', lambda *a, **k: pytest.fail('Print worker started OCR/main window'))
+    assert desktop.main(['--print-worker', 'settings.json', 'result.json']) == 0
+    assert calls == [['settings.json', 'result.json']]

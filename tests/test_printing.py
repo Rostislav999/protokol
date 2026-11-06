@@ -3,13 +3,14 @@ import io
 import json
 from pathlib import Path
 import subprocess
-import shutil
+import sys
 from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
 
-from app import printing
+from app import printing, word_tools, print_worker
+import fitz
 
 
 def archive(*names):
@@ -25,12 +26,23 @@ def archive(*names):
     return output.getvalue()
 
 
+def pdf_bytes():
+    with fitz.open() as document:
+        for number in (1, 2):
+            page = document.new_page(width=595.276, height=841.89)
+            page.insert_text((72, 72), f'Assignment page {number}')
+        return document.tobytes()
+
+
 @pytest.fixture
 def available(monkeypatch):
     monkeypatch.setattr(printing, "printing_status", lambda: {
         "available": True, "platform": "windows", "printer": "HP LaserJet", "copies": 2, "reason": "",
         "printers": [{"name": "HP LaserJet", "selectable": True}, {"name": "Canon Київ", "selectable": True}]})
-    monkeypatch.setattr(printing, "_powershell", lambda: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    def converted(documents, **options):
+        assert options == {'pdf': True}
+        return [dict(pdf=pdf_bytes(), error='') for _ in documents]
+    monkeypatch.setattr(word_tools, 'process_documents', converted)
 
 
 def test_unsupported_platform_status_never_opens_word_or_sends_a_job(monkeypatch):
@@ -78,10 +90,10 @@ def test_missing_printer_never_falls_back_to_default(available, monkeypatch, pri
 def test_non_default_unicode_printer_is_data_and_rechecked_for_every_request(available, monkeypatch):
     calls = []
     def run(command, **options):
-        settings = json.loads(Path(command[command.index('-SettingsPath') + 1]).read_text(encoding='utf-8'))
+        settings = json.loads(Path(command[-2]).read_text(encoding='utf-8'))
         calls.append(settings['printer'])
-        result = Path(command[command.index('-ResultPath') + 1])
-        result.write_text(json.dumps(dict(ok=True, documents=1, printer=settings['printer'])), encoding='utf-8')
+        result = Path(command[-1])
+        result.write_text(json.dumps(dict(ok=True, documents=1, queued_copies=2, printer=settings['printer'], duplex=settings['duplex'])), encoding='utf-8')
         return SimpleNamespace(returncode=0, stdout='', stderr='')
     monkeypatch.setattr(printing.subprocess, 'run', run)
     assert printing.print_assignments(archive(), printer='Canon Київ')['printer'] == 'Canon Київ'
@@ -110,32 +122,28 @@ def test_worker_receives_safe_generated_paths_and_two_copies_and_cleans_up(avail
     seen_paths = []
 
     def run(command, **options):
-        assert command[0].endswith("powershell.exe")
-        assert command[1:6] == ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
-        script = Path(command[command.index("-File") + 1])
-        assert script.read_text(encoding="ascii") == printing._PRINT_SCRIPT
-        assert "$word.AutomationSecurity = 3" in script.read_text(encoding="ascii")
-        settings_path = Path(command[command.index("-SettingsPath") + 1])
+        assert command[:4] == [sys.executable, '-m', 'app.print_worker', command[-2]]
+        settings_path = Path(command[-2])
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         assert settings["copies"] == 2
         assert settings['printer'] == 'HP LaserJet'
         paths = [Path(path) for path in settings["documents"]]
-        assert [path.name for path in paths] == ["assignment-001.docx", "assignment-002.docx", "assignment-003.docx"]
+        assert [path.name for path in paths] == ["assignment-001.pdf", "assignment-002.pdf", "assignment-003.pdf"]
         for path in paths:
-            assert path.parent == script.parent
-            with ZipFile(path) as word:
-                assert "word/document.xml" in word.namelist()
-        seen_paths.extend([*paths, script, settings_path])
+            assert path.parent == settings_path.parent
+            with fitz.open(path) as document:
+                assert len(document) == 2
+        seen_paths.extend([*paths, settings_path])
         assert options["encoding"] == "utf-8"
         assert options["errors"] == "replace"
         assert options["timeout"] == 150
-        result = Path(command[command.index("-ResultPath") + 1])
-        result.write_text(json.dumps({"ok": True, "documents": 3, "copies": 2, "printer": "HP LaserJet"}), encoding="utf-8")
+        result = Path(command[-1])
+        result.write_text(json.dumps({"ok": True, "documents": 3, "copies": 2, "queued_copies": 6, "printer": "HP LaserJet", "duplex": "simplex"}), encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(printing.subprocess, "run", run)
     response = printing.print_assignments(archive("../../outside.docx", "Дані;$(not-a-command).docx", "nested/third.docx"), printer='HP LaserJet')
-    assert response == {"documents": 3, "copies": 2, "total_copies": 6, "printer": "HP LaserJet"}
+    assert response == {"documents": 3, "copies": 2, "total_copies": 6, "printer": "HP LaserJet", "duplex": "simplex"}
     assert seen_paths and all(not path.exists() for path in seen_paths)
 
 
@@ -144,8 +152,8 @@ def test_partial_worker_failure_reports_already_queued_documents_and_never_retri
 
     def run(command, **options):
         calls.append(command)
-        path = Path(command[command.index("-ResultPath") + 1])
-        path.write_text(json.dumps({"ok": False, "documents": 1, "error": "Printer is offline"}), encoding="utf-8")
+        path = Path(command[-1])
+        path.write_text(json.dumps({"ok": False, "documents": 0, "queued_copies": 1, "active_copy": "copy 2", "error": "Printer is offline"}), encoding="utf-8")
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
     monkeypatch.setattr(printing.subprocess, "run", run)
@@ -159,9 +167,9 @@ def test_word_timeout_preserves_partial_progress_and_cleans_up(available, monkey
     paths = []
 
     def run(command, **options):
-        path = Path(command[command.index("-ResultPath") + 1])
+        path = Path(command[-1])
         paths.append(path)
-        path.write_text(json.dumps({"ok": False, "documents": 1}), encoding="utf-8")
+        path.write_text(json.dumps({"ok": False, "documents": 0, "queued_copies": 1, "active_copy": "copy 2"}), encoding="utf-8")
         raise subprocess.TimeoutExpired(command, options["timeout"])
 
     monkeypatch.setattr(printing.subprocess, "run", run)
@@ -172,7 +180,7 @@ def test_word_timeout_preserves_partial_progress_and_cleans_up(available, monkey
 
 def test_file_output_printer_is_actionable_instead_of_hanging_on_hidden_save_dialog(available, monkeypatch):
     def run(command, **options):
-        path = Path(command[command.index("-ResultPath") + 1])
+        path = Path(command[-1])
         path.write_text(json.dumps({"ok": False, "documents": 0, "error": "FILE_OUTPUT_PRINTER"}), encoding="utf-8")
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
@@ -188,87 +196,106 @@ def test_document_limit_is_enforced_before_worker(available, monkeypatch):
         printing.print_assignments(archive("one.docx", "two.docx"))
 
 
-@pytest.mark.skipif(not (shutil.which('powershell.exe') or shutil.which('pwsh')), reason='Requires PowerShell, not Word or a printer')
-def test_word_variant_arguments_do_not_use_boolean_ref_conversion(tmp_path):
-    # Exercise the worker helper against Word's ref-object method signature.
-    # The fake object cannot create any physical print job.
-    helper = printing._PRINT_SCRIPT.split('$ErrorActionPreference', 1)[0].split('\n', 1)[1]
-    script = r'''$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System.Runtime.InteropServices;
-public class WordPrintSignature {
-    public int Calls = 0;
-    public void PrintOut([Optional] ref object background, [Optional] ref object append, [Optional] ref object range,
-        [Optional] ref object output, [Optional] ref object from, [Optional] ref object to, [Optional] ref object item,
-        [Optional] ref object copies, [Optional] ref object pages, [Optional] ref object pageType, [Optional] ref object printToFile,
-        [Optional] ref object collate, [Optional] ref object printer, [Optional] ref object duplex, [Optional] ref object columns,
-        [Optional] ref object rows, [Optional] ref object width, [Optional] ref object height) {
-        if (!(background is bool) || (bool)background || !(collate is bool) || !(bool)collate)
-            throw new System.Exception("Incorrect Boolean variants");
-        if (!(copies is int) || (int)copies != 2 || (bool)printToFile || (int)range != 0)
-            throw new System.Exception("Incorrect print settings");
-        if (!object.ReferenceEquals(output, System.Type.Missing) ||
-            !object.ReferenceEquals(height, System.Type.Missing))
-            throw new System.Exception("Missing optional variants were changed");
-        Calls++;
-    }
-}
-'@
-''' + helper + r'''
-$document = New-Object WordPrintSignature
-Invoke-WordPrint $document 2
-if ($document.Calls -ne 1) { throw 'Print method not invoked exactly once' }
-'''
-    path = tmp_path / 'variant-check.ps1'
-    path.write_text(script, encoding='ascii')
-    result = subprocess.run([shutil.which('powershell.exe') or shutil.which('pwsh'), '-NoProfile', '-NonInteractive', '-File', str(path)],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
-    assert result.returncode == 0, result.stdout + result.stderr
+@pytest.mark.parametrize('duplex', print_worker.DUPLEX_MODES)
+def test_two_complete_copies_are_separate_jobs_even_for_two_page_duplex_documents(tmp_path, duplex):
+    paths = []
+    for index in range(2):
+        path = tmp_path / f'assignment-{index}.pdf'
+        path.write_bytes(pdf_bytes())
+        paths.append(str(path))
+    calls = []
+    class FakePrinter:
+        def __init__(self, printer, mode):
+            assert (printer, mode) == ('HP LaserJet', duplex)
+        def print_copy(self, path, label):
+            with fitz.open(path) as document:
+                assert len(document) == 2
+            calls.append((path, label))
+    result = print_worker.queue(dict(documents=paths, copies=2, printer='HP LaserJet', duplex=duplex),
+                                tmp_path / 'result.json', backend_factory=FakePrinter)
+    assert result['ok'] and result['queued_copies'] == 4 and result['documents'] == 2
+    assert [call[0] for call in calls] == [paths[0], paths[0], paths[1], paths[1]]
+    assert len({call[1] for call in calls}) == 4
 
 
-@pytest.mark.skipif(not (shutil.which('powershell.exe') or shutil.which('pwsh')), reason='Requires PowerShell only')
-def test_word_printer_setup_uses_complete_variants_without_changing_system_default(tmp_path):
-    helper = printing._PRINT_SCRIPT.split('$ErrorActionPreference', 1)[0].split('\n', 1)[1]
-    script = r'''$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public class PrinterWord {
-    public string ActivePrinter;
-    public bool IgnoreSelection;
-    public PrinterSetup WordBasic;
-    public PrinterWord() { WordBasic = new PrinterSetup(this); }
-}
-public class PrinterSetup {
-    private PrinterWord Word;
-    public int Calls;
-    public PrinterSetup(PrinterWord word) { Word = word; }
-    public void FilePrintSetup([Optional] ref object Printer, [Optional] ref object Options,
-        [Optional] ref object Network, [Optional] ref object DoNotSetAsSysDefault) {
-        if (!(Printer is string) || !(DoNotSetAsSysDefault is int) || (int)DoNotSetAsSysDefault != 1)
-            throw new Exception("Default printer must remain unchanged");
-        if (!object.ReferenceEquals(Options, Type.Missing) || !object.ReferenceEquals(Network, Type.Missing))
-            throw new Exception("Optional setup arguments changed");
-        Calls++;
-        if (!Word.IgnoreSelection) Word.ActivePrinter = (string)Printer + " on Ne01:";
-    }
-}
-'@
-''' + helper + r'''
-$word = New-Object PrinterWord
-$word.ActivePrinter = 'HP Copy on Ne02:'
-Set-WordPrinter $word 'HP' @('HP', 'HP Copy')
-if ($word.WordBasic.Calls -ne 1 -or $word.ActivePrinter -ne 'HP on Ne01:') { throw 'Selection failed' }
-$word.IgnoreSelection = $true
-$word.ActivePrinter = 'HP Copy on Ne02:'
-$rejected = $false
-try { Set-WordPrinter $word 'HP' @('HP', 'HP Copy') } catch {
-    if ($_.Exception.Message -match 'PRINTER_SELECTION_FAILED') { $rejected = $true } else { throw }
-}
-if (-not $rejected) { throw 'Worker accepted a different printer with a shared name prefix' }
-'''
-    path = tmp_path / 'printer-setup-check.ps1'
-    path.write_text(script, encoding='ascii')
-    result = subprocess.run([shutil.which('powershell.exe') or shutil.which('pwsh'), '-NoProfile', '-NonInteractive', '-File', str(path)],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
-    assert result.returncode == 0, result.stdout + result.stderr
+def test_second_copy_failure_retains_exact_progress_and_does_not_retry(tmp_path):
+    path = tmp_path / 'assignment.pdf'
+    path.write_bytes(pdf_bytes())
+    calls = []
+    class FakePrinter:
+        def __init__(self, *args):
+            pass
+        def print_copy(self, path, label):
+            calls.append(label)
+            if len(calls) == 2:
+                raise ValueError('Printer is offline')
+    result_path = tmp_path / 'result.json'
+    result = print_worker.queue(dict(documents=[str(path)], copies=2, printer='HP LaserJet', duplex='long_edge'),
+                                result_path, backend_factory=FakePrinter)
+    assert not result['ok'] and result['queued_copies'] == 1 and result['documents'] == 0
+    assert result['active_copy'] and len(calls) == 2
+    message = printing._failure(json.loads(result_path.read_text(encoding='utf-8')), 'Не вдалося надрукувати.')
+    assert '1 примірник' in message and 'стан невідомий' in message and 'Перевірте чергу' in message
+
+
+def test_unsupported_duplex_and_invalid_later_pdf_fail_before_any_job(tmp_path):
+    path = tmp_path / 'assignment.pdf'
+    path.write_bytes(pdf_bytes())
+    calls = []
+    def unsupported(*args):
+        calls.append(args)
+        raise ValueError('DUPLEX_UNSUPPORTED')
+    settings = dict(documents=[str(path)], copies=2, printer='HP LaserJet', duplex='long_edge')
+    result = print_worker.queue(settings, tmp_path / 'result.json', backend_factory=unsupported)
+    assert result['error'] == 'DUPLEX_UNSUPPORTED' and result['queued_copies'] == 0 and not result['active_copy']
+    assert 'односторонній' in printing._failure(result, '')
+    calls.clear()
+    bad = tmp_path / 'broken.pdf'
+    bad.write_bytes(b'broken')
+    result = print_worker.queue({**settings, 'documents': [str(path), str(bad)]}, tmp_path / 'result.json',
+                                backend_factory=unsupported)
+    assert not result['ok'] and not calls and result['queued_copies'] == 0
+
+
+def test_pdf_export_failure_never_launches_print_worker(available, monkeypatch):
+    monkeypatch.setattr(word_tools, 'process_documents', lambda *a, **k: [dict(error='Word failed')])
+    monkeypatch.setattr(printing.subprocess, 'run', lambda *a, **k: pytest.fail('Unexpected print'))
+    with pytest.raises(printing.PrintError, match='не передано до принтера'):
+        printing.print_assignments(archive(), printer='HP LaserJet')
+
+
+@pytest.mark.parametrize('duplex', print_worker.DUPLEX_MODES)
+def test_selected_sides_reach_isolated_worker(available, monkeypatch, duplex):
+    def run(command, **options):
+        settings = json.loads(Path(command[-2]).read_text(encoding='utf-8'))
+        assert settings['duplex'] == duplex
+        Path(command[-1]).write_text(json.dumps(dict(ok=True, documents=1, queued_copies=2,
+                                                   printer=settings['printer'], duplex=duplex)), encoding='utf-8')
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+    monkeypatch.setattr(printing.subprocess, 'run', run)
+    assert printing.print_assignments(archive(), printer='HP LaserJet', duplex=duplex)['duplex'] == duplex
+
+
+def test_native_renderer_preserves_two_pages_and_physical_size_without_a_printer(tmp_path, monkeypatch):
+    pytest.importorskip('PySide6.QtPrintSupport')
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtPrintSupport import QPrinter
+    monkeypatch.setenv('QT_QPA_PLATFORM', 'offscreen')
+    application = QApplication.instance() or QApplication([])
+    source = tmp_path / 'two-pages.pdf'
+    source.write_bytes(pdf_bytes())
+    output = tmp_path / 'printed.pdf'
+    printer = QPrinter(QPrinter.HighResolution)
+    printer.setOutputFormat(QPrinter.PdfFormat)
+    printer.setOutputFileName(str(output))
+    printer.setResolution(300)
+    worker = object.__new__(print_worker.WindowsPrinter)
+    monkeypatch.setattr(worker, '_printer', lambda: printer)
+    worker.print_copy(str(source), 'Test — no physical printer')
+    with fitz.open(output) as document:
+        assert len(document) == 2
+        for page in document:
+            assert page.rect.width == pytest.approx(595.276, abs=1)
+            assert page.rect.height == pytest.approx(841.89, abs=1)
+            assert page.get_images()  # Raster pages were actually painted.
+    assert application is not None

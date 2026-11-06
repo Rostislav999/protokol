@@ -81,6 +81,7 @@ class NumberingStore:
                 )
             """)
             self._allow_manual_number_reuse(connection)
+            connection.execute('CREATE INDEX IF NOT EXISTS sample_allocation_numbers ON sample_allocations(number)')
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS generation_jobs (
                     job_id TEXT PRIMARY KEY,
@@ -184,6 +185,27 @@ class NumberingStore:
         finally:
             connection.close()
 
+    @staticmethod
+    def _requested(sample_keys, requested):
+        requested = {} if requested is None else requested
+        if not isinstance(requested, dict) or set(requested) - set(sample_keys):
+            raise NumberingError('Номери можна вказувати лише для зразків цього списку.')
+        return {key: _number(value) for key, value in requested.items()}
+
+    @staticmethod
+    def _conflicts(connection, requested):
+        return {key: value for key, value in requested.items() if connection.execute(
+            'SELECT 1 FROM sample_allocations WHERE number=? AND sample_key<>? LIMIT 1', (value, key)).fetchone()}
+
+    def requested_conflicts(self, sample_keys, requested):
+        self.get_sample_numbers(sample_keys)  # Validate keys without allocating.
+        requested = self._requested(sample_keys, requested)
+        connection = self._connect()
+        try:
+            return self._conflicts(connection, requested)
+        finally:
+            connection.close()
+
     def initialize(self, next_number: int) -> dict[str, int | None]:
         """Set the starting number once; repeating the same setup is harmless."""
         value = _number(next_number)
@@ -239,6 +261,8 @@ class NumberingStore:
         builder: Callable[[list[str]], bytes],
         *,
         payload_hash: str,
+        requested_numbers: dict[str, int] | None = None,
+        allow_reuse: set[str] | None = None,
     ) -> tuple[bytes, list[str]]:
         """Build and cache documents atomically with their assigned numbers.
 
@@ -256,6 +280,10 @@ class NumberingStore:
         the counter backwards or quietly changing visible numbers.
         """
         serialized_keys = _job_keys(job_id, sample_keys, payload_hash)
+        requested = self._requested(sample_keys, requested_numbers)
+        allow_reuse = set(allow_reuse or ())
+        if allow_reuse - set(requested):
+            raise NumberingError('Повторне використання підтверджується лише для явно вказаних номерів.')
         if start_number is not None:
             _number(start_number)
         if not callable(builder):
@@ -272,17 +300,44 @@ class NumberingStore:
             unique_keys = list(dict.fromkeys(sample_keys))
             assigned = self._sample_numbers(connection, unique_keys)
             new_keys = [key for key in unique_keys if key not in assigned]
+            for key, value in requested.items():
+                if key in assigned and str(value) != assigned[key]:
+                    raise NumberingError('Номер уже створеного зразка змінити не можна. Додайте окремий зразок.')
+            explicit = {key: requested[key] for key in new_keys if key in requested}
+            for key, value in explicit.items():
+                others = [int(number) for other, number in assigned.items() if other != key]
+                others += [number for other, number in explicit.items() if other != key]
+                if value in others:
+                    raise NumberingError(f'Номер {value} повторюється в поточному списку зразків.')
+            conflicts = self._conflicts(connection, explicit)
+            if set(conflicts) - allow_reuse:
+                values = ', '.join(map(str, sorted({conflicts[key] for key in set(conflicts) - allow_reuse})))
+                raise NumberingError(f'Номери {values} раніше використані. Виберіть інші або явно підтвердьте повторне використання.')
             current = self._next(connection)
             if current is None:
                 if start_number is None:
-                    raise NumberingError("Спочатку вкажіть початковий номер зразка.")
-                current = start_number
+                    if new_keys and len(explicit) == len(new_keys):
+                        current = min(explicit.values())
+                    else:
+                        raise NumberingError("Спочатку вкажіть початковий номер зразка.")
+                else:
+                    current = start_number
             elif start_number is not None and start_number != current:
                 raise NumberingError(f"Наступний номер уже змінився на {current}. Оновіть попередній перегляд перед формуванням.")
 
-            if new_keys and current + len(new_keys) - 1 > MAX_SAMPLE_NUMBER:
-                raise NumberingError("Досягнуто межу нумерації зразків.")
-            assigned.update({key: str(current + index) for index, key in enumerate(new_keys)})
+            candidate = current
+            reserved = set(explicit.values()) | {int(value) for value in assigned.values()}
+            for key in new_keys:
+                if key in explicit:
+                    assigned[key] = str(explicit[key])
+                    continue
+                while candidate in reserved:
+                    candidate += 1
+                if candidate > MAX_SAMPLE_NUMBER:
+                    raise NumberingError("Досягнуто межу нумерації зразків.")
+                assigned[key] = str(candidate)
+                candidate += 1
+            next_number = max(candidate, max(explicit.values(), default=current - 1) + 1)
             numbers = [assigned[key] for key in sample_keys]
             # The counter is unchanged if rendering, validation, or saving fails.
             archive = builder(list(numbers))
@@ -301,5 +356,5 @@ class NumberingStore:
                  json.dumps(numbers, separators=(",", ":")), sqlite3.Binary(archive)),
             )
             connection.execute("UPDATE numbering_state SET next_number = ? WHERE singleton = 1",
-                               (current + len(new_keys),))
+                               (next_number,))
             return archive, numbers

@@ -19,10 +19,11 @@
   dialog.id = 'assignment-print-dialog';
   dialog.className = 'modal assignment-print-dialog';
   dialog.setAttribute('aria-labelledby','assignment-print-title');
-  dialog.innerHTML = '<div class="print-dialog-frame"><div class="modal-heading"><h2 id="assignment-print-title">Друк завдань</h2><button type="button" class="icon-button" data-print-close aria-label="Закрити">×</button></div><div class="modal-body"><p data-print-summary></p><label class="field"><span>Принтер</span><select id="assignment-printer" aria-describedby="assignment-printer-status"><option value="">Виберіть принтер</option></select></label><button type="button" class="text-button" data-print-refresh>Оновити список</button><p id="assignment-printer-status" role="status" aria-live="polite"></p><small>Перевірте сформовані завдання перед друком. Кожен документ буде надруковано у двох примірниках.</small></div><div class="modal-footer"><button type="button" class="button quiet" data-print-close>Скасувати</button><button type="button" class="button primary" id="assignment-print-confirm" disabled>Друкувати</button></div></div>';
+  dialog.innerHTML = '<div class="print-dialog-frame"><div class="modal-heading"><h2 id="assignment-print-title">Друк завдань</h2><button type="button" class="icon-button" data-print-close aria-label="Закрити">×</button></div><div class="modal-body"><p data-print-summary></p><label class="field"><span>Принтер</span><select id="assignment-printer" aria-describedby="assignment-printer-status"><option value="">Виберіть принтер</option></select></label><button type="button" class="text-button" data-print-refresh>Оновити список</button><p id="assignment-printer-status" role="status" aria-live="polite"></p><label class="field"><span>Сторони друку</span><select id="assignment-duplex"><option value="simplex">Односторонній друк</option><option value="long_edge">Двосторонній — по довгому краю</option><option value="short_edge">Двосторонній — по короткому краю</option></select><small>Двосторонній режим потребує принтера з автоматичним перевертанням аркушів.</small></label><small>Перевірте сформовані завдання перед друком. Кожен із двох примірників передається окремим завданням у чергу принтера.</small></div><div class="modal-footer"><button type="button" class="button quiet" data-print-close>Скасувати</button><button type="button" class="button primary" id="assignment-print-confirm" disabled>Друкувати</button></div></div>';
   document.body.append(dialog);
   const select = dialog.querySelector('#assignment-printer');
   const confirm = dialog.querySelector('#assignment-print-confirm');
+  const duplex = dialog.querySelector('#assignment-duplex');
   const refresh = dialog.querySelector('[data-print-refresh]');
   const status = dialog.querySelector('#assignment-printer-status');
 
@@ -41,11 +42,12 @@
     button.disabled = !generation || printing || checking;
     button.textContent = printing ? 'Передаємо до принтера…' : 'Вибрати принтер і друкувати';
     recheck.disabled = printing || checking;
-    if (printing) help.textContent = 'Microsoft Word передає документи до черги вибраного принтера.';
+    if (printing) help.textContent = 'Готуємо сторінки у Microsoft Word та передаємо кожен примірник до вибраного принтера.';
     else if (checking) help.textContent = 'Оновлюємо список принтерів…';
     else if (capability && !capability.available) help.textContent = capability.reason || 'Прямий друк недоступний.';
     else help.textContent = `Для кожного з ${documentCount()} завдань буде надруковано 2 примірники. Принтер можна вибрати перед друком.`;
     select.disabled = printing || checking || !capability?.printers?.length;
+    duplex.disabled = printing;
     const selected = capability?.printers?.find(value => value.name === select.value && value.selectable);
     confirm.disabled = printing || checking || !generation || !capability?.available || !selected;
     confirm.textContent = printing ? 'Передаємо до принтера…' : 'Друкувати';
@@ -106,15 +108,15 @@
   });
   confirm.addEventListener('click', async () => {
     if (!generation || printing || checking || confirm.disabled) return;
-    const payload = generation, printer = select.value;
+    const payload = generation, printer = select.value, sides = duplex.value;
     const editor = document.querySelector('#assignment-editor'), wasDisabled = editor?.disabled;
     if (editor) editor.disabled = true;
     printing = true;lastPrinter = printer;result.hidden = true;
     status.textContent = `Передаємо завдання до принтера «${printer}»…`;status.className = '';
     render();
     try {
-      const data = await jsonRequest('/api/assignments/print', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({generation:payload,printer,copies:2,confirmed:true})});
-      result.textContent = `До черги принтера «${data.printer}» передано ${data.documents} завдань, по ${data.copies} примірники кожного (${data.total_copies} примірників загалом).`;
+      const data = await jsonRequest('/api/assignments/print', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({generation:payload,printer,duplex:sides,copies:2,confirmed:true})});
+      result.textContent = `До черги принтера «${data.printer}» передано ${data.documents} завдань, по ${data.copies} примірники кожного (${data.total_copies} примірників загалом). ${sides==='simplex'?'Односторонній друк.':sides==='long_edge'?'Двосторонній друк по довгому краю.':'Двосторонній друк по короткому краю.'}`;
       result.className = 'notice success';result.hidden = false;dialog.close();
     } catch (error) {
       result.textContent = error.message;result.className = 'notice warning';result.hidden = false;

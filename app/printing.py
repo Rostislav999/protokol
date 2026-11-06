@@ -1,4 +1,4 @@
-"""Print a reviewed assignment archive through the user's local Microsoft Word."""
+"""Lay out reviewed DOCX in Word and queue two copies with per-job settings."""
 from __future__ import annotations
 
 import io
@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from zipfile import BadZipFile, ZipFile
 
@@ -112,102 +113,6 @@ def printing_status() -> dict:
             "reason": "" if available else "Не знайдено принтера для друку на папері. Підключіть принтер у Windows і натисніть «Оновити список»."}
 
 
-# This is fixed source code. Paths, copies and document names are data in a UTF-8
-# JSON file, never interpolated into PowerShell commands. Keep the script ASCII
-# so Windows PowerShell 5.1 does not mistake its source encoding for an ANSI codepage.
-_PRINT_SCRIPT = r'''param([string]$SettingsPath, [string]$ResultPath)
-function Invoke-WordPrint([object]$Document, [int]$Copies) {
-    # Dispatch optional VARIANT arguments as boxed objects. Passing [ref]
-    # Boolean variables through PowerShell's COM adapter can fail conversion.
-    $missing = [System.Type]::Missing
-    [object[]]$arguments = @($false, $false, 0, $missing, $missing, $missing,
-        0, $Copies, $missing, 0, $false, $true,
-        $missing, $missing, $missing, $missing, $missing, $missing)
-    [void]$Document.GetType().InvokeMember('PrintOut',
-        [System.Reflection.BindingFlags]::InvokeMethod, $null, $Document, $arguments)
-}
-function Set-WordPrinter([object]$Word, [string]$Printer, [string[]]$Installed) {
-    $basic = $Word.WordBasic
-    try {
-        # Supply every optional VARIANT. The .NET Framework binder used by
-        # Windows PowerShell 5.1 cannot safely reorder omitted ref arguments.
-        # FilePrintSetup: Printer, Options, Network, DoNotSetAsSysDefault.
-        $missing = [System.Type]::Missing
-        [object[]]$arguments = @($Printer, $missing, $missing, 1)
-        [void]$basic.GetType().InvokeMember('FilePrintSetup',
-            [System.Reflection.BindingFlags]::InvokeMethod, $null, $basic, $arguments)
-    } finally {
-        if ($null -ne $basic -and [System.Runtime.InteropServices.Marshal]::IsComObject($basic)) {
-            [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($basic)
-        }
-    }
-    # Word appends a localized port suffix. Resolve the longest installed name
-    # to distinguish e.g. "HP" from "HP Copy", and never fall back to a default.
-    $active = [string]$Word.ActivePrinter
-    $matched = @($Installed | Where-Object {
-        $active.Equals($_, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $active.StartsWith($_ + ' ', [System.StringComparison]::OrdinalIgnoreCase)
-    } | Sort-Object -Property @{Expression={$_.Length}; Descending=$true})
-    if ($matched.Count -eq 0 -or $matched[0] -ne $Printer) { throw 'PRINTER_SELECTION_FAILED' }
-}
-$ErrorActionPreference = 'Stop'
-$word = $null
-$document = $null
-$originalUpdateLinks = $null
-$utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
-$result = @{ok=$false; documents=0; copies=2; printer=''; error=''; stage='startup'}
-try {
-    $settings = [System.IO.File]::ReadAllText($SettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-    $result.copies = [int]$settings.copies
-    $result.printer = [string]$settings.printer
-    Add-Type -AssemblyName System.Drawing
-    [string[]]$installed = @([System.Drawing.Printing.PrinterSettings]::InstalledPrinters)
-    if ([string]::IsNullOrWhiteSpace($result.printer) -or $installed -notcontains $result.printer) {
-        throw 'PRINTER_NOT_FOUND'
-    }
-    if ($result.printer -match '(?i)Microsoft Print to PDF|Microsoft XPS Document Writer') {
-        throw 'FILE_OUTPUT_PRINTER'
-    }
-    $word = New-Object -ComObject Word.Application
-    $word.Visible = $false
-    $word.DisplayAlerts = 0
-    $word.AutomationSecurity = 3
-    $originalUpdateLinks = $word.Options.UpdateLinksAtOpen
-    $word.Options.UpdateLinksAtOpen = $false
-    Set-WordPrinter $word $result.printer $installed
-    $result.stage = 'printing'
-    foreach ($path in $settings.documents) {
-        $document = $word.Documents.Open([string]$path, $false, $true, $false)
-        Invoke-WordPrint $document ([int]$settings.copies)
-        $result.documents += 1
-        [System.IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Compress),
-            $utf8)
-        $document.Close(0)
-        [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($document)
-        $document = $null
-    }
-    $result.ok = $true
-} catch {
-    $result.error = $_.Exception.Message
-} finally {
-    if ($null -ne $document) {
-        try { $document.Close(0) } catch {}
-        try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($document) } catch {}
-    }
-    if ($null -ne $word) {
-        if ($null -ne $originalUpdateLinks) {
-            try { $word.Options.UpdateLinksAtOpen = $originalUpdateLinks } catch {}
-        }
-        try { $word.Quit(0) } catch {}
-        try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($word) } catch {}
-    }
-    [System.IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Compress),
-        $utf8)
-}
-if (-not $result.ok) { exit 1 }
-'''
-
-
 def _documents(archive: bytes) -> list[bytes]:
     if not isinstance(archive, bytes) or not archive or len(archive) > MAX_ARCHIVE_BYTES:
         raise PrintError("Архів завдань порожній або перевищує 25 МБ. Сформуйте комплект повторно.")
@@ -242,28 +147,38 @@ def _failure(result: dict, fallback: str) -> str:
     error = str(result.get("error") or "")[:1200]
     if error == "PRINTER_NOT_FOUND":
         message = "Вибраний принтер більше не доступний. Оновіть список і виберіть принтер знову."
-    elif error == "PRINTER_SELECTION_FAILED":
-        message = "Microsoft Word не зміг вибрати потрібний принтер. Документи не передано до друку; оновіть список і повторіть вибір."
+    elif error == "DUPLEX_UNSUPPORTED":
+        message = "Цей принтер не підтримує автоматичний двосторонній друк. Виберіть односторонній друк або інший принтер."
+    elif error == "PRINTER_SETTINGS_REJECTED":
+        message = "Драйвер не прийняв вибраний режим друку. Перевірте налаштування принтера та повторіть вибір."
     elif error == "FILE_OUTPUT_PRINTER":
         message = "Для прямого друку виберіть принтер, який друкує на папері. " \
                   "Microsoft Print to PDF та XPS потребують окремого збереження файлів."
     else:
         message = fallback + (" Причина: " + error if error else "")
-    sent = result.get("documents", 0)
+    sent = result.get("queued_copies", 0)
     if type(sent) is int and sent > 0:
-        message += f" До збою в чергу передано {sent} документ(ів), по 2 примірники. " \
-                   "Перевірте чергу принтера перед повторним друком."
+        message += f" До збою в чергу передано {sent} примірник(ів)."
+    if result.get('active_copy'):
+        message += " Передавання ще одного примірника було розпочато; його стан невідомий."
+    if sent or result.get('active_copy'):
+        message += " Перевірте чергу принтера перед повторним друком."
     return message
 
 
-def print_assignments(archive: bytes, copies: int = 2, printer: str = '') -> dict:
+def print_assignments(archive: bytes, copies: int = 2, printer: str = '', duplex: str = 'simplex') -> dict:
     """Queue exactly two copies on the explicitly selected installed printer.
 
     The caller must require an explicit print request after document review.
-    This function never generates files, assigns sample numbers or retries jobs.
+    This function never regenerates assignments, assigns numbers or retries jobs.
     """
     if type(copies) is not int or copies != 2:
         raise PrintError("Для кожного завдання друкуються рівно 2 примірники.")
+    from .print_worker import DUPLEX_MODES
+    from .word_tools import process_documents, OfficeError
+
+    if duplex not in DUPLEX_MODES:
+        raise PrintError('Виберіть односторонній або двосторонній режим друку.')
     documents = _documents(archive)
     status = printing_status()
     if not status["available"]:
@@ -273,41 +188,48 @@ def print_assignments(archive: bytes, copies: int = 2, printer: str = '') -> dic
         raise PrintError('Виберіть принтер зі списку. Якщо його немає, натисніть «Оновити список».')
     if not selected['selectable']:
         raise PrintError('Для прямого друку виберіть принтер, який друкує на папері. Для PDF/XPS збережіть документи у файли.')
-    executable = _powershell()
-    if not executable:
-        raise PrintError("Windows PowerShell більше не доступний. Перевірте запуск програми.")
-    # Every output name is generated here; archive member names are never paths.
+    # Word lays out the original DOCX and updates page fields before any paper
+    # is queued. Reuse the same PDF export as the document preview/download.
+    try:
+        pages = process_documents([(f'assignment-{index:03d}.docx', data)
+                                   for index, data in enumerate(documents, 1)], pdf=True)
+    except OfficeError as exc:
+        raise PrintError('Не вдалося підготувати завдання до друку. ' + str(exc)) from exc
+    if len(pages) != len(documents) or any(not item.get('pdf') or item.get('error') for item in pages):
+        raise PrintError('Не всі завдання підготовлено до друку. Документи не передано до принтера.')
+    # Archive member names are never paths or command arguments. The child has
+    # its own Qt application, no main window, and a bounded driver timeout.
     with tempfile.TemporaryDirectory(prefix="protokol-print-", ignore_cleanup_errors=True) as temporary:
         directory = Path(temporary)
         paths = []
-        for index, data in enumerate(documents, 1):
-            path = directory / f"assignment-{index:03d}.docx"
-            path.write_bytes(data)
+        for index, item in enumerate(pages, 1):
+            path = directory / f"assignment-{index:03d}.pdf"
+            path.write_bytes(item['pdf'])
             paths.append(str(path))
-        script = directory / "print.ps1"
-        script.write_text(_PRINT_SCRIPT, encoding="ascii")
         settings = directory / "settings.json"
-        settings.write_text(json.dumps({"documents": paths, "copies": copies, "printer": printer}, ensure_ascii=False), encoding="utf-8")
+        settings.write_text(json.dumps({"documents": paths, "copies": copies, "printer": printer,
+                                        "duplex": duplex}, ensure_ascii=False), encoding="utf-8")
         result_path = directory / "result.json"
+        command = [sys.executable, '--print-worker'] if getattr(sys, 'frozen', False) else [sys.executable, '-m', 'app.print_worker']
         try:
             process = subprocess.run(
-                [executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
-                 "-SettingsPath", str(settings), "-ResultPath", str(result_path)],
+                [*command, str(settings), str(result_path)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                cwd=None if getattr(sys, 'frozen', False) else str(Path(__file__).resolve().parents[1]),
                 timeout=min(900, 60 + len(documents) * 30),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
         except subprocess.TimeoutExpired as exc:
             raise PrintError(_failure(_read_result(result_path),
-                                      "Microsoft Word не завершив передавання до принтера вчасно. "
-                                      "Перевірте вікна Word та чергу принтера.")) from exc
+                                      "Принтер не завершив приймання завдань вчасно.")) from exc
         except OSError as exc:
-            raise PrintError("Не вдалося запустити Microsoft Word для друку: " + str(exc)[:1200]) from exc
+            raise PrintError("Не вдалося запустити друк: " + str(exc)[:1200]) from exc
         result = _read_result(result_path)
         if (process.returncode or result.get("ok") is not True or result.get("documents") != len(documents)
-                or result.get('printer') != printer):
+                or result.get('queued_copies') != len(documents) * copies
+                or result.get('printer') != printer or result.get('duplex') != duplex):
             if not result.get("error"):
                 result["error"] = ((process.stderr or "") + "\n" + (process.stdout or "")).strip()[:1200]
-            raise PrintError(_failure(result, "Microsoft Word не зміг надрукувати весь комплект."))
+            raise PrintError(_failure(result, "Не вдалося передати до принтера весь комплект."))
         return {"documents": len(documents), "copies": copies, "total_copies": len(documents) * copies,
-                "printer": printer}
+                "printer": printer, "duplex": duplex}

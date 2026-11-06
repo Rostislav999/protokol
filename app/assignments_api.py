@@ -47,6 +47,8 @@ class AssignmentItem(BaseModel):
     product_name: str
     standard: str
     sample_weight: str = ""
+    sample_number: int | None = Field(default=None, ge=1, le=2147483647, strict=True)
+    allow_number_reuse: bool = False
     departments: dict[str, AssignmentSelection] = Field(min_length=1, max_length=3)
 
 
@@ -62,6 +64,7 @@ class AssignmentPrint(BaseModel):
     generation: AssignmentGeneration
     printer: str = Field(min_length=1, max_length=1024)
     copies: Literal[2] = 2
+    duplex: Literal['simplex', 'long_edge', 'short_edge'] = 'simplex'
     confirmed: bool = False
 
     @field_validator('printer')
@@ -78,6 +81,25 @@ class NumberSetting(BaseModel):
 
 class NumberPreview(BaseModel):
     sample_ids: list[str] = Field(default_factory=list, max_length=100)
+    requested_numbers: dict[str, int] = Field(default_factory=dict, max_length=100)
+
+    @field_validator('requested_numbers', mode='before')
+    @classmethod
+    def strict_numbers(cls, values):
+        if not isinstance(values, dict) or any(type(v) is not int or not 1 <= v <= 2147483647 for v in values.values()):
+            raise ValueError('Номери зразків мають бути додатними цілими числами.')
+        return values
+
+
+def generation_fingerprint(values):
+    # Retain the fingerprint of previously issued jobs when new fields are unused.
+    data = values.model_dump()
+    for item in data['items']:
+        if item.get('sample_number') is None:
+            item.pop('sample_number', None)
+        if not item.get('allow_number_reuse'):
+            item.pop('allow_number_reuse', None)
+    return sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 class AssignmentUpdate(BaseModel):
@@ -160,7 +182,8 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
     @router.post("/numbering/preview")
     def number_preview(values: NumberPreview):
         try:
-            return {**numbering.status(), "numbers": numbering.get_sample_numbers(values.sample_ids)}
+            return {**numbering.status(), "numbers": numbering.get_sample_numbers(values.sample_ids),
+                    'conflicts': numbering.requested_conflicts(values.sample_ids, values.requested_numbers)}
         except NumberingError as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -185,12 +208,12 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
         if not values.confirmed or not values.generation.confirmed:
             raise HTTPException(422, "Підтвердьте перевірку завдань та друк двох примірників кожного документа.")
         generation = values.generation
-        fingerprint = sha256(json.dumps(generation.model_dump(), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        fingerprint = generation_fingerprint(generation)
         try:
             cached = numbering.get_cached(generation.job_id, [item.id for item in generation.items], payload_hash=fingerprint)
             if cached is None:
                 raise NumberingError("Спочатку створіть та перевірте завдання. Друк не присвоює нових номерів.")
-            return print_assignments(cached[0], copies=values.copies, printer=values.printer)
+            return print_assignments(cached[0], copies=values.copies, printer=values.printer, duplex=values.duplex)
         except (NumberingError, PrintError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -200,7 +223,7 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
             raise HTTPException(422, "Підтвердьте перевірку зразків, відділень, НД та шаблонів завдань.")
         if len({item.id for item in values.items}) != len(values.items):
             raise HTTPException(422, "Кожна позиція повинна мати окремий ідентифікатор зразка.")
-        fingerprint = sha256(json.dumps(values.model_dump(), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        fingerprint = generation_fingerprint(values)
         try:
             cached = numbering.get_cached(values.job_id, [item.id for item in values.items], payload_hash=fingerprint)
         except NumberingError as exc:
@@ -267,7 +290,9 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
 
         try:
             archive, numbers = numbering.generate_with_numbers(values.job_id, [item.id for item in values.items],
-                                                             values.start_number, builder, payload_hash=fingerprint)
+                                                             values.start_number, builder, payload_hash=fingerprint,
+                                                             requested_numbers={item.id: item.sample_number for item in values.items if item.sample_number is not None},
+                                                             allow_reuse={item.id for item in values.items if item.allow_number_reuse})
         except (NumberingError, TemplateError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         return archive_response(archive, numbers)

@@ -427,10 +427,14 @@ def run_window(server: LocalServer, *, smoke_workbook: bytes | None = None) -> i
 
 
 def main(argv=None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == '--print-worker':
+        from app.print_worker import main as print_main
+        return print_main(arguments[1:])
     parser = argparse.ArgumentParser(description="ОЗтаУСЯ — локальна програма для Windows.")
     parser.add_argument("--check", action="store_true", help="Перевірити комплектний OCR та експорт Excel без вікна.")
     parser.add_argument("--smoke-test", action="store_true", help="Перевірити вікно й збереження файлу, потім закрити програму.")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     log_path = None
     try:
         directory, environ = prepare_runtime()

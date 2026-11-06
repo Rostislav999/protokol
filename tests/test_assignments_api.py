@@ -26,6 +26,51 @@ def request_data(client, job_id="generation-one", start_number=1397):
             "items": [{"id": "sample-one", "product_name": "Свинина тушкована", "standard": "ДСТУ 4450:2005", "departments": selected}]}
 
 
+def test_add_samples_before_and_after_issued_range(client):
+    import json
+    from copy import deepcopy
+    payload = request_data(client, 'initial-range', 1418)
+    sample = deepcopy(payload['items'][0])
+    sample['departments'] = {'vet': sample['departments']['vet']}
+    payload['items'] = [{**sample, 'id': f'sample-{number}'} for number in range(1418, 1433)]
+    first = client.post('/api/assignments/generate', json=payload)
+    assert first.status_code == 200, first.text
+    assert json.loads(first.headers['X-Sample-Numbers']) == list(map(str, range(1418, 1433)))
+    expanded = {**payload, 'job_id': 'expanded-range', 'start_number': 1433,
+                'items': [{**sample, 'id': 'before', 'sample_number': 1417}, *payload['items'],
+                          {**sample, 'id': 'after', 'sample_number': 1433}]}
+    result = client.post('/api/assignments/generate', json=expanded)
+    assert result.status_code == 200, result.text
+    assert json.loads(result.headers['X-Sample-Numbers']) == list(map(str, range(1417, 1434)))
+    assert result.headers['X-Next-Sample-Number'] == '1434'
+    assert client.post('/api/assignments/generate', json=expanded).content == result.content
+
+
+def test_preview_reports_used_manual_numbers_and_rejects_invalid_requests(client):
+    assert client.post('/api/assignments/generate', json=request_data(client)).status_code == 200
+    result = client.post('/api/assignments/numbering/preview',
+                         json={'sample_ids': ['new'], 'requested_numbers': {'new': 1397}})
+    assert result.status_code == 200 and result.json()['conflicts'] == {'new': 1397}
+    for value in (True, 0, -1, 1.5, '1417', 2147483648):
+        assert client.post('/api/assignments/numbering/preview',
+                           json={'sample_ids': ['new'], 'requested_numbers': {'new': value}}).status_code == 422
+    assert client.post('/api/assignments/numbering/preview',
+                       json={'sample_ids': ['new'], 'requested_numbers': {'outside': 1417}}).status_code == 422
+    assert client.get('/api/assignments/numbering').json()['next_number'] == 1398
+
+
+def test_legacy_generations_keep_their_fingerprint_when_manual_numbers_are_unused(client):
+    from hashlib import sha256
+    import json
+    values = assignment_api.AssignmentGeneration.model_validate(request_data(client))
+    old = values.model_dump()
+    for item in old['items']:
+        item.pop('sample_number')
+        item.pop('allow_number_reuse')
+    expected = sha256(json.dumps(old, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    assert assignment_api.generation_fingerprint(values) == expected
+
+
 def test_all_sixty_templates_departments_and_readonly_metadata(client):
     result = client.get("/api/assignments/templates").json()
     assert len(result["templates"]) == 60
@@ -83,7 +128,7 @@ def test_same_sample_keeps_its_number_when_another_department_is_added(client):
     assert result.headers["X-Sample-Numbers"] == '["1397"]'
     assert result.headers["X-Next-Sample-Number"] == "1398"
     preview = client.post("/api/assignments/numbering/preview", json={"sample_ids": ["sample-one", "new-unallocated"]}).json()
-    assert preview == {"next_number": 1398, "numbers": {"sample-one": "1397"}}
+    assert preview == {"next_number": 1398, "numbers": {"sample-one": "1397"}, "conflicts": {}}
 
 
 def test_cached_assignment_download_survives_template_deletion(client):

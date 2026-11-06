@@ -14,7 +14,7 @@
   const state = {
     templates: [], items: [], loaded: false, loading: false, busy: false, source: '', sourceUrl: '',
     text: '', today: '', nextNumber: null, initialNumber: '', jobId: uid(), result: null, editing: null,
-    issuers: [], issuerId: '', warnings: []
+    issuers: [], issuerId: '', warnings: [], numbersChecking:false, numberError:''
   };
   const clone = value => JSON.parse(JSON.stringify(value));
   const changed = () => window.OZWorkspace?.changed('assignments');
@@ -51,8 +51,8 @@
           <div class="assignment-number-footer"><p id="assignment-next-label"></p><button id="assignment-change-next" type="button" class="text-button" hidden>Задати початковий номер</button></div>
           <div class="assignment-number-footer"><p id="assignment-issuer-summary">Особа, яка сформулювала та видала завдання: з обраного шаблону.</p><button id="assignment-open-issuer" type="button" class="button secondary">Хто видає завдання</button></div>
         </section>
-        <div class="section-heading"><div><h2>Зразки <span id="assignment-item-count" class="count-pill">0</span></h2><p>Підбір виконується за назвою продукту та НД на відповідність.</p></div><div class="assignment-heading-actions"><button id="assignment-select-unambiguous" type="button" class="button secondary">${icon('check')}Обрати однозначні шаблони</button><button id="assignment-add-item" type="button" class="button secondary">${icon('plus')}Додати зразок</button></div></div>
-        <div id="assignment-items"></div>
+        <div class="section-heading"><div><h2>Зразки <span id="assignment-item-count" class="count-pill">0</span></h2><p>Підбір виконується за назвою продукту та НД на відповідність.</p></div><div class="assignment-heading-actions"><button id="assignment-select-unambiguous" type="button" class="button secondary">${icon('check')}Обрати однозначні шаблони</button><button id="assignment-add-before" type="button" class="button secondary">${icon('plus')}Додати на початок</button><button id="assignment-add-item" type="button" class="button secondary">${icon('plus')}Додати в кінець</button></div></div>
+        <div id="assignment-items"></div><div class="source-actions"><button id="assignment-add-after-bottom" type="button" class="button secondary">${icon('plus')}Додати зразок у кінець</button></div>
         <div id="assignment-empty" class="panel empty-state" hidden><h3>Зразки ще не визначено</h3><p>Додайте зразок вручну або виправте текст акта.</p></div>
         <div class="notice soft">${icon('info')}<div>Перевірте нормативний документ для кожного продукту. Вага та кількість автоматично підставляються з обраного шаблону кожного відділення. За потреби відредагуйте їх; очищене вручну поле буде позначено «[НЕ ЗАПОВНЕНО]».</div></div>
         <section class="panel generation-panel"><div><label class="confirmation"><input id="assignment-confirmed" type="checkbox"><span>Я перевірив(-ла) зразки, НД, відділення та відповідність кожного шаблону.</span></label><p id="assignment-generation-help" class="generation-help"></p></div><button id="assignment-generate" type="button" class="button primary" disabled>${icon('download')}Створити завдання</button></section>
@@ -266,7 +266,7 @@
 
   function blankItem(data = {}) {
     const departments = Object.fromEntries(DEPTS.map(d => [d.id, {enabled:false, template_id:'', sample_weight:'', weight_edited:false, weight_from_template:false}]));
-    return {id: uid(), product_name:'', standard:'', sample_weight:'', assigned_number:null, matches:{}, reviewMatches:{}, matched:false,
+    return {id: uid(), product_name:'', standard:'', sample_weight:'', assigned_number:null, sample_number:'', allow_number_reuse:false, number_conflict:null, matches:{}, reviewMatches:{}, matched:false,
       sources:Object.fromEntries(['product_name','standard','sample_weight'].map(key => [key,{kind:'manual',label:'Введено вручну'}])), ...data, departments};
   }
   function defaultDepartmentWeight(item, departmentId) {
@@ -323,31 +323,61 @@
     $('#assignment-confirmed').checked = false;
     $('#assignment-success').hidden = true;
     document.dispatchEvent(new CustomEvent('protokol:assignments-invalidated'));
-    $$('.assignment-number-preview').forEach((node, index) => node.textContent = previewNumber(index));
+    updateNumberWarnings();
     changed();
   }
   function startingNumber() {
-    if (state.nextNumber !== null) return Number(state.nextNumber);
+    if (state.nextNumber !== null) return state.nextNumber <= 2147483647 ? Number(state.nextNumber) : null;
     const value = Number(state.initialNumber);
     return Number.isInteger(value) && value >= 1 && value <= 2147483647 ? value : null;
   }
   function previewNumber(index) {
-    if (state.items[index]?.assigned_number) return String(state.items[index].assigned_number);
-    const value = startingNumber();
-    const offset = state.items.slice(0,index).filter(item => !item.assigned_number).length;
-    return value === null ? '—' : String(value + offset);
+    const reserved = new Set(state.items.flatMap(item => {
+      const value = item.assigned_number || item.sample_number;
+      return value && Number.isInteger(Number(value)) ? [Number(value)] : [];
+    }));
+    let candidate = startingNumber();
+    for (let i=0;i<=index;i++) {
+      const item = state.items[i];
+      if (!item) return '—';
+      let value = item.assigned_number || item.sample_number;
+      if (!value) {
+        if (candidate===null) return '—';
+        while(reserved.has(candidate))candidate++;
+        value=candidate++;reserved.add(Number(value));
+      }
+      if(i===index)return Number.isInteger(Number(value))&&Number(value)>=1&&Number(value)<=2147483647?String(value):'—';
+    }
   }
+  let numberRequest=0,numberTimer=null;
+  function requestedNumbers(){return Object.fromEntries(state.items.filter(item=>!item.assigned_number&&item.sample_number&&Number.isInteger(Number(item.sample_number))&&Number(item.sample_number)>=1&&Number(item.sample_number)<=2147483647).map(item=>[item.id,Number(item.sample_number)]));}
+  function updateNumberWarnings(){state.items.forEach((item,index)=>{
+    const card=$(itemSelector(item));if(!card)return;
+    const label=$('[data-number-reuse-label]',card),message=$('[data-number-conflict]',card);
+    if(label)label.hidden=!item.number_conflict||!!item.assigned_number;
+    if(message)message.textContent=`Номер ${item.number_conflict} раніше використаний. Оберіть інший або підтвердьте повторне використання.`;
+    const box=$('[data-number-reuse]',card);if(box)box.checked=!!item.allow_number_reuse;
+    const input=$('[data-assignment-number]',card);
+    if(input){input.placeholder=previewNumber(index);input.readOnly=!!item.assigned_number;if(item.assigned_number)input.value=item.assigned_number;}
+  });$$('.assignment-number-preview').forEach((node,index)=>node.textContent=previewNumber(index));}
   async function hydrateNumbers() {
-    if (!state.items.length) return;
+    const request=++numberRequest;
+    if (!state.items.length) {state.numbersChecking=false;state.numberError='';return;}
     const ids = state.items.map(item => item.id);
+    const requested=requestedNumbers(),signature=JSON.stringify([ids,requested]);
+    state.numbersChecking=true;updateReadiness();
     try {
-      const response = await post('/api/assignments/numbering/preview', {sample_ids:ids});
+      const response = await post('/api/assignments/numbering/preview', {sample_ids:ids,requested_numbers:requested});
       const result = await response.json();
+      if(request!==numberRequest||signature!==JSON.stringify([state.items.map(item=>item.id),requestedNumbers()]))return;
       if (result.next_number !== undefined) state.nextNumber = result.next_number;
       state.items.forEach(item => {
         if (result.numbers?.[item.id] !== undefined) item.assigned_number = String(result.numbers[item.id]);
+        item.number_conflict=result.conflicts?.[item.id]||null;
       });
-    } catch (error) { notice(`Не вдалося перевірити номери зразків: ${error.message}`, true); }
+      state.numberError='';
+    } catch (error) {if(request===numberRequest){state.numberError=`Не вдалося перевірити номери зразків: ${error.message}`;notice(state.numberError,true);}}
+    finally{if(request===numberRequest){state.numbersChecking=false;updateNumberWarnings();updateReadiness();}}
   }
   function renderNumbering() {
     const input = $('#assignment-start-number');
@@ -518,11 +548,12 @@
     $('#assignment-empty').hidden = state.items.length > 0;
     $('#assignment-items').innerHTML = state.items.map((item, index) => `<article class="panel item-card assignment-item" data-assignment-item="${esc(item.id)}">
       <div class="item-heading"><div class="item-label"><span class="item-number">${index + 1}</span><div><h3 class="item-title">${esc(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Номер зразка: <strong class="assignment-number-preview">${esc(previewNumber(index))}</strong> · той самий для всіх відділень</p></div></div><button type="button" class="icon-button danger assignment-remove" aria-label="Видалити зразок ${index + 1}">${icon('trash')}</button></div>
+      <div class="form-grid"><label class="field"><span>Номер зразка</span><input type="number" min="1" max="2147483647" step="1" data-assignment-number value="${esc(item.assigned_number||item.sample_number||'')}" placeholder="${esc(previewNumber(index))}" ${item.assigned_number?'readonly':''}><small>${item.assigned_number?'Уже присвоєний номер зберігається.':'Порожнє поле — автоматична нумерація. Можна вказати номер окремо для цього зразка.'}</small></label></div><label class="confirmation notice warning" data-number-reuse-label ${item.number_conflict&&!item.assigned_number?'':'hidden'}><input type="checkbox" data-number-reuse ${item.allow_number_reuse?'checked':''}><span><span data-number-conflict>Номер ${esc(item.number_conflict)} раніше використаний.</span> Підтверджую повторне використання.</span></label>
       <div class="form-grid"><label class="field wide"><span>Назва зразка *</span><input data-assignment-field="product_name" value="${esc(item.product_name)}" placeholder="Повне найменування з акта" required>${sourceHint(item,'product_name')}</label><label class="field"><span>НД на відповідність *</span><input data-assignment-field="standard" value="${esc(item.standard)}" placeholder="Наприклад, ДСТУ 4450:2005" required>${sourceHint(item,'standard')}</label><label class="field"><span>Спільна вага та кількість (за потреби)</span><input data-assignment-field="sample_weight" value="${esc(item.sample_weight)}" placeholder="Залиште порожнім для ваги з шаблонів"><small>Замінює вагу з шаблонів для відділень без ручних змін.</small>${sourceHint(item,'sample_weight')}</label></div>
       <div class="assignment-match-toolbar"><button type="button" class="text-button assignment-find">Підібрати за назвою та НД</button><small>Дата видачі: ${esc(displayDate(state.today))}</small></div>
       <div class="assignment-departments">${DEPTS.map(d => renderDepartment(item,d)).join('')}</div>
     </article>`).join('');
-    updateReadiness();
+    updateNumberWarnings();updateReadiness();
   }
   async function findMatches(item, render = true) {
     if (!item.product_name.trim() || !item.standard.trim()) return notice('Спочатку вкажіть назву та НД зразка.', true);
@@ -556,6 +587,12 @@
     if (!card) return;
     const item = state.items.find(v => v.id === card.dataset.assignmentItem);
     if (!item) return;
+    if(input.matches('[data-assignment-number]')){
+      if(item.assigned_number)return;
+      item.sample_number=input.value;item.allow_number_reuse=false;item.number_conflict=null;
+      invalidate();updateNumberWarnings();updateReadiness();clearTimeout(numberTimer);
+      state.numbersChecking=true;updateReadiness();numberTimer=setTimeout(()=>hydrateNumbers(),250);return;
+    }
     if (input.dataset.deptSearch) {
       $(`[data-dept-template="${input.dataset.deptSearch}"]`,card).innerHTML = templateOptions(item,input.dataset.deptSearch,input.value);
       return;
@@ -595,6 +632,7 @@
     if (!card) return;
     const item = state.items.find(v => v.id === card.dataset.assignmentItem);
     if (!item) return;
+    if(input.matches('[data-number-reuse]')){item.allow_number_reuse=input.checked;invalidate();updateReadiness();return;}
     if (input.dataset.deptEnabled) {
       item.departments[input.dataset.deptEnabled].enabled = input.checked;
       invalidate(); renderItems();
@@ -652,13 +690,24 @@
       invalidate(); renderItems();
     }
   });
-  $('#assignment-add-item').addEventListener('click', async () => {
-    state.items.push(blankItem());
+  async function addSample(where) {
+    if(state.busy||state.numbersChecking)return;
+    if(state.items.length>=100)return notice('В одному списку може бути до 100 зразків.',true);
+    const previews=state.items.map((_,index)=>Number(previewNumber(index)));
+    const numbers=previews.filter(Number.isInteger);
+    const value=numbers.length?(where==='before'?Math.min(...numbers)-1:Math.max(...numbers)+1):null;
+    if(value!==null&&(value<1||value>2147483647))return notice('Для зразка потрібен додатний номер у дозволеному діапазоні.',true);
+    state.items.forEach((item,index)=>{const number=previews[index];if(!item.assigned_number&&Number.isInteger(number)&&number>=1)item.sample_number=String(number);});
+    const item=blankItem({sample_number:value===null?'':String(value)});
+    if(where==='before')state.items.unshift(item);else state.items.push(item);
     invalidate(); await hydrateNumbers(); renderNumbering(); renderItems(); renderSource();
-    const card = $$('.assignment-item').at(-1);
+    const card = $(itemSelector(item));
     card.scrollIntoView({behavior:'smooth',block:'center'});
     $('input[data-assignment-field="product_name"]',card).focus({preventScroll:true});
-  });
+  }
+  $('#assignment-add-item').addEventListener('click',()=>addSample('after'));
+  $('#assignment-add-before').addEventListener('click',()=>addSample('before'));
+  $('#assignment-add-after-bottom').addEventListener('click',()=>addSample('after'));
   $('#assignment-select-unambiguous').addEventListener('click', () => {
     if (state.busy || !state.loaded || !state.items.length) return;
     invalidate();
@@ -680,9 +729,16 @@
     const issues = [];
     if (!state.loaded) issues.push('завантаження налаштувань');
     if (!state.items.length) issues.push('принаймні один зразок');
-    if (state.items.some(item => !item.assigned_number) && startingNumber() === null) issues.push('початковий номер зразка');
+    if (state.items.some(item => !item.assigned_number&&!item.sample_number) && startingNumber() === null) issues.push('початковий номер зразка');
+    if(state.numbersChecking)issues.push('перевірка номерів');
+    if(state.numberError)issues.push(state.numberError);
+    const seenNumbers=new Set();
     let count = 0;
     state.items.forEach((item,index) => {
+      const number=previewNumber(index);
+      if(number==='—')issues.push(`зразок ${index+1}: коректний номер`);
+      if(seenNumbers.has(number))issues.push(`повторний номер ${number}`);seenNumbers.add(number);
+      if(item.number_conflict&&!item.allow_number_reuse&&!item.assigned_number)issues.push(`зразок ${index+1}: підтвердження повторного номера`);
       if (!item.product_name.trim()) issues.push(`зразок ${index + 1}: назва`);
       if (!item.standard.trim()) issues.push(`зразок ${index + 1}: НД`);
       const selected = DEPTS.filter(d => item.departments[d.id].enabled);
@@ -702,6 +758,7 @@
     const ready = !issues.length && confirmed && !state.busy;
     $('#assignment-generate').disabled = !ready;
     $('#assignment-select-unambiguous').disabled = state.busy || !state.loaded || !state.items.length;
+    ['#assignment-add-item','#assignment-add-before','#assignment-add-after-bottom'].forEach(id=>{$(id).disabled=state.busy||state.numbersChecking||state.items.length>=100;});
     $('#assignment-generation-help').classList.toggle('ready',ready);
     $('#assignment-generation-help').textContent = issues.length ? `Потрібно: ${issues.slice(0,3).join('; ')}${issues.length > 3 ? `; ще ${issues.length - 3}` : ''}.` : !confirmed ? 'Підтвердьте перевірку даних і шаблонів.' : state.result ? 'Архів можна завантажити повторно з тими самими номерами.' : `Буде створено ${count} завдань для ${state.items.length} зразків.`;
     $('#assignment-generate').innerHTML = state.busy ? 'Створюємо завдання…' : `${icon('download')}${state.result ? 'Завантажити повторно' : 'Створити завдання'}`;
@@ -711,10 +768,17 @@
     const add = (message,selector,level = 'error') => issues.push({message,selector,level,section:'assignments'});
     if (!state.loaded) add('Не завантажено шаблони та налаштування завдань.','#assignment-retry');
     if (!state.items.length) add('Додайте принаймні один зразок.','#assignment-manual');
-    if (state.items.some(item => !item.assigned_number) && startingNumber() === null) add('Укажіть початковий номер нового зразка.','#assignment-start-number');
+    if (state.items.some(item => !item.assigned_number&&!item.sample_number) && startingNumber() === null) add('Укажіть початковий номер нового зразка.','#assignment-start-number');
+    if(state.numbersChecking)add('Триває перевірка номерів зразків.','#assignment-start-number');
+    if(state.numberError)add(state.numberError,'#assignment-start-number');
+    const seenNumbers=new Set();
     state.items.forEach((item,index) => {
       const base = itemSelector(item);
       const field = key => `${base} [data-assignment-field="${key}"]`;
+      const number=previewNumber(index);
+      if(number==='—')add(`Зразок ${index+1}: укажіть коректний номер.`,`${base} [data-assignment-number]`);
+      if(seenNumbers.has(number))add(`Номер ${number} повторюється у списку.`,`${base} [data-assignment-number]`);seenNumbers.add(number);
+      if(item.number_conflict&&!item.allow_number_reuse&&!item.assigned_number)add(`Номер ${number} раніше використаний. Підтвердьте повторне використання або змініть номер.`,`${base} [data-number-reuse]`);
       if (!item.product_name.trim()) add(`Зразок ${index+1}: не заповнено назву.`,field('product_name'));
       if (!item.standard.trim()) add(`Зразок ${index+1}: не заповнено НД на відповідність.`,field('standard'));
       const selected = DEPTS.filter(department => item.departments[department.id].enabled);
@@ -737,6 +801,7 @@
     const payload = state.result?.payload || {
       job_id:state.jobId, confirmed:true, start_number:base, issuer_id:state.issuerId,
       items:state.items.map(item => ({id:item.id,product_name:item.product_name.trim(),standard:item.standard.trim(),sample_weight:item.sample_weight.trim(),
+        ...(!item.assigned_number&&item.sample_number?{sample_number:Number(item.sample_number),allow_number_reuse:!!item.allow_number_reuse}:{}),
         departments:Object.fromEntries(DEPTS.filter(d => item.departments[d.id].enabled).map(d => [d.id,{template_id:item.departments[d.id].template_id,sample_weight:item.departments[d.id].sample_weight.trim(),allow_standard_override:!!item.departments[d.id].allow_standard_override}]))}))
     };
     state.busy = true;
@@ -860,7 +925,7 @@
     hasData:() => state.items.length > 0 || !!state.text || !!state.source,
     snapshot:() => state.items.length || state.text || state.source ? ({source:state.source,sourceGroup:state.sourceGroup||'',text:state.text,sourceHadFile:!!state.sourceUrl,warnings:clone(state.warnings),
       initialNumber:state.initialNumber,issuerId:state.issuerId,
-      items:state.items.map(item => ({id:item.id,product_name:item.product_name,standard:item.standard,sample_weight:item.sample_weight,
+      items:state.items.map(item => ({id:item.id,product_name:item.product_name,standard:item.standard,sample_weight:item.sample_weight,sample_number:item.sample_number||'',allow_number_reuse:!!item.allow_number_reuse,
         sources:clone(item.sources || {}),departments:Object.fromEntries(DEPTS.map(department => {
           const selection = item.departments[department.id];
           return [department.id,{enabled:!!selection.enabled,template_id:selection.template_id,sample_weight:selection.sample_weight,
@@ -878,7 +943,7 @@
         const id = typeof saved.id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(saved.id) && !seen.has(saved.id) ? saved.id : uid();
         seen.add(id);
         const item = blankItem({id,product_name:String(saved.product_name || '').slice(0,12000),standard:String(saved.standard || '').slice(0,12000),
-          sample_weight:String(saved.sample_weight || '').slice(0,12000),sources:saved.sources && typeof saved.sources === 'object' ? clone(saved.sources) : {}});
+          sample_weight:String(saved.sample_weight || '').slice(0,12000),sample_number:String(saved.sample_number||'').slice(0,30),allow_number_reuse:!!saved.allow_number_reuse,sources:saved.sources && typeof saved.sources === 'object' ? clone(saved.sources) : {}});
         choices.set(id,clone(saved.departments || {}));
         return item;
       });

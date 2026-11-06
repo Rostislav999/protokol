@@ -25,6 +25,74 @@ def test_preview_is_read_only_and_initial_number_is_required(tmp_path):
     assert store.status() == {"next_number": None}
 
 
+def test_backfill_and_append_preserve_issued_range_and_counter_across_restart(tmp_path):
+    path = tmp_path / 'numbering.sqlite3'
+    store = NumberingStore(path)
+    keys = [f'sample-{number}' for number in range(1418, 1433)]
+    assert generate(store, keys=keys, start=1418)[1] == [str(n) for n in range(1418, 1433)]
+    assert store.requested_conflicts(['before', *keys, 'after'], {'before': 1417, 'after': 1433}) == {}
+    assert store.status()['next_number'] == 1433
+    archive, numbers = store.generate_with_numbers('expanded', ['before', *keys, 'after'], 1433, build,
+                                                  payload_hash='expanded', requested_numbers={'before': 1417, 'after': 1433})
+    assert numbers == [str(n) for n in range(1417, 1434)]
+    restarted = NumberingStore(path)
+    assert restarted.status()['next_number'] == 1434
+    assert restarted.get_sample_numbers(keys) == dict(zip(keys, map(str, range(1418, 1433))))
+    assert restarted.generate_with_numbers('expanded', ['before', *keys, 'after'], 1433,
+                                          lambda _: pytest.fail('Unexpected render'), payload_hash='expanded',
+                                          requested_numbers={'before': 1417, 'after': 1433}) == (archive, numbers)
+
+
+def test_backfill_alone_does_not_rewind_counter_and_render_failure_consumes_nothing(tmp_path):
+    store = NumberingStore(tmp_path / 'numbering.sqlite3')
+    generate(store, start=1418)
+    def failure(numbers):
+        assert numbers == ['1417', '1418']
+        raise ValueError('Render failed')
+    arguments = dict(job_id='backfill', sample_keys=['before', 'sample-a'], start_number=1419,
+                     payload_hash='backfill', requested_numbers={'before': 1417})
+    with pytest.raises(ValueError, match='Render failed'):
+        store.generate_with_numbers(**arguments, builder=failure)
+    assert store.status()['next_number'] == 1419 and not store.get_sample_numbers(['before'])
+    assert store.generate_with_numbers(**arguments, builder=build)[1] == ['1417', '1418']
+    assert store.status()['next_number'] == 1419
+
+
+def test_manual_number_collision_requires_confirmation_and_cannot_duplicate_current_list(tmp_path):
+    store = NumberingStore(tmp_path / 'numbering.sqlite3')
+    generate(store, start=1417)
+    assert store.requested_conflicts(['new'], {'new': 1417}) == {'new': 1417}
+    arguments = dict(job_id='reuse', sample_keys=['new'], start_number=1418, builder=build,
+                     payload_hash='reuse', requested_numbers={'new': 1417})
+    with pytest.raises(NumberingError, match='раніше використані'):
+        store.generate_with_numbers(**arguments)
+    assert store.generate_with_numbers(**arguments, allow_reuse={'new'})[1] == ['1417']
+    assert store.status()['next_number'] == 1418
+    with pytest.raises(NumberingError, match='поточному списку'):
+        store.generate_with_numbers('duplicate', ['sample-a', 'another'], 1418, build, payload_hash='duplicate',
+                                    requested_numbers={'another': 1417}, allow_reuse={'another'})
+    with pytest.raises(NumberingError, match='змінити не можна'):
+        store.generate_with_numbers('renumber', ['sample-a'], 1418, build, payload_hash='renumber',
+                                    requested_numbers={'sample-a': 1416})
+
+
+def test_automatic_numbers_skip_manually_reserved_and_existing_numbers_in_current_list(tmp_path):
+    store = NumberingStore(tmp_path / 'numbering.sqlite3')
+    generate(store, start=100)
+    store.set_next_number(100)
+    assert store.generate_with_numbers('mixed', ['manual', 'sample-a', 'auto'], 100, build,
+                                      payload_hash='mixed', requested_numbers={'manual': 101})[1] == ['101', '100', '102']
+    assert store.status()['next_number'] == 103
+
+
+@pytest.mark.parametrize('value', [True, 0, -1, 1.5, '1417', MAX_SAMPLE_NUMBER + 1])
+def test_manual_number_validation_does_not_allocate(tmp_path, value):
+    store = NumberingStore(tmp_path / 'numbering.sqlite3')
+    with pytest.raises(NumberingError):
+        store.generate_with_numbers('manual', ['new'], 1418, build, payload_hash='manual', requested_numbers={'new': value})
+    assert store.status()['next_number'] is None
+
+
 def test_numbers_are_shared_across_departments_and_advance_per_sample(tmp_path):
     store = NumberingStore(tmp_path / "numbering.sqlite3")
     archive, numbers = generate(store, keys=["a", "a", "a", "b", "b", "b"], start=1330)
