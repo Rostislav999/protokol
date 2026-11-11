@@ -47,12 +47,17 @@ def _number(value: Decimal) -> str:
 
 def _quantity(value: str) -> tuple[int, str] | None:
     text = _space(value).strip(". ")
+    retort = re.fullmatch(
+        r"\(?\s*([0-9]+)\s+реторт[- ]?пакет(?:ів|и)?\s+по\s+[0-9]+(?:[.,][0-9]+)?\s*(?:г|кг)\s*\)?",
+        text, re.I)
+    if retort:
+        text = retort[1] + " реторт-пакетів"
     match = re.fullmatch(r"([0-9]+)\s*(?:\(?\s*([^()]+?)\s*\)?)?", text)
     if not match or not 0 < int(match[1]) <= 1_000_000:
         return None
     unit = (match[2] or "шт").strip(". ")
     # Only clearly expressed package-count units may supplement sample mass.
-    if not re.fullmatch(r"(?:шт|штук|од|одиниць|ж\s*/\s*б|жб|скл\s*/\s*б|пакет(?:ів|и)?|стік-пакет(?:ів|и)?)", unit, re.I):
+    if not re.fullmatch(r"(?:шт|штук|од|одиниць|ж\s*/\s*б|жб|скл\s*/\s*б|пакет(?:ів|и)?|стік-пакет(?:ів|и)?|реторт[- ]?пакет(?:ів|и)?)", unit, re.I):
         return None
     unit = re.sub(r"\s*/\s*", "/", unit)
     unit = {"штук": "шт", "жб": "ж/б"}.get(unit.lower(), unit)

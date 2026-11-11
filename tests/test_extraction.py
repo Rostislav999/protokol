@@ -130,6 +130,31 @@ def test_native_pdf_text_extraction_does_not_require_ocr(monkeypatch):
     assert "native extraction" in result["text"]
 
 
+def test_pixel_sized_scanned_pdf_does_not_enlarge_its_full_page_raster(monkeypatch):
+    import fitz
+    from PIL import Image
+    import app.extraction as extraction
+    image = Image.new('RGB', (1652, 2338), 'white')
+    stream = io.BytesIO()
+    image.save(stream, 'PNG')
+    document = fitz.open()
+    document.new_page(width=1652, height=2338).insert_image(
+        fitz.Rect(0, 0, 1652, 2338), stream=stream.getvalue())
+    data = document.tobytes()
+    document.close()
+    sizes = []
+    monkeypatch.setattr(extraction, '_ocr_languages', lambda: ('ukr', []))
+    monkeypatch.setattr(extraction, '_orient_image', lambda image, language: (image, 0))
+    monkeypatch.setattr(extraction, '_ocr_table', lambda *a: None)
+    def recognize(image, language):
+        sizes.append(image.size)
+        return 'Суп гороховий'
+    monkeypatch.setattr(extraction, '_ocr_image', recognize)
+    result = extract_text(data, 'scan.pdf')
+    assert result['text'] == 'Суп гороховий'
+    assert sizes == [(1652, 2338)]
+
+
 def test_ruled_table_detection_keeps_cells_and_continues_on_next_page(monkeypatch):
     pytest.importorskip("cv2")
     from PIL import Image, ImageDraw

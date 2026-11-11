@@ -30,6 +30,54 @@ def test_uncertain_page_keeps_its_original_orientation(monkeypatch):
     assert angle == 0 and result.size == source.size
 
 
+@pytest.mark.parametrize('skew', [0, 1.2])
+@pytest.mark.parametrize('damaged_numbers', [False, True])
+def test_copier_streak_and_column_number_row_do_not_destroy_table(monkeypatch, skew, damaged_numbers):
+    pytest.importorskip('cv2')
+    image = Image.new('RGB', (1050, 740), 'white')
+    draw = ImageDraw.Draw(image)
+    xs, ys = [80, 120, 400, 600, 760, 900, 1030], [100, 200, 220, 400, 590]
+    for x in xs:
+        draw.line((x, ys[0], x, ys[-1]), fill='black', width=2)
+    for y in ys:
+        draw.line((xs[0], y, xs[-1], y), fill='black', width=2)
+    draw.line((0, 400, xs[-1], 400), fill='black', width=2)
+    if skew:
+        image = image.rotate(skew, fillcolor='white')
+    numbers = ['7', 'з', 'а', 'я', 'Р'] if damaged_numbers else ['2', '3', '4', '5', '6']
+    values = iter([
+        '№', 'Назва продукту', 'Виробник', 'Дата виготовлення', 'Маса партії', 'Нормативний документ',
+        *numbers,
+        'Суп гороховий', 'ТОВ Приклад', '02.11.2026', '1350 кг', 'ТУ У 10.8-00419880-172:2023',
+        'Горох зі свининою', 'ТОВ Приклад', '02.11.2026', '910 кг', 'ТУ У 10.1-00419880-173:2023',
+    ])
+    monkeypatch.setattr(extraction, '_ocr_image', lambda *a, **k: next(values))
+    result = extraction._ocr_table(image, 'ukr')
+    assert result is not None
+    assert result['rows'] == 2
+    items = extraction.parse_act(result['text'])['items']
+    assert [item['product_name'] for item in items] == ['Суп гороховий', 'Горох зі свининою']
+    assert items[0]['standard'] == 'ТУ У 10.8-00419880-172:2023'
+    values = iter([
+        '№', 'unclear heading', 'Виробник', 'Дата виготовлення', 'Маса партії', 'unclear heading',
+        *numbers,
+        'Суп гречаний', 'ТОВ Приклад', '03.11.2026', '2600 кг', 'ТУ У 10.8-00419880-172:2023',
+        'Каша пшенична', 'ТОВ Приклад', '03.11.2026', '910 кг', 'ТУ У 10.1-00419880-173:2023',
+    ])
+    continued = extraction._ocr_table(image, 'ukr', previous_header=result['header'])
+    assert continued['rows'] == 2
+    items = extraction.parse_act(continued['text'])['items']
+    assert [item['product_name'] for item in items] == ['Суп гречаний', 'Каша пшенична']
+    assert items[1]['standard'] == 'ТУ У 10.1-00419880-173:2023'
+
+
+def test_damaged_product_heading_is_not_mistaken_for_catalog_column():
+    assert extraction._header_field('Пазбс харчового продукту згідно на- несеного маркування № за Каталогом') == 'product_name'
+    assert extraction._header_field('Номер за каталогом продуктів харчування') == 'catalog_number'
+    assert extraction._header_field('Hasse харчевого продукту згідно нанесеного маркування за Каталогом') == 'product_name'
+    assert extraction._header_field('Маса паргнії, від якої відібрано зразки') == 'batch_size'
+
+
 @pytest.mark.parametrize('ambiguous_seals', [False, True])
 def test_table_retains_third_sample_when_warp_clips_outer_border(monkeypatch, ambiguous_seals):
     cv2 = pytest.importorskip('cv2')

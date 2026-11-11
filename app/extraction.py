@@ -113,6 +113,20 @@ def _ocr_table(image, language: str, previous_header=None):
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                    cv2.THRESH_BINARY_INV, 25, 15)
+    segments = cv2.HoughLinesP(binary, 1, np.pi / 1800, threshold=max(40, gray.shape[1] // 5),
+                               minLineLength=gray.shape[1] // 2, maxLineGap=20)
+    if segments is not None:
+        angles = [np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                  for x1, y1, x2, y2 in segments[:, 0] if x2 > x1 and abs(y2 - y1) < (x2 - x1) * .09]
+        if len(angles) >= 3:
+            angle = float(np.median(angles))
+            if .1 < abs(angle) < 5:
+                transform = cv2.getRotationMatrix2D((source_rgb.shape[1] / 2, source_rgb.shape[0] / 2), angle, 1)
+                source_rgb = cv2.warpAffine(source_rgb, transform, (source_rgb.shape[1], source_rgb.shape[0]), borderValue=(255, 255, 255))
+                image = Image.fromarray(source_rgb)
+                rgb = cv2.resize(source_rgb, (rgb.shape[1], rgb.shape[0]))
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 25, 15)
     binary = cv2.dilate(binary, np.ones((3, 3), np.uint8))
     height, width = gray.shape
     horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, width // 15), 1)))
@@ -126,6 +140,18 @@ def _ocr_table(image, language: str, previous_header=None):
         return None
     hull = cv2.convexHull(contour)
     corners = cv2.approxPolyDP(hull, .02 * cv2.arcLength(hull, True), True)
+    if len(corners) > 4:
+        # A copier streak connected to the grid can add a fifth hull vertex.
+        # Allow a small protrusion, while retaining most of the detected grid.
+        candidate = corners.copy()
+        while len(candidate) > 4:
+            # Remove the vertex contributing the least area, rather than
+            # increasing Douglas-Peucker's tolerance (which can cut a real
+            # corner before it removes the streak).
+            variants = [np.delete(candidate, index, axis=0) for index in range(len(candidate))]
+            candidate = max(variants, key=cv2.contourArea)
+        if len(candidate) == 4 and cv2.contourArea(candidate) >= cv2.contourArea(hull) * .9:
+            corners = candidate
     if len(corners) != 4:
         return None
     points = corners[:, 0].astype(np.float32)
@@ -172,8 +198,9 @@ def _ocr_table(image, language: str, previous_header=None):
         return None
     pad = max(3, width // 500)
     cache = {}
-    def cell(row, column, rotation=0):
-        key = row, column, rotation
+    def cell(row, column, rotation=0, recognition_language=None):
+        recognition_language = recognition_language or language
+        key = row, column, rotation, recognition_language
         if key not in cache:
             left, right = xs[column] + pad, xs[column + 1] - pad
             upper, lower = ys[row] + pad, ys[row + 1] - pad
@@ -186,12 +213,33 @@ def _ocr_table(image, language: str, previous_header=None):
                 # A white border prevents tightly cropped letters touching edges.
                 from PIL import ImageOps
                 crop = ImageOps.expand(crop, border=12, fill="white")
-                cache[key] = _normalize(_ocr_image(crop, language, psm=6))
+                cache[key] = _normalize(_ocr_image(crop, recognition_language, psm=6))
         return cache[key]
     first_row = [cell(0, i) for i in range(len(xs) - 1)]
     fields = [_header_field(value) for value in first_row]
+    # Retry an unclassified header with Ukrainian alone: English recognition
+    # can turn «відповідність» into Latin gibberish in this narrow column.
+    for column, value in enumerate(first_row):
+        if fields[column] is None and "ukr" in language.split("+") and re.search(r"дослідж.*\bна\b", value, re.I):
+            left, right = xs[column] + pad, xs[column + 1] - pad
+            upper, lower = ys[0] + pad, ys[1] - pad
+            if right > left and lower > upper:
+                crop = Image.fromarray(table[round(upper * ratio):round(lower * ratio), round(left * ratio):round(right * ratio)])
+                retry = _normalize(_ocr_image(crop, "ukr", psm=6))
+                fields[column] = _header_field(retry)
     rotations = {}
     has_header = "product_name" in fields and sum(value is not None for value in fields) >= 3
+    prior_fields = previous_header.get("fields") if isinstance(previous_header, dict) else previous_header
+    if prior_fields is not None and len(prior_fields) == len(fields):
+        matches = sum(value is not None and value == prior for value, prior in zip(fields, prior_fields))
+        conflicts = any(value is not None and prior is not None and value != prior
+                        for value, prior in zip(fields, prior_fields))
+        if matches >= 3 and (has_header or not conflicts):
+            # Continuation pages repeat the labels, sometimes with a damaged
+            # product/standard heading. They are headers, not product rows.
+            fields = [value or prior for value, prior in zip(fields, prior_fields)]
+            has_header = "product_name" in fields
+            rotations = previous_header.get("rotations", {}) if isinstance(previous_header, dict) else {}
     if has_header:
         # The supplied act puts safe-package IDs in a narrow, rotated final
         # column. Read that labelled column explicitly rather than dropping it
@@ -205,20 +253,25 @@ def _ocr_table(image, language: str, previous_header=None):
                     rotations[last] = rotation
                     break
     if not has_header:
-        prior_fields = previous_header.get("fields") if isinstance(previous_header, dict) else previous_header
         if prior_fields is None or len(prior_fields) != len(fields):
             return None
         fields = prior_fields
         rotations = previous_header.get("rotations", {}) if isinstance(previous_header, dict) else {}
     if "product_name" not in fields:
         return None
+    ukrainian_labels = sum(bool(re.search(r"наз[вг]а|виробни|виготов|кількість|відібран", value, re.I))
+                           for value in first_row)
+    text_language = "ukr" if "ukr" in language.split("+") and ukrainian_labels >= 3 else language
+    if not has_header and isinstance(previous_header, dict):
+        text_language = previous_header.get("text_language", text_language)
     rows = []
     warnings = []
     for row in range(1 if has_header else 0, len(ys) - 1):
         item = _empty_item()
         for column, field in enumerate(fields):
             if field:
-                item[field] = cell(row, column, rotations.get(column, 0))
+                selected_language = text_language if field in ("product_name", "manufacturer", "standard", "sample_quantity") else language
+                item[field] = cell(row, column, rotations.get(column, 0), selected_language)
                 if (field == 'seal_number' and not re.search(r'\d{4,}', item[field])
                         and ys[row + 1] - ys[row] > (xs[column + 1] - xs[column]) * 1.15):
                     candidates = [cell(row, column, angle) for angle in (90, 270)]
@@ -230,6 +283,19 @@ def _ocr_table(image, language: str, previous_header=None):
                         item[field] = ''
                         warnings.append('Номер пломби у вертикальній комірці прочитано неоднозначно. Внесіть його вручну за сканом.')
         if not item["product_name"]:
+            continue
+        numbered_fields = ("product_name", "manufacturer", "manufacture_date", "batch_size",
+                           "standard", "sample_weight", "sample_quantity")
+        if (has_header and row == 1 and ys[row + 1] - ys[row] < (ys[1] - ys[0]) * .4
+                and sum(bool(item[field]) for field in numbered_fields) >= 4
+                and all(len(item[field]) <= 4 for field in numbered_fields)):
+            # The very shallow numbering band can OCR as letters (3 -> з,
+            # 4 -> а), so requiring correctly recognized digits is insufficient.
+            continue
+        # Many acts have a separate 1..13 column-number row below the labels.
+        if (re.fullmatch(r"\d{1,2}[.]?", item["product_name"])
+                and sum(bool(re.fullmatch(r"\d{1,2}[.]?", item[field]))
+                        for field in ("manufacturer", "manufacture_date", "batch_size")) >= 2):
             continue
         item["manufacturer"] = re.sub(r"^виробник\s*:\s*", "", item["manufacturer"], flags=re.I)
         item["batch_size"] = re.sub(r"(?<=\d)\s*(?:кі|кг|kg)\.?$", " кг", item["batch_size"], flags=re.I)
@@ -253,7 +319,7 @@ def _ocr_table(image, language: str, previous_header=None):
             header_text += "\nДата акта: " + recovered_date
             warnings.append("Дату акта уточнено окремим розпізнаванням заголовка. Перевірте її за сканом.")
     return {"text": header_text + "\n\n" + "\n".join(lines),
-            "header": {"fields": fields, "rotations": rotations}, "rows": len(rows), "warnings": warnings}
+            "header": {"fields": fields, "rotations": rotations, "text_language": text_language}, "rows": len(rows), "warnings": warnings}
 
 
 def extract_text(data: bytes, filename: str) -> dict:
@@ -323,6 +389,19 @@ def extract_text(data: bytes, filename: str) -> dict:
                         warnings.extend(language_warnings)
                     # 200 DPI balances small table text and CPU/memory use.
                     scale = 200 / 72
+                    # Some scanners store pixel dimensions as PDF points. Do
+                    # not enlarge an already legible full-page raster almost
+                    # eightfold in area; that creates no additional detail.
+                    native_scales = []
+                    for info in page.get_image_info():
+                        bounds = fitz.Rect(info["bbox"])
+                        if (bounds.width > 0 and bounds.height > 0
+                                and (bounds & page.rect).get_area() >= page.rect.get_area() * .9
+                                and max(info["width"], info["height"]) >= 2000):
+                            native_scales.append(max(info["width"] / bounds.width,
+                                                     info["height"] / bounds.height))
+                    if native_scales:
+                        scale = min(scale, max(native_scales))
                     if page.rect.width * page.rect.height * scale * scale > MAX_PIXELS:
                         raise ValueError("Сторінка PDF завелика для OCR (40 млн пікселів).")
                     pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
@@ -433,15 +512,16 @@ def _table_columns(line: str) -> list[str] | None:
 def _header_field(value: str) -> str | None:
     v = _normalize(value).lower().strip(".:")
     v = re.sub(r'(?<=[а-яіїєґ])[-\u00ad]\s*(?=[а-яіїєґ])', '', v)
-    if re.search(r"(?:вага|маса).*?(?:відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
+    batch_label = re.search(r"парті|паргні[їи]|партии", v)
+    if re.search(r"(?:вага|маса).*?(?:відібран|зраз|проб)", v) and not batch_label:
         return "sample_weight"
     if re.search(r"(?:кількість|од[иі][нч][иі]ць).*?(?:одиниць|відібран|зраз|проб)", v) and not re.search(r"парті|партии", v):
         return "sample_quantity"
     if re.search(r"пломб|сейф[\s-]*пакет|^пакет$", v):
         return "seal_number"
-    if re.search(r"нормативн.*документ|випробування.*відпов|дослідж.*(?:відпов|вілпов)|^нд$", v):
+    if re.search(r"нормативн.*документ|випробування.*відпов|дослід.*(?:[вз][іи]дпов|вілпов)|^нд$", v):
         return "standard"
-    if re.search(r"найменування|назва.*(?:продук|зраз)|наименование", v):
+    if re.search(r"найменування|наз[вг]а.*(?:продук|зраз)|харч[ое]в.*продукт.*(?:згід|марку)|наименование", v):
         return "product_name"
     if re.search(r"виробник|виготовлювач|производител|[пн]ідприємств.*(?:країн|єдрпоу)", v):
         return "manufacturer"
@@ -451,7 +531,7 @@ def _header_field(value: str) -> str | None:
         return "catalog_number"
     if re.search(r"ідентифікаці|номер.*(?:зраз|протокол)", v):
         return "protocol_number"
-    if re.search(r"парті|партии", v):
+    if batch_label:
         return "batch_size"
     return None
 
