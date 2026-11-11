@@ -466,6 +466,10 @@ def main() -> int:
     report_path = Path('build/windows/native-ui-result.json')
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding='utf-8')
+    if not result['ok'] and os.environ.get('GITHUB_ACTIONS') == 'true':
+        message = str(result.get('error', 'Native workspace check failed'))
+        message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        print('::error title=Native workspace check::' + message, flush=True)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
             summary.write('### Native workspace check\n\n```json\n' + report + '\n```\n')
