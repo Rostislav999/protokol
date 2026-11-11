@@ -58,7 +58,13 @@
   $('[data-dock-retry-archive]').onclick=async()=>{await window.OZOffice.retryArchive(active);schedule();};
   document.addEventListener('protokol:package-context',schedule);
   $('[data-office-refresh]').onclick=()=>{window.OZOffice.refresh();$('.dock-more').open=false;};
-  document.addEventListener('protokol:view',event=>{active=event.detail.name;$('[data-dock-error]').hidden=true;schedule();});
+  document.addEventListener('protokol:view',event=>{
+    active=event.detail.name;
+    // Navigation changes the available actions immediately, before a queued
+    // animation frame or a cached journal response can expose stale controls.
+    dock.hidden=!sources[active];source=null;$('[data-dock-primary]').disabled=true;
+    $('[data-dock-error]').hidden=true;schedule();
+  });
   for(const event of ['protokol:office-status','protokol:export-state','protokol:export-ready'])document.addEventListener(event,schedule);
   document.addEventListener('input',schedule);document.addEventListener('change',schedule);
   new MutationObserver(schedule).observe(document.querySelector('.main-content'),{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['disabled','hidden','class']});

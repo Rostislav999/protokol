@@ -59,6 +59,7 @@ SCRIPT = r'''void (async () => {try {
     assert(document.querySelector('#assignment-form-preview').textContent.includes('Міністерство оборони України'),'New form lost its original stationery');
     assert(document.querySelector('#assignment-form-preview').textContent.includes('Інший метод'),'Added method is absent from Word preview');
     assert(!document.querySelector('#assignment-form-preview').textContent.includes('ДСТУ 8449:2015'),'Blank form inherited old test methods');
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     console.log('OZ_FORM_EDITOR_CAPTURE');
     document.querySelector('#assignment-form-save').click();
     await wait(()=>!document.querySelector('#assignment-form-editor').open && document.querySelector('#assignment-template-count').textContent==='61');
@@ -259,8 +260,8 @@ SCRIPT = r'''void (async () => {try {
     assert(journal.length===2 && journal.every(entry=>entry.status==='draft'),'Draft letters were not registered');
     assert(journal.find(entry=>entry.identity==='general').outgoing_number==='UI-001','Outgoing number did not reach the register');
     document.querySelector('[data-view="outgoing"]').click();
-    await wait(()=>document.querySelectorAll('[data-open-letter]').length===2);
     assert(document.querySelector('.action-dock').hidden,'Editor actions overlap the outgoing register');
+    await wait(()=>document.querySelectorAll('[data-open-letter]').length===2);
     input('[data-journal-search]','ui-001');
     await wait(()=>document.querySelectorAll('[data-open-letter]').length===1);
     document.querySelector('[data-open-letter]').click();
