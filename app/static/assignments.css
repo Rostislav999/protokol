@@ -7,6 +7,23 @@
 @media(max-width:720px){.assignment-import-bar{flex-direction:column;align-items:flex-start;padding:13px}.assignment-import-bar .button{width:100%;white-space:normal}.assignment-tabs{gap:3px}.assignment-tabs button{padding:10px 9px;font-size:10px;gap:5px}.assignment-upload-panel{padding:20px;flex-direction:column;gap:15px}.assignment-upload-actions{margin-top:0;width:100%;flex-direction:column}.assignment-number-panel{padding:19px}.assignment-number-footer{align-items:flex-start;flex-direction:column;gap:10px}.assignment-match-toolbar{align-items:flex-start;gap:9px;flex-direction:column}.assignment-departments{grid-template-columns:1fr}.assignment-department{padding:13px}.assignment-dept-toggle{font-size:11px}.assignment-dept-fields .field input,.assignment-dept-fields .field select{font-size:12px}.assignment-standard-warning{font-size:10px}.assignment-tabs .count-pill{min-width:20px;font-size:9px}}
 
 .assignment-heading-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.assignment-form-editor{width:min(1160px,calc(100% - 24px));max-width:none;max-height:94vh;padding:0;overflow:hidden}
+.assignment-form-editor>form{display:flex;flex-direction:column;max-height:94vh}
+.assignment-form-editor .modal-heading,.assignment-form-editor .modal-footer{flex-shrink:0}
+.assignment-form-editor .modal-footer{flex-wrap:wrap;gap:10px}
+.assignment-form-editor .modal-footer .field-error{flex-basis:100%;margin:0}
+.assignment-form-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;overflow:auto;min-height:0}
+.assignment-form-fields{border:0;min-width:0;margin:0;padding:0;display:grid;gap:16px}
+.assignment-form-intro{font-size:var(--label-font,14px);line-height:1.6;color:var(--muted);margin:0}
+.assignment-form-row{border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;display:grid;gap:10px;background:var(--surface-subtle)}
+.assignment-form-row-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.assignment-form-row-heading>div{display:flex;gap:4px}
+.assignment-form-row textarea{resize:vertical;min-height:40px}
+.assignment-form-preview-panel{min-width:0;align-self:start;position:sticky;top:0}
+.assignment-form-preview-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+#assignment-form-preview-status{font-size:var(--caption-font,13px);color:var(--muted);line-height:1.5}
+#assignment-form-preview{min-height:440px;max-height:65vh;overflow:auto;background:var(--preview-bg);border:1px solid var(--line);border-radius:8px;padding:12px}
+@media(max-width:900px){.assignment-form-layout{grid-template-columns:minmax(0,1fr)}.assignment-form-preview-panel{position:static}#assignment-form-preview{max-height:70vh}.assignment-form-editor .modal-footer .button{flex:1 1 140px}}
 @media(max-width:720px){.assignment-heading-actions{flex-direction:column;align-items:stretch;flex-shrink:0;max-width:58%}.assignment-heading-actions .button{white-space:normal;text-align:center;padding:9px;font-size:10px}}
 
 .assignment-print-dialog{width:min(620px,calc(100% - 24px));max-height:90vh}.print-dialog-frame{display:flex;flex-direction:column;max-height:calc(90vh - 2px)}.assignment-print-dialog .modal-heading,.assignment-print-dialog .modal-footer{flex-shrink:0}.assignment-print-dialog .modal-body{overflow:auto;min-height:0}.assignment-print-dialog .field{margin:20px 0 10px}.assignment-print-dialog .modal-body>p,.assignment-print-dialog .modal-body>small{font-size:var(--label-font,14px);line-height:1.7;color:var(--muted);overflow-wrap:anywhere}.assignment-print-dialog .modal-footer{gap:10px}

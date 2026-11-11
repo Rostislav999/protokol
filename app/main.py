@@ -117,10 +117,10 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="ОЗтаУСЯ", version="1.7.1")
+    app = FastAPI(title="ОЗтаУСЯ", version="1.7.2")
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
     with data_guard(directory):
-        create_automatic_backup(directory, "1.7.1")
+        create_automatic_backup(directory, "1.7.2")
         library = Library(directory / "templates")
         settings = SettingsStore(directory)
     app.state.library = library
@@ -341,7 +341,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if (stage / 'workbench.sqlite3').exists():
             WorkStore(stage).rebase()
 
-    app.include_router(backup_router(directory, version="1.7.1", validate_staged=validate_restored))
+    app.include_router(backup_router(directory, version="1.7.2", validate_staged=validate_restored))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app

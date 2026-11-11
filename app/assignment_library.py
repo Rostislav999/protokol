@@ -8,6 +8,7 @@ from threading import RLock
 from uuid import uuid4
 
 from .assignments_documents import inspect_assignment_template
+from .assignment_forms import create_assignment_form
 from .documents import TemplateError
 from .library import ROOT
 
@@ -68,7 +69,8 @@ class AssignmentLibrary:
         entry = self.get(template_id)
         return (self.directory / (entry["id"] + ".docx")).read_bytes()
 
-    def add(self, data: bytes, filename: str, name: str, aliases: list[str], department: str, product_scope: str):
+    def add(self, data: bytes, filename: str, name: str, aliases: list[str], department: str, product_scope: str,
+            *, form: dict | None = None):
         info = inspect_assignment_template(data)
         actual = info["department"]
         if actual and department and actual != department:
@@ -82,12 +84,37 @@ class AssignmentLibrary:
                  "sample_weight": info["sample_weight"],
                  "aliases": aliases, "product_scope": product_scope,
                  "available_fields": info["available_fields"]}
-        if not entry["standard"]:
+        if form is not None:
+            entry.update(editable_form=True, form=form)
+        if not entry["standard"] and form is None:
             raise TemplateError("Укажіть конкретний НД у Word-шаблоні, щоб програма могла безпечно підібрати завдання.")
         with self.lock:
             entries = self.all()
             (self.directory / (entry["id"] + ".docx")).write_bytes(data)
             self._save([*entries, entry])
+        return entry
+
+    def create_form(self, values: dict):
+        data = create_assignment_form(values)
+        filename = values['name'].strip() + '.docx'
+        return self.add(data, filename, values['name'], values['aliases'], values['department'],
+                        values['product_scope'], form=values)
+
+    def update_form(self, template_id: str, values: dict):
+        data = create_assignment_form(values)
+        info = inspect_assignment_template(data)
+        with self.lock:
+            entry = self.get(template_id)
+            if not entry.get('editable_form'):
+                raise TemplateError('Цей Word-шаблон редагується у Word. Для нового продукту створіть порожній бланк.')
+            entry.update({key: values[key] for key in ('name', 'aliases', 'department', 'product_scope')})
+            entry['filename'] = Path(values['name'] + '.docx').name
+            entry.update({key: info[key] for key in ('product_name', 'standard', 'sample_weight', 'available_fields')})
+            entry['form'] = values
+            temporary = self.directory / (entry['id'] + '.docx.tmp')
+            temporary.write_bytes(data)
+            os.replace(temporary, self.directory / (entry['id'] + '.docx'))
+            self._save([entry if e['id'] == template_id else e for e in self.all()])
         return entry
 
     def update(self, template_id: str, values: dict) -> dict:

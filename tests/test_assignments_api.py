@@ -164,7 +164,7 @@ def test_render_failure_does_not_consume_number(client, monkeypatch):
     assert client.get("/api/assignments/numbering").json()["next_number"] is None
 
 
-def test_different_standard_requires_explicit_review_and_preserves_template_standard(client):
+def test_different_standard_keeps_methods_but_uses_act_standard(client):
     payload = request_data(client)
     payload["items"][0]["standard"] = "ДСТУ 4450:2006"
     assert client.post("/api/assignments/generate", json=payload).status_code == 422
@@ -175,7 +175,11 @@ def test_different_standard_requires_explicit_review_and_preserves_template_stan
     with ZipFile(io.BytesIO(result.content)) as archive:
         for name in archive.namelist():
             if name.endswith(".docx"):
-                assert inspect_assignment_template(archive.read(name))["standard"] == "ДСТУ 4450:2005"
+                assert inspect_assignment_template(archive.read(name))["standard"] == "ДСТУ 4450:2006"
+        assert 'НД завдання: ДСТУ 4450:2006' in archive.read('ПЕРЕВІРИТИ.txt').decode()
+    for selection in payload['items'][0]['departments'].values():
+        original = client.get('/api/assignments/templates/' + selection['template_id'] + '/download').content
+        assert inspect_assignment_template(original)['standard'] == 'ДСТУ 4450:2005'
 
 
 @pytest.mark.parametrize('standard', ['ДСТУ 4450:2005', 'НД, введений вручну'])
@@ -200,7 +204,7 @@ def test_manual_selection_from_whole_library_when_product_has_no_matches(client,
         for name in documents:
             info = inspect_assignment_template(archive.read(name))
             assert info['fields']['product_name'] == item['product_name']
-            assert info['standard'] == 'ДСТУ 4450:2005'
+            assert info['standard'] == standard
         assert 'ручний, підтверджений' in archive.read('ПЕРЕВІРИТИ.txt').decode()
 
 

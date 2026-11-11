@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .assignment_library import AssignmentLibrary, DEPARTMENTS, SCOPES
 from .assignment_matching import rank_assignments
 from .assignments_documents import render_assignment
+from .assignment_forms import create_assignment_form
 from .documents import TemplateError
 from .numbering import NumberingStore, NumberingError
 from .settings import SettingsStore, SettingsError
@@ -108,6 +109,30 @@ class AssignmentUpdate(BaseModel):
     product_scope: Scope | None = None
 
 
+class AssignmentIndicator(BaseModel):
+    indicator: str = Field(default='', max_length=2000)
+    method: str = Field(default='', max_length=1000)
+    notes: str = Field(default='', max_length=2000)
+
+
+class AssignmentForm(BaseModel):
+    name: str = Field(min_length=1, max_length=250)
+    department: Literal['vet', 'bacteriology', 'chemistry']
+    product_name: str = Field(default='', max_length=2000)
+    standard: str = Field(default='', max_length=2000)
+    sample_weight: str = Field(default='', max_length=2000)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
+    product_scope: Scope = ''
+    indicators: list[AssignmentIndicator] = Field(min_length=1, max_length=100)
+
+    @field_validator('name')
+    @classmethod
+    def nonempty_name(cls, value):
+        if not value.strip():
+            raise ValueError('Укажіть назву шаблону.')
+        return value.strip()
+
+
 def _aliases(value):
     if not isinstance(value, list) or len(value) > 100 or any(not isinstance(v, str) or len(v) > 300 for v in value):
         raise ValueError("Ключові назви мають бути списком коротких рядків.")
@@ -123,6 +148,35 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
     @router.get("/templates")
     def templates():
         return {"templates": library.all(), "departments": [{"id": key, "name": label} for key, label in DEPARTMENTS.items()], "today": kyiv_today()}
+
+    @router.post('/templates/forms/preview')
+    def preview_form(values: AssignmentForm):
+        try:
+            data = create_assignment_form(values.model_dump())
+            return Response(data, media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            headers={'Content-Disposition': 'attachment; filename="assignment-form.docx"'})
+        except TemplateError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @router.post('/templates/forms')
+    def add_form(values: AssignmentForm):
+        try:
+            form = values.model_dump()
+            form['aliases'] = _aliases(form['aliases'])
+            return library.create_form(form)
+        except (ValueError, TemplateError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @router.put('/templates/{template_id}/form')
+    def update_form(template_id: str, values: AssignmentForm):
+        try:
+            form = values.model_dump()
+            form['aliases'] = _aliases(form['aliases'])
+            return library.update_form(template_id, form)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, TemplateError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @router.post("/templates")
     async def add_template(file: UploadFile = File(...), name: str = Form(""), aliases: str = Form("[]"),
@@ -251,14 +305,14 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
                 exact_ids = {c["id"] for c in candidates["departments"][department]}
                 if template["id"] not in exact_ids:
                     if not selection.allow_standard_override:
-                        raise HTTPException(422, f"Позиція {index}: шаблон не знайдено автоматично. Підтвердьте ручний вибір шаблону; у завданні залишаться його НД та методи.")
+                        raise HTTPException(422, f"Позиція {index}: підтвердьте ручний вибір шаблону та перевірте його показники й методи. НД у завданні буде взято з акта.")
                 selected.append((index - 1, department, template, selection))
         today = kyiv_today()
 
         def builder(numbers: list[str]) -> bytes:
             output = io.BytesIO()
             summary = [f"Дата видачі завдань: {today} (Europe/Kyiv).", "Один номер зразка використовується для всіх його відділень.",
-                       "Методи досліджень, підписи та НД збережені з обраного шаблону. Перевірте вагу й кількість проб.", ""]
+                       "НД на відповідність підставлено з акта. Показники, методи та оформлення взято з обраного шаблону. Перевірте вагу й кількість проб.", ""]
             if issuer:
                 summary.insert(2, "Сформулював та видав завдання: " + " ".join(value for value in
                                (issuer["position"], issuer["name"]) if value))
@@ -271,7 +325,7 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
                               else item.sample_weight.strip() or template.get("sample_weight", "").strip())
                     fields = {
                         "product_name": item.product_name, "sample_number": numbers[item_index],
-                        "sample_weight": weight, "standard": template["standard"], "issue_date": today}
+                        "sample_weight": weight, "standard": item.standard.strip(), "issue_date": today}
                     if issuer:
                         fields.update(issuer_name=issuer["name"], issuer_position=issuer["position"])
                     data = render_assignment(library.read(template["id"]), fields)
@@ -279,7 +333,8 @@ def assignments_router(directory: Path, settings: SettingsStore | None = None) -
                     department_name = {"vet": "Ветсан", "bacteriology": "Бактеріологія", "chemistry": "Хімтокс"}[department]
                     filename = f"{numbers[item_index]} {department_name} {safe_name}.docx"
                     bundle.writestr(filename, data)
-                    summary.extend([filename, "НД з акта: " + item.standard, "НД завдання: " + template["standard"],
+                    summary.extend([filename, "НД з акта: " + item.standard, "НД завдання: " + item.standard.strip(),
+                                    "НД вихідного шаблону: " + (template["standard"] or "не зазначено"),
                                     "Вибір шаблону: " + ("ручний, підтверджений" if selection.allow_standard_override else "за рекомендацією"),
                                     "Вага: " + (weight or "[НЕ ЗАПОВНЕНО]"), ""])
                 bundle.writestr("ПЕРЕВІРИТИ.txt", "\n".join(summary))

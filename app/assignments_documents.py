@@ -195,7 +195,7 @@ def _load(data: bytes) -> _Assignment:
         match = _label(para.text)
         if match:
             key, start = match
-            targets.append(_Target(key, [para], start, len(para.text.rstrip())))
+            targets.append(_Target(key, [para], start, max(start, len(para.text.rstrip()))))
             fields[key] = _clean_sample_value(key, para.text[start:])
 
     # Placeholder values inside a mapped table cell describe fields, not facts.

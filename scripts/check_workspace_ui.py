@@ -28,11 +28,71 @@ SCRIPT = r'''void (async () => {try {
     assert(Object.values(providers.assignments.snapshot().items[0].departments).some(value=>value.sample_weight==='7 кг'),'Package restart lost a manual assignment weight');
     assert((await(await fetch('/api/template-choices')).json()).choices.some(value=>value.template_id==='sample-1053' && value.favorite),'Favorite template was lost on restart');
     assert((await(await fetch('/api/workbench/files?scope='+session.scope)).json()).files.some(value=>value.kind==='source'),'Package lost its original files');
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback','single-sided and double-sided print selection','prepend and append samples without renumbering','manual sample numbers and draft restore']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback','single-sided and double-sided print selection','prepend and append samples without renumbering','manual sample numbers and draft restore','blank department form with Word preview','add remove reorder and persist research indicators','prefill new form from act product and ND']}));
     return;
   }
   if (!__RESTORE_PHASE__) {
     await wait(()=>document.querySelector('#nav-template-count').textContent==='22');
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'assignments'}}));
+    await wait(()=>window.OZAssignmentFormEditor && document.querySelector('#assignment-template-count').textContent==='60');
+    document.querySelector('#assignment-tab-library').click();
+    document.querySelector('#assignment-create-form').click();
+    await wait(()=>document.querySelector('#assignment-form-editor[open]'));
+    const formField=key=>'#assignment-blank-form [name="'+key+'"]';
+    assert(document.querySelector(formField('product_name')).value==='' && document.querySelector(formField('standard')).value==='','Blank form inherited a historical product or ND');
+    assert(document.querySelectorAll('[data-form-row]').length===3,'Blank form did not offer empty indicator rows');
+    input(formField('name'),'Новий продукт — бланк UI');
+    input(formField('product_name'),'Новий продукт для перевірки');
+    input(formField('standard'),'ТУ У 10.1-12345678-001:2026');
+    input('[data-form-row]:first-child [data-row-field="indicator"]','Новий показник');
+    input('[data-form-row]:first-child [data-row-field="method"]','Новий метод 2026');
+    input('[data-form-row]:first-child [data-row-field="notes"]','Примітка до показника');
+    document.querySelector('#assignment-form-add-row').click();
+    input('[data-form-row]:last-child [data-row-field="indicator"]','Доданий показник');
+    input('[data-form-row]:last-child [data-row-field="method"]','Інший метод');
+    document.querySelectorAll('[data-form-row]')[1].querySelector('[data-row-action="remove"]').click();
+    document.querySelector('[data-form-row]:last-child [data-row-action="up"]').click();
+    assert(document.querySelectorAll('[data-form-row]')[1].querySelector('[data-row-field="indicator"]').value==='Доданий показник','Reordering indicators lost their values');
+    await wait(()=>!document.querySelector('#assignment-form-preview-button').disabled);
+    document.querySelector('#assignment-form-preview-button').click();
+    await wait(()=>document.querySelector('#assignment-form-preview').textContent.includes('Новий показник') && !document.querySelector('#assignment-form-preview-button').disabled);
+    assert(document.querySelector('#assignment-form-preview').textContent.includes('Міністерство оборони України'),'New form lost its original stationery');
+    assert(document.querySelector('#assignment-form-preview').textContent.includes('Інший метод'),'Added method is absent from Word preview');
+    assert(!document.querySelector('#assignment-form-preview').textContent.includes('ДСТУ 8449:2015'),'Blank form inherited old test methods');
+    console.log('OZ_FORM_EDITOR_CAPTURE');
+    document.querySelector('#assignment-form-save').click();
+    await wait(()=>!document.querySelector('#assignment-form-editor').open && document.querySelector('#assignment-template-count').textContent==='61');
+    let formTemplates=(await(await fetch('/api/assignments/templates')).json()).templates;
+    let createdForm=formTemplates.find(value=>value.name==='Новий продукт — бланк UI');
+    assert(createdForm?.editable_form && createdForm.form.indicators.length===3,'Created form was not retained in the library');
+    document.querySelector(`[data-assignment-template="${createdForm.id}"] .assignment-edit-template`).click();
+    await wait(()=>document.querySelector('#assignment-form-editor').open);
+    assert(document.querySelector('[data-form-row]:first-child [data-row-field="method"]').value==='Новий метод 2026','Editing a saved form lost its methods');
+    input(formField('name'),'Оновлений бланк UI');
+    document.querySelector('#assignment-form-add-row').click();
+    input('[data-form-row]:last-child [data-row-field="indicator"]','Ще один показник');
+    document.querySelector('#assignment-form-save').click();
+    await wait(()=>!document.querySelector('#assignment-form-editor').open && document.querySelector(`[data-assignment-template="${createdForm.id}"]`).textContent.includes('Оновлений бланк UI'));
+    createdForm=(await(await fetch('/api/assignments/templates')).json()).templates.find(value=>value.id===createdForm.id);
+    assert(createdForm.form.indicators.length===4,'Added indicator was not saved');
+    const actProduct='Свинина тушкована',actND='ДСТУ 4450:2005';
+    await providers.assignments.restore({items:[{id:'form-prefill',product_name:actProduct,standard:actND,departments:{vet:{enabled:true}}}]});
+    document.querySelector('#assignment-tab-work').click();
+    document.querySelector('[data-create-assignment-form="vet"]').click();
+    await wait(()=>document.querySelector('#assignment-form-editor').open);
+    assert(document.querySelector(formField('product_name')).value===actProduct && document.querySelector(formField('standard')).value===actND,'Creating a form from a sample lost its act values');
+    input(formField('name'),'Бланк з акта UI');
+    document.querySelector('#assignment-form-save').click();
+    await wait(()=>!document.querySelector('#assignment-form-editor').open && document.querySelector('#assignment-template-count').textContent==='62');
+    const actForm=(await(await fetch('/api/assignments/templates')).json()).templates.find(value=>value.name==='Бланк з акта UI');
+    await wait(()=>providers.assignments.snapshot().items[0].departments.vet.template_id===actForm.id);
+    const afterForm=providers.assignments.snapshot().items[0];
+    assert(afterForm.standard===actND,'Selecting the new form changed the act ND');
+    assert(!afterForm.departments.bacteriology.enabled&&!afterForm.departments.chemistry.enabled,'Saving a template enabled unrelated departments');
+    await fetch('/api/assignments/templates/'+actForm.id,{method:'DELETE'});
+    await fetch('/api/assignments/templates/'+createdForm.id,{method:'DELETE'});
+    document.dispatchEvent(new CustomEvent('protokol:assignment-templates-changed',{detail:{template:createdForm}}));
+    await wait(()=>document.querySelector('#assignment-template-count').textContent==='60');
     // Exercise printer choices without calling the real print worker or queue.
     const realFetch=window.fetch, printCalls=[];
     let printerNames=['Printer A','Printer B'];
@@ -408,7 +468,11 @@ def main() -> int:
 
     class Page(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, line, source):
-            if message == "OZ_WORKSPACE_RELOAD":
+            if message == "OZ_FORM_EDITOR_CAPTURE":
+                capture_path = Path('build/windows/native-ui-form-editor.png')
+                capture_path.parent.mkdir(parents=True, exist_ok=True)
+                view.grab().save(str(capture_path))
+            elif message == "OZ_WORKSPACE_RELOAD":
                 phase["restore"] = True
                 QTimer.singleShot(0, view.reload)
             elif message == "OZ_PACKAGES_RELOAD":
