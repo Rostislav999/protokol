@@ -25,8 +25,11 @@ def test_data_directory_honors_configured_model_directory(models):
     assert runtime.data_directory({"TESSDATA_PREFIX": str(models)}) == models
 
 
-def test_runtime_uses_relative_ascii_model_path_and_unicode_cwd(models, monkeypatch):
+@pytest.mark.parametrize('thread_limit', [None, '2'])
+def test_runtime_uses_relative_ascii_model_path_and_unicode_cwd(models, monkeypatch, thread_limit):
     inherited = {"TESSDATA_PREFIX": str(models), "HTTP_PROXY": "http://proxy:8080"}
+    if thread_limit:
+        inherited['OMP_THREAD_LIMIT'] = thread_limit
     captured = {}
 
     def run(command, **kwargs):
@@ -41,6 +44,7 @@ def test_runtime_uses_relative_ascii_model_path_and_unicode_cwd(models, monkeypa
     assert str(captured["cwd"]) == str(models)
     assert captured["env"]["TESSDATA_PREFIX"] == "."
     assert captured["env"]["HTTP_PROXY"] == inherited["HTTP_PROXY"]
+    assert captured['env']['OMP_THREAD_LIMIT'] == (thread_limit or '1')
     assert inherited["TESSDATA_PREFIX"] == str(models)
     assert captured["timeout"] == 12
     assert captured["encoding"] == "utf-8"

@@ -29,6 +29,9 @@ def run_tesseract(args: list[str], *, executable="tesseract", models_directory: 
     # Some Windows builds cannot open a Cyrillic absolute TESSDATA_PREFIX.
     # Python sets cwd with the Unicode Windows API; Tesseract sees only '.'.
     env["TESSDATA_PREFIX"] = "."
+    # Cell OCR jobs are small; OpenMP worker startup and contention can cost
+    # substantially more than recognition. Honor an explicit user override.
+    env.setdefault("OMP_THREAD_LIMIT", "1")
     try:
         from app.progress import current, run_process
         runner = run_process if current.get() is not None else subprocess.run
