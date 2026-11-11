@@ -12,6 +12,7 @@ from app.assignments_documents import (
     render_assignment,
 )
 from app.documents import MISSING_VALUE, TemplateError
+from assignment_assertions import static_structure, footer_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = sorted((ROOT / "assets/assignments").rglob("*.docx"))
@@ -42,20 +43,6 @@ def placeholders(extra=""):
     return docx("".join(p("{{" + key + "}}") for key in FIELD_LABELS) + extra)
 
 
-def static_structure(data):
-    """Compare every original style, run, method and signature outside fields."""
-    loaded = _load(data)
-    editable = {id(p) for target in loaded.targets for p in target.paragraphs}
-    indexes = {i for i, para in enumerate(loaded.paragraphs) if id(para) in editable}
-    root = ET.fromstring(xml(data))
-    for i, paragraph in enumerate(root.findall(".//w:p", NS)):
-        if i in indexes:
-            for node in paragraph.findall(".//w:t", NS):
-                node.text = ""
-                node.attrib.pop("{http://www.w3.org/XML/1998/namespace}space", None)
-    return ET.tostring(root)
-
-
 def test_all_sixty_supplied_assignment_forms_are_bundled():
     assert len(SAMPLES) == 60
 
@@ -76,7 +63,7 @@ def test_every_original_fills_both_form_layouts_without_changing_methods_or_styl
         for name in old.namelist():
             if name == 'word/footer1.xml':
                 before, after = ET.fromstring(old.read(name)), ET.fromstring(new.read(name))
-                assert ''.join(before.itertext()) == ''.join(after.itertext())
+                assert footer_text(before) == footer_text(after)
                 assert [f.get('{'+NS['w']+'}instr') for f in after.findall('.//w:fldSimple', NS)] == ['PAGE', 'NUMPAGES']
             elif name == 'word/settings.xml':
                 before, after = ET.fromstring(old.read(name)), ET.fromstring(new.read(name))

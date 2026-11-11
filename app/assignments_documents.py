@@ -16,6 +16,7 @@ from zipfile import BadZipFile, ZipFile
 
 from .documents import MISSING_VALUE, TemplateError, _Paragraph, _Text, _replace_range, _tag_end, _text_offsets
 from .word_pagination import pagination_updates
+from .assignment_layout import assignment_layout_updates
 
 FIELD_LABELS = {
     "sample_number": "Реєстраційний/ідентифікаційний номер зразка",
@@ -366,8 +367,9 @@ def render_assignment(data: bytes, fields: dict[str, str]) -> bytes:
     with ZipFile(BytesIO(data)) as original, ZipFile(output, "w") as target:
         target.comment = original.comment
         parts = {member.filename: original.read(member) for member in original.infolist()}
-        updates = pagination_updates(parts)
-        updates['word/document.xml'] = xml
+        parts['word/document.xml'] = xml
+        updates = assignment_layout_updates(parts)
+        updates.update(pagination_updates({**parts, **updates}))
         for member in original.infolist():
             target.writestr(member, updates.get(member.filename, parts[member.filename]))
     return output.getvalue()

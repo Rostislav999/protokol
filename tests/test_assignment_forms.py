@@ -52,6 +52,9 @@ def test_blank_department_forms_keep_stationery_and_remove_historical_values(dep
     source = (ROOT / 'assets/assignments' / base['asset']).read_bytes()
     old, new = document(source), document(data)
     for path in ['.//w:sectPr', './/w:tblPr', './/w:tblGrid']:
+        if path.endswith('tblPr'):
+            for floating in old.findall('.//w:tblpPr', NS):
+                floating.getparent().remove(floating)
         assert etree.tostring(old.find(path, NS)) == etree.tostring(new.find(path, NS))
     assert research_rows(source)[0] == research_rows(data)[0]
     with ZipFile(BytesIO(source)) as before, ZipFile(BytesIO(data)) as after:

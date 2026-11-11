@@ -13,6 +13,7 @@ from .assignments_documents import FIELD_LABELS, _label, inspect_assignment_temp
 from .documents import TemplateError
 from .library import ROOT
 from .word_pagination import pagination_updates
+from .assignment_layout import assignment_layout_updates
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 NS = {'w': W}
@@ -103,7 +104,8 @@ def create_assignment_form(values: dict) -> bytes:
         output = BytesIO()
         parts = {member.filename: archive.read(member) for member in archive.infolist()}
         parts['word/document.xml'] = xml
-        updates = pagination_updates(parts)
+        updates = assignment_layout_updates(parts)
+        updates.update(pagination_updates({**parts, **updates}))
         with ZipFile(output, 'w') as target:
             target.comment = archive.comment
             for member in archive.infolist():
