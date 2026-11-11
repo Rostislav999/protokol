@@ -418,6 +418,9 @@ SCRIPT = r'''void (async () => {try {
     document.querySelector('[data-letter-history]').click();await wait(()=>document.querySelector('#letter-history[open]'));
     await wait(()=>[...document.querySelectorAll('[data-history-version]')].some(button=>button.textContent.includes('UI контрольна версія')));
     [...document.querySelectorAll('[data-history-version]')].find(button=>button.textContent.includes('UI контрольна версія')).click();
+    // Replay a close event queued by the previous opening while the new
+    // selection is loading. It must not cancel that selection's response.
+    document.querySelector('#letter-history').dispatchEvent(new Event('close'));
     await wait(()=>!document.querySelector('[data-history-restore]').disabled);
     assert(document.querySelector('.history-changed'),'History comparison did not show a changed field');
     document.querySelector('[data-history-restore]').click();await wait(()=>!document.querySelector('#letter-history').open);

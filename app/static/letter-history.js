@@ -50,7 +50,9 @@
     }catch(exc){error(exc);button.disabled=false;}
   };
   dialog.querySelectorAll('[data-history-close]').forEach(button=>button.onclick=()=>dialog.close());
-  dialog.addEventListener('close',()=>requestGeneration++);
+  // A queued close event can arrive after the dialog has already reopened.
+  // Opening starts a new generation; only a still-closed dialog cancels it.
+  dialog.addEventListener('close',()=>{if(!dialog.open)requestGeneration++;});
   document.addEventListener('protokol:letters-rendered',()=>{
     const toolbar=document.querySelector('.letter-toolbar');if(!toolbar||toolbar.querySelector('[data-letter-history]'))return;
     const button=document.createElement('button');button.type='button';button.className='button quiet';button.dataset.letterHistory='';button.textContent='Історія';
