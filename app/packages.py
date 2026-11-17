@@ -11,11 +11,13 @@ from zipfile import ZipFile, ZIP_DEFLATED, BadZipFile
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+import math
 
 from .package_checks import check_package
 from .workbench_store import WorkStore, WorkbenchError, WORKSPACE, MAX_FILE, safe_filename
 from .workspace import DraftUpdate, WorkspaceError, DraftStore, _draft_data
+from .act_review import preview_original, reocr_fragment
 
 SCOPE_PATTERN = r'^(?:workspace|[a-f0-9]{32})$'
 
@@ -42,6 +44,21 @@ class PackageUpdate(PackageValues):
 class Session(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scope: str = Field(pattern=SCOPE_PATTERN)
+
+
+class FragmentOCR(Session):
+    page: int = Field(ge=1, le=20)
+    rotation: int = Field(default=0, ge=0, le=270, multiple_of=90)
+    bbox: tuple[float, float, float, float]
+    psm: Literal[6, 7] = 6
+
+    @field_validator('bbox')
+    @classmethod
+    def valid_region(cls, value):
+        if (any(not math.isfinite(v) or not 0 <= v <= 1 for v in value)
+                or value[2] <= value[0] or value[3] <= value[1]):
+            raise ValueError('Виділіть прямокутник у межах сторінки.')
+        return value
 
 
 class Checkpoint(Session):
@@ -102,6 +119,11 @@ def packages_router(directory: Path, template_exists):
             if report['errors'] or any(issue['code'] in {'no-output', 'missing-output', 'outdated-output'} for issue in report['issues']):
                 raise HTTPException(422, 'Виправте розбіжності та сформуйте актуальні документи перед позначенням пакета перевіреним.')
         return run(store.update, package_id, values.model_dump(), values.expected_revision)
+
+    @router.delete('/api/packages/{package_id}')
+    def delete(package_id: str, expected_revision: int = Query(..., ge=1),
+               expected_updated_at: str = Query(..., min_length=1, max_length=100)):
+        return run(store.delete, package_id, expected_revision, expected_updated_at)
 
     @router.get('/api/packages/{package_id}/drafts')
     def drafts(package_id: str):
@@ -176,6 +198,27 @@ def packages_router(directory: Path, template_exists):
     @router.get('/api/workbench/files')
     def files(scope: str = Query(WORKSPACE, pattern=SCOPE_PATTERN)):
         return {'files': run(store.files, scope)}
+
+    @router.get('/api/workbench/files/{file_id}/preview')
+    def preview(file_id: str, scope: str = Query(WORKSPACE, pattern=SCOPE_PATTERN),
+                page: int = Query(1, ge=1, le=20), rotation: int = Query(0, ge=0, le=270, multiple_of=90)):
+        source = run(store.file, scope, file_id)
+        try:
+            data, pages = preview_original(source['data'], source['filename'], page, rotation)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return Response(data, media_type='image/png', headers={'X-Page-Count':str(pages), 'Cache-Control':'no-store'})
+
+    @router.post('/api/workbench/files/{file_id}/reocr')
+    def reread(file_id: str, values: FragmentOCR):
+        source = run(store.file, values.scope, file_id)
+        if source['kind'] != 'source':
+            raise HTTPException(422, 'Оберіть оригінал акта для повторного розпізнавання.')
+        try:
+            return reocr_fragment(source['data'], source['filename'], values.page,
+                                  values.rotation, values.bbox, values.psm)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @router.post('/api/workbench/files')
     async def add_file(file: UploadFile = File(...), scope: str = Form(WORKSPACE, pattern=SCOPE_PATTERN),

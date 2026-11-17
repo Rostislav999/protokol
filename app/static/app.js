@@ -9,7 +9,7 @@
   const subgroupLabels = {legumes: 'Бобові', cereals: 'Круп’яні', potatoes: 'Картопляні', other: 'Інші другі страви'};
   const subgroupOf = (template) => template.subcategory || template.inferred_subcategory || '';
   const subgroupLabel = (template) => subgroupLabels[subgroupOf(template)] || '';
-  const state = {templates: [], common: {}, items: [], text: '', source: '', sourceUrl: '', busy: false, editingTemplate: null, libraryLoaded: false, sequenceEnabled:false, sources:{common:{},items:{}}, method:'', warnings:[]};
+  const state = {templates: [], common: {}, items: [], text: '', source: '', sourceUrl: '', busy: false, editingTemplate: null, libraryLoaded: false, sequenceEnabled:false, sources:{common:{},items:{}}, method:'', warnings:[], audit:null, audit_expected:null};
   const commonFields = [
     ['customer', 'Замовник', true, 'Наприклад, ТОВ «Назва підприємства»'],
     ['supplier', 'Постачальник', false, 'Назва, код ЄДРПОУ'],
@@ -51,7 +51,7 @@
   }
   function sourceBadge(key, source, value) {
     const title = source ? [sourceDescription(source), source.original ? `Початкове значення: ${source.original}` : '', source.previous ? `Попереднє джерело: ${source.previous}` : ''].filter(Boolean).join('\n') : sourceLabels.unknown;
-    return `<small class="field-source" data-source-field="${escape(key)}" title="${escape(title)}" ${!source && !String(value || '').trim() ? 'hidden' : ''}>Джерело: ${escape(sourceDescription(source))}</small>`;
+    return `<small class="field-source" data-source-field="${escape(key)}" title="${escape(title)}" ${!source && !String(value || '').trim() ? 'hidden' : ''}>${sourceDescription(source).startsWith('Джерело')?'':'Джерело: '}${escape(sourceDescription(source))}</small>`;
   }
   function refreshSources() {
     $$('#common-fields [data-source-field]').forEach(node => {
@@ -70,6 +70,7 @@
   function workspaceChanged() {
     refreshSources();
     window.OZWorkspace?.changed('acts');
+    window.OZActReview?.update('acts');
   }
 
   function toast(message, error = false) {
@@ -164,7 +165,7 @@
   document.addEventListener('protokol:navigate', event => switchView(event.detail.name));
   $('#prepare-assignments').addEventListener('click', () => {
     if (!state.items.length) { toast('Спочатку додайте позиції акта.', true); return; }
-    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: clone(state.items), text: state.text, source: state.source, sourceGroup:state.sourceGroup||'', provenance:clone(state.sources)}}));
+    document.dispatchEvent(new CustomEvent('protokol:assignments-import', {detail: {items: clone(state.items), text: state.text, source: state.source, sourceGroup:state.sourceGroup||'', audit:clone(state.audit), audit_expected:state.audit_expected, provenance:clone(state.sources)}}));
   });
   $('#prepare-excel-from-act').addEventListener('click', () => {
     if (state.busy) { toast('Дочекайтеся завершення поточної операції.', true); return; }
@@ -303,6 +304,7 @@
 
   const dropzone = $('#dropzone');
   const actFile = $('#act-file');
+  let preparingAct = false;
   dropzone.addEventListener('click', () => { if (!state.busy) actFile.click(); });
   dropzone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); actFile.click(); } });
   ['dragenter','dragover'].forEach(name => dropzone.addEventListener(name, event => { event.preventDefault(); dropzone.classList.add('dragging'); }));
@@ -331,13 +333,15 @@
   }
 
   async function extractFile(file) {
-    if (state.busy) return;
+    if (state.busy || preparingAct) return;
     if (file.size > 25 * 1024 * 1024) { toast('Файл завеликий. Максимальний розмір — 25 МБ.', true); return; }
     if (!/\.(pdf|jpe?g|png|tiff?|docx|txt)$/i.test(file.name)) { toast('Підтримуються PDF, JPG, PNG, TIFF, DOCX і TXT.', true); return; }
-    state.busy = true;
-    showStage('processing');
-    $('#processing-label').textContent = `Опрацьовуємо «${file.name}»…`;
+    preparingAct = true;
     try {
+      await window.OZWorkspace.startNewAct(file.name);
+      state.busy = true;
+      showStage('processing');
+      $('#processing-label').textContent = `Опрацьовуємо «${file.name}»…`;
       const form = new FormData();
       form.append('file', file);
       const data = await window.OZTasks.run('act',[file],{section:'acts'});
@@ -348,7 +352,7 @@
     } catch (error) {
       showStage(state.items.length||state.text?'review':'upload');
       toast(error.message, error.name!=='AbortError');
-    } finally { state.busy = false; actFile.value = ''; }
+    } finally { state.busy = false; preparingAct = false; actFile.value = ''; }
   }
 
   function blankItem() {
@@ -464,6 +468,8 @@
     state.common = Object.fromEntries(commonFields.map(([key]) => [key, data.common?.[key] || '']));
     state.items = (data.items || []).map(item => ({...blankItem(), ...item, id: item.id || uid(), template_id: item.template_id || '', matches: item.matches || []}));
     state.source = source;
+    state.audit = data.method==='reparse'?state.audit:window.OZActReview.cleanAudit(data.audit);
+    state.audit_expected = data.method==='reparse'?state.audit_expected:window.OZActReview.cleanExpected(data.audit_expected);
     state.method = data.method || 'text';
     state.warnings = Array.isArray(data.warnings) ? data.warnings : [];
     state.sources = {common:{},items:{}};
@@ -581,6 +587,7 @@
     }
     if (input.dataset.field === 'template_id') updateWeightControl(item,card);
     if (input.dataset.field === 'template_id') {
+      item._ocr_template_review = false;
       const selected = state.templates.find(value => String(value.id) === String(item.template_id));
       itemSources(item).template_id = sourceRecord('manual',item.template_id,'Шаблон обрано вручну',selected?.name || '');
     }
@@ -661,6 +668,7 @@
     const matchButton = event.target.closest('[data-match]');
     if (matchButton) {
       item.template_id = matchButton.dataset.match;
+      item._ocr_template_review = false;
       const selected = state.templates.find(value => String(value.id) === String(item.template_id));
       itemSources(item).template_id = sourceRecord('manual',item.template_id,'Підказку шаблону обрано вручну',selected?.name || '');
       updateWeightControl(item,card);
@@ -697,22 +705,25 @@
     last.scrollIntoView({behavior: 'smooth', block: 'center'});
     $('input[data-field="product_name"]', last).focus({preventScroll: true});
   });
-  $('#start-manual').addEventListener('click', () => {
-    revokeSourceUrl();
-    applyExtraction({common: {}, items: [blankItem()], text: '', method: 'manual', warnings: ['Дані введено вручну. Заповніть відомості з акта та вкажіть номер і дату кожного протоколу.']}, 'Ручне введення акта');
+  $('#start-manual').addEventListener('click', async () => {
+    if (state.busy || preparingAct) return;
+    preparingAct=true;
+    try {
+      await window.OZWorkspace.startNewAct('Новий акт — ручне введення');
+      revokeSourceUrl();
+      applyExtraction({common: {}, items: [blankItem()], text: '', method: 'manual', warnings: ['Дані введено вручну. Заповніть відомості з акта та вкажіть номер і дату кожного протоколу.']}, 'Ручне введення акта');
+    } catch(error) {toast(error.message,true);}
+    finally {preparingAct=false;}
   });
-  $('#new-act').addEventListener('click', () => {
-    if (!window.confirm('Почати новий акт? Поточні незавантажені дані буде очищено.')) return;
-    revokeSourceUrl();
-    state.items = []; state.common = {}; state.text = ''; state.source = ''; state.sequenceEnabled = false;
-    state.sources = {common:{},items:{}}; state.method = ''; state.warnings = [];
-    supplierDirectory.clearSelection();
-    document.dispatchEvent(new CustomEvent('protokol:act-loaded',{detail:{customer:''}}));
-    $('#review-confirmed').checked = false;
-    $('#download-success').hidden = true;
-    showStage('upload');
-    workspaceChanged();
-    window.scrollTo({top: 0, behavior: 'smooth'});
+  $('#new-act').addEventListener('click', async () => {
+    if (state.busy || preparingAct) return;
+    preparingAct=true;
+    try {
+      await window.OZWorkspace.startNewAct();
+      showStage('upload');
+      window.scrollTo({top:0,behavior:'smooth'});
+    } catch(error) {toast(error.message,true);}
+    finally {preparingAct=false;}
   });
   $('#reparse').addEventListener('click', async () => {
     const text = $('#raw-text').value.trim();
@@ -752,7 +763,7 @@
     return `#items-list [data-item="${CSS.escape(String(item.id))}"] [data-field="${CSS.escape(field)}"]`;
   }
   function formIssues(includeWarnings = true) {
-    if (!state.items.length) return [];
+    if (!state.items.length) return window.OZActReview?.issues('acts')||[];
     const issues = [];
     const add = (message,selector,level='error',field='') => issues.push({message,selector,level,field,section:'acts'});
     if (state.items.length > 100) add('За один раз можна створити не більше 100 протоколів. Розділіть позиції на кілька актів.','#items-list');
@@ -768,6 +779,7 @@
       if (String(item.protocol_date || '').trim() && !validDate(item.protocol_date)) add(`Позиція ${index + 1}: некоректна дата протоколу; вкажіть справжню дату ДД.ММ.РРРР`,itemSelector(item,'protocol_date'),'error','protocol_date');
       if (!item.template_id || !state.templates.some(t => String(t.id) === String(item.template_id))) add(`Позиція ${index + 1}: шаблон`,itemSelector(item,'template_id'),'error','template_id');
       if (includeWarnings) {
+        if (item._ocr_template_review && item.template_id) add(`Позиція ${index + 1}: назву змінено через OCR. Звірте збережений шаблон із новою назвою та оберіть його повторно.`,itemSelector(item,'template_id'),'warning','template_id');
         const manufacturer = String(item.manufacturer || '').trim();
         const codes = new Set(manufacturer.match(/(?<!\d)\d{8}(?!\d)/g) || []);
         if (codes.size !== 1) add(`Excel, позиція ${index + 1}: ${codes.size > 1 ? 'знайдено кілька кодів виробника' : 'код ЄДРПОУ виробника відсутній'}; перевірте поле перед експортом`,itemSelector(item,'manufacturer'),'warning','manufacturer');
@@ -783,12 +795,14 @@
       if (codes.size > 1 || !codes.size && !/^\d{8}(?:\d{2})?$/.test(String(knownCode || ''))) add(`Excel: ${codes.size > 1 ? 'код постачальника неоднозначний' : 'код ЄДРПОУ постачальника відсутній'}; клітинка залишиться порожньою без однозначного коду`,`[data-common="supplier"]`,'warning','supplier');
       state.warnings.forEach(message => add(String(message),'#raw-text','warning','text'));
     }
+    issues.push(...(window.OZActReview?.issues('acts')||[]).filter(issue=>includeWarnings||issue.level==='error'));
     return issues;
   }
   function missingFields() {
     return formIssues(false).map(issue => issue.message);
   }
   function updateGeneration() {
+    window.OZActReview?.update('acts');
     const missing = missingFields();
     const confirmed = $('#review-confirmed').checked;
     const ready = state.items.length > 0 && missing.length === 0 && confirmed && !state.busy;
@@ -996,7 +1010,7 @@
 
   function snapshotAct() {
     if (!state.items.length && !state.text && !Object.values(state.common).some(value => String(value || '').trim())) return null;
-    return clone({common:state.common,items:state.items,text:state.text,source:state.source,sourceGroup:state.sourceGroup||'',method:state.method,warnings:state.warnings,sequenceEnabled:state.sequenceEnabled,sources:state.sources});
+    return clone({common:state.common,items:state.items,text:state.text,source:state.source,sourceGroup:state.sourceGroup||'',method:state.method,warnings:state.warnings,sequenceEnabled:state.sequenceEnabled,sources:state.sources,audit:state.audit,audit_expected:state.audit_expected});
   }
   function restoredSource(value) {
     if (!value || typeof value !== 'object' || !Object.hasOwn(sourceLabels,value.kind)) return null;
@@ -1013,6 +1027,7 @@
     if (state.busy) throw new Error('Дочекайтеся завершення поточної операції перед відновленням чернетки.');
     await Promise.all([templatesReady,suppliersReady]);
     revokeSourceUrl();
+    state.audit=window.OZActReview.cleanAudit(data.audit);state.audit_expected=window.OZActReview.cleanExpected(data.audit_expected);
     state.common = Object.fromEntries(commonFields.map(([key]) => [key, typeof data.common?.[key] === 'string' ? data.common[key] : '']));
     state.sources = {common:{},items:{}};
     commonFields.forEach(([key]) => {
@@ -1026,11 +1041,13 @@
       const previousId = String(value.id || '');
       item.id = previousId && !seen.has(previousId) ? previousId : uid(); seen.add(item.id);
       itemFields.forEach(([key]) => { item[key] = typeof value[key] === 'string' ? value[key] : ''; });
+      item.source_location=window.OZActReview.cleanLocation(value.source_location);
       item.template_id = typeof value.template_id === 'string' ? value.template_id : '';
       item.matches = Array.isArray(value.matches) ? value.matches.filter(match => match && typeof match === 'object').slice(0,5) : [];
       item._protocol_date_manual = !!value._protocol_date_manual;
       item._protocol_number_manual = !!value._protocol_number_manual;
       item._sample_weight_manual = !!value._sample_weight_manual;
+      item._ocr_template_review = !!value._ocr_template_review;
       item._sample_weight_source = value._sample_weight_source === 'act' || value._sample_weight_source === 'template' ? value._sample_weight_source : item.sample_weight ? 'act' : 'template';
       [...itemFields.map(([key]) => key),'template_id'].forEach(key => {
         const source = restoredSource(data.sources?.items?.[previousId]?.[key]);
@@ -1083,5 +1100,22 @@
       const link=document.createElement('a');link.className='source-original-link';link.href=state.sourceUrl;link.download=file.name;link.textContent='Завантажити оригінал';banner.append(link);
     },
     issues:() => formIssues(), reveal:revealActIssue,
+  });
+  window.OZActReview.register('acts',{
+    root:'#review-section',panel:'#extraction-warnings',
+    get:()=>({...state,sourceGroup:state.sourceGroup||''}),issues:()=>formIssues(),
+    selector:(item,field)=>itemSelector(item,field),card:item=>`#items-list [data-item="${CSS.escape(item.id)}"]`,
+    ocrFields:itemFields.filter(([field])=>['product_name','standard','manufacturer','manufacture_date','batch_size','seal_number','sample_weight'].includes(field)).map(([field,label])=>[field,label]),
+    applyOCR:(id,field,value,expected)=>{
+      const item=state.items.find(item=>item.id===id);
+      if(!item||String(item[field]||'')!==expected)throw new Error('Поле змінилося після початку розпізнавання. Ваші правки збережено; повторіть перевірку фрагмента.');
+      item[field]=value;
+      const previous=itemSources(item)[field];
+      itemSources(item)[field]={...sourceRecord('act',value,'Повторне розпізнавання',state.source),original:previous?.original??value,previous:previous?.label||''};
+      if(field==='sample_weight'){item._sample_weight_manual=true;item._sample_weight_source='act';}
+      if(field==='product_name'){item.matches=[];if(value!==expected&&item.template_id)item._ocr_template_review=true;}
+      invalidateReview();renderItems();workspaceChanged();
+    },
+    setExpected:value=>{state.audit_expected=value;invalidateReview();workspaceChanged();updateGeneration();}
   });
 })();

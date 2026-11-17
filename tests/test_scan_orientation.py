@@ -30,6 +30,16 @@ def test_uncertain_page_keeps_its_original_orientation(monkeypatch):
     assert angle == 0 and result.size == source.size
 
 
+def test_continuation_without_act_header_can_still_be_oriented(monkeypatch):
+    image = Image.new('RGB', (400, 600), 'white')
+    image.putpixel((0, 0), (255, 0, 0))
+    def recognize(candidate, *args, **kwargs):
+        return 'Виробник. Постачальник. Консерви.' if candidate.getpixel((0, 0)) == (255, 0, 0) else 'xz gf'
+    monkeypatch.setattr(extraction, '_ocr_image', recognize)
+    upright, angle = extraction._orient_image(image.rotate(270, expand=True), 'ukr')
+    assert angle == 90 and upright.getpixel((0, 0)) == (255, 0, 0)
+
+
 @pytest.mark.parametrize('ambiguous_seals', [False, True])
 def test_table_retains_third_sample_when_warp_clips_outer_border(monkeypatch, ambiguous_seals):
     cv2 = pytest.importorskip('cv2')

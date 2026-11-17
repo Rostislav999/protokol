@@ -34,7 +34,7 @@ def now():
 
 def fingerprint(data):
     """UI selection/provenance do not invalidate a document's contents."""
-    ignored = {'selectedLetterId', 'generation_id', 'job_id', 'warnings', 'sources', 'sourceHadFile', 'confirmed', 'reviewConfirmed', 'review_confirmed'}
+    ignored = {'selectedLetterId', 'generation_id', 'job_id', 'warnings', 'sources', 'sourceHadFile', 'confirmed', 'reviewConfirmed', 'review_confirmed', 'audit', 'audit_expected', 'source_location'}
     def clean(value):
         if isinstance(value, dict):
             return {key: clean(child) for key, child in value.items() if key not in ignored and not key.startswith('_')}
@@ -201,6 +201,19 @@ class WorkStore:
             connection.execute('UPDATE packages SET title=?,customer=?,reference=?,notes=?,status=?,revision=revision+1,updated_at=? WHERE id=?',
                                (values['title'], values['customer'], values['reference'], values['notes'], values['status'], now(), package_id))
             return dict(connection.execute('SELECT * FROM packages WHERE id=?', (package_id,)).fetchone())
+
+    def delete(self, package_id, expected_revision, expected_updated_at):
+        if not ID.fullmatch(package_id):
+            raise WorkbenchError('Пакет документів не знайдено.', 404)
+        with self.transaction() as connection:
+            old = self.scope(connection, package_id)
+            if old['revision'] != expected_revision or old['updated_at'] != expected_updated_at:
+                raise WorkbenchError('Пакет змінився. Оновіть його перед видаленням.', 409)
+            connection.execute('DELETE FROM package_files WHERE scope=?', (package_id,))
+            connection.execute('DELETE FROM letter_versions WHERE scope=?', (package_id,))
+            connection.execute('DELETE FROM packages WHERE id=?', (package_id,))
+            connection.execute("UPDATE workbench_preferences SET value=? WHERE key='last_scope' AND value=?", (WORKSPACE, package_id))
+            return {'deleted': True, 'id': package_id}
 
     def drafts(self, package_id):
         if not ID.fullmatch(package_id):

@@ -173,3 +173,62 @@ def test_ruled_table_detection_keeps_cells_and_continues_on_next_page(monkeypatc
     continued_items = parse_act(continuation["text"])["items"]
     assert continued_items[0]["manufacture_date"] == "11.02.2026"
     assert continued_items[2]["batch_size"] == "2000.05 кг"
+
+
+def test_scanner_pdf_with_pixel_sized_media_box_is_rasterized_within_budget(monkeypatch):
+    import fitz
+    from app import extraction
+    seen = []
+    monkeypatch.setattr(extraction, '_ocr_languages', lambda: ('ukr', []))
+    monkeypatch.setattr(extraction, '_orient_image', lambda image, language: (image, 0))
+    monkeypatch.setattr(extraction, '_ocr_table', lambda *args: None)
+    def recognize(image, *args):
+        assert image.width * image.height <= extraction.MAX_PIXELS
+        seen.append(image.size)
+        return 'Найменування продукції: Свинина тушкована'
+    monkeypatch.setattr(extraction, '_ocr_image', recognize)
+    with fitz.open() as document:
+        document.new_page(width=2480, height=3507)
+        result = extract_text(document.tobytes(), 'scan.pdf')
+    assert seen and max(seen[0]) <= 3500
+    assert len(parse_act(result['text'])['items']) == 1
+    assert any('обмежено' in warning for warning in result['warnings'])
+
+
+def test_scanner_fold_column_numbers_and_continuation_keep_all_five_samples(monkeypatch):
+    pytest.importorskip('cv2')
+    from PIL import Image, ImageDraw
+    from app import extraction
+
+    def page(ys, crease=False):
+        image = Image.new('RGB', (1050, 800), 'white')
+        draw = ImageDraw.Draw(image)
+        xs = [60, 90, 340, 520, 650, 780, 900, 1010]
+        for x in xs:
+            draw.line((x, ys[0], x, ys[-1]), fill='black', width=2)
+        for y in ys:
+            draw.line((xs[0], y, xs[-1], y), fill='black', width=2)
+        if crease:
+            draw.line((0, ys[0], 1049, ys[0]), fill='gray', width=3)
+            draw.rectangle((850, 655, 1010, 710), outline='black', width=2)
+        return image
+
+    header = ['№', 'Назва харчового продукту, номер за каталогом', 'Підприємство виробник',
+              'Дата виготовлення', 'Маса партії', 'НД', '№ пломби']
+    def cells(index):
+        return ['Свинина тушкована 12012' if index < 5 else "Сніданок м’ясний 12011",
+                'Виробник: ТОВ Приклад', f'Вжити до: {index:02d}.11.2030', f'{index}000 кг',
+                'ДСТУ 4450:2005' if index < 5 else 'ДСТУ 4449:2005', f'0000000{index}']
+    values = iter(header + ['2', '3', '4', '5', '6', '7'] + cells(1)
+                  + ['Підстава: лист консервного заводу.'])
+    monkeypatch.setattr(extraction, '_ocr_image', lambda *a, **k: next(values))
+    first = extraction._ocr_table(page([200, 330, 360, 620], crease=True), 'ukr')
+    assert first is not None and first['rows'] == 1
+    values = iter(['2'] + cells(2) + cells(3) + cells(4) + cells(5))
+    continued = extraction._ocr_table(page([60, 210, 360, 510, 660]), 'ukr', first['header'])
+    assert continued is not None and continued['rows'] == 4
+    items = parse_act(first['text'] + '\n\n' + continued['text'])['items']
+    assert len(items) == 5
+    assert [item['batch_size'] for item in items] == [f'{i}000 кг' for i in range(1, 6)]
+    assert [item['seal_number'] for item in items] == [f'0000000{i}' for i in range(1, 6)]
+    assert [item['catalog_number'] for item in items] == ['12012'] * 4 + ['12011']

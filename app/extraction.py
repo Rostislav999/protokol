@@ -23,6 +23,7 @@ from . import progress
 MAX_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 20
 MAX_PIXELS = 40_000_000
+MAX_PDF_OCR_SIDE = 3500
 ITEM_FIELDS = (
     "product_name", "protocol_number", "catalog_number", "manufacturer",
     "manufacture_date", "batch_size", "standard", "seal_number", "sample_weight", "sample_quantity",
@@ -86,7 +87,7 @@ def _orient_image(image, language: str):
         candidates.append((angle, *score(_ocr_image(preview.rotate(angle, expand=True), language, psm=6))))
     ordered = sorted(candidates, key=lambda entry: entry[2], reverse=True)
     best, second = ordered[:2]
-    if (best[0] and best[1] >= 4 and best[1] >= candidates[0][1] + 2
+    if (best[0] and best[1] >= 3 and best[1] >= candidates[0][1] + 2
             and best[2] >= candidates[0][2] + 24 and best[2] >= second[2] + 12):
         return image.rotate(best[0], expand=True), best[0]
     return image, 0
@@ -124,7 +125,17 @@ def _ocr_table(image, language: str, previous_header=None):
     contour = max(contours, key=cv2.contourArea)
     if cv2.contourArea(contour) < width * height * .12:
         return None
-    hull = cv2.convexHull(contour)
+    # Scanner folds can cross the whole sheet and join the table contour.
+    # Bound a ruled table by its tall column rules instead: a crease or the
+    # short incoming-mail stamp must not distort the perspective transform.
+    column_contours, _ = cv2.findContours(vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rules = []
+    for candidate in column_contours:
+        x, y, w, h = cv2.boundingRect(candidate)
+        if (h >= max(25, height * .1) and w < h * .15
+                and cv2.pointPolygonTest(contour, (x + w / 2, y + h / 2), False) >= 0):
+            rules.append(candidate)
+    hull = cv2.convexHull(np.vstack(rules) if len(rules) >= 6 else contour)
     corners = cv2.approxPolyDP(hull, .02 * cv2.arcLength(hull, True), True)
     if len(corners) != 4:
         return None
@@ -213,6 +224,8 @@ def _ocr_table(image, language: str, previous_header=None):
     if "product_name" not in fields:
         return None
     rows = []
+    locations = []
+    detected_rows = 0
     warnings = []
     for row in range(1 if has_header else 0, len(ys) - 1):
         item = _empty_item()
@@ -229,14 +242,33 @@ def _ocr_table(image, language: str, previous_header=None):
                     elif len(ids) > 1:
                         item[field] = ''
                         warnings.append('Номер пломби у вертикальній комірці прочитано неоднозначно. Внесіть його вручну за сканом.')
-        if not item["product_name"]:
+        # Many acts have a second header row numbering their columns 1…13.
+        # These are column labels, never a sample whose name is just "2".
+        if re.fullmatch(r"\d{1,2}[.)]?", item["product_name"]):
+            continue
+        detected_rows += 1
+        if not item['product_name']:
             continue
         item["manufacturer"] = re.sub(r"^виробник\s*:\s*", "", item["manufacturer"], flags=re.I)
         item["batch_size"] = re.sub(r"(?<=\d)\s*(?:кі|кг|kg)\.?$", " кг", item["batch_size"], flags=re.I)
         catalog = re.search(r"\(\s*(\d{5})\s*\)", item["product_name"])
+        catalog_in_name = (any(field == 'product_name' and 'каталог' in label.lower()
+                               for field, label in zip(fields, first_row)) if has_header
+                           else isinstance(previous_header, dict) and previous_header.get('catalog_in_name', False))
+        if not catalog and catalog_in_name:
+            catalog = re.search(r"\b(\d{5})\s*$", item["product_name"])
         if catalog:
             item["catalog_number"] = catalog.group(1)
+            if catalog_in_name and catalog[0].strip().isdigit():
+                item['product_name'] = item['product_name'][:catalog.start()].rstrip()
         rows.append(item)
+        bounds = np.array([[[0, ys[row] * ratio], [original_table_width - 1, ys[row] * ratio],
+                            [original_table_width - 1, ys[row + 1] * ratio], [0, ys[row + 1] * ratio]]], np.float32)
+        original = cv2.perspectiveTransform(bounds, np.linalg.inv(transform))[0]
+        locations.append({'bbox': [max(0., float(original[:, 0].min() / image.width)),
+                                   max(0., float(original[:, 1].min() / image.height)),
+                                   min(1., float(original[:, 0].max() / image.width)),
+                                   min(1., float(original[:, 1].max() / image.height))]})
     if not rows:
         return None
     columns = ["№", "Найменування продукції", "Ідентифікаційний номер", "Номер за каталогом", "Виробник", "Дата виготовлення", "Розмір партії", "Нормативний документ", "Номер пломби / сейф-пакета", "Вага зразка", "Кількість одиниць відібраного зразка"]
@@ -253,7 +285,8 @@ def _ocr_table(image, language: str, previous_header=None):
             header_text += "\nДата акта: " + recovered_date
             warnings.append("Дату акта уточнено окремим розпізнаванням заголовка. Перевірте її за сканом.")
     return {"text": header_text + "\n\n" + "\n".join(lines),
-            "header": {"fields": fields, "rotations": rotations}, "rows": len(rows), "warnings": warnings}
+            "header": {"fields": fields, "rotations": rotations, "catalog_in_name": catalog_in_name},
+            "rows": len(rows), "detected_rows": detected_rows, "locations": locations, "warnings": warnings}
 
 
 def extract_text(data: bytes, filename: str) -> dict:
@@ -309,22 +342,25 @@ def extract_text(data: bytes, filename: str) -> dict:
                 raise ValueError("PDF захищений паролем. Завантажте незахищену копію.")
             if not 0 < len(document) <= MAX_PAGES:
                 raise ValueError("PDF має містити від 1 до 20 сторінок.")
-            texts, methods = [], set()
+            texts, methods, evidence = [], set(), []
             language = None
             table_header = None
             for page_index, page in enumerate(document, 1):
                 progress.page(page_index, len(document))
                 text = page.get_text(sort=True).strip()
+                angle, table_result = 0, None
                 if len(re.sub(r"\W", "", text)) >= 40:
                     methods.add("pdf-text")
                 else:
                     if language is None:
                         language, language_warnings = _ocr_languages()
                         warnings.extend(language_warnings)
-                    # 200 DPI balances small table text and CPU/memory use.
-                    scale = 200 / 72
-                    if page.rect.width * page.rect.height * scale * scale > MAX_PIXELS:
-                        raise ValueError("Сторінка PDF завелика для OCR (40 млн пікселів).")
+                    # Some scanner PDFs use pixel dimensions as PDF points.
+                    # Bound the raster before allocating it, rather than
+                    # rejecting an ordinary scan because of its media box.
+                    scale = min(200 / 72, MAX_PDF_OCR_SIDE / max(page.rect.width, page.rect.height))
+                    if scale < 200 / 72:
+                        warnings.append("Розмір сторінки PDF обмежено для OCR. Перевірте дрібний текст за оригіналом.")
                     pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                     image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
                     image, angle = _orient_image(image, language)
@@ -341,8 +377,11 @@ def extract_text(data: bytes, filename: str) -> dict:
                         text = _ocr_image(image, language)
                         methods.add("ocr")
                 texts.append(text)
+                evidence.append({'page':page_index,'angle':angle,'text':text,
+                                 'detected_rows':table_result.get('detected_rows', table_result['rows']) if table_result else None,
+                                 'locations':table_result.get('locations', []) if table_result else []})
             return {"text": "\n\n".join(texts), "pages": len(document),
-                    "method": "+".join(sorted(methods)), "warnings": list(dict.fromkeys(warnings))}
+                    "method": "+".join(sorted(methods)), "warnings": list(dict.fromkeys(warnings)), 'page_evidence': evidence}
     if extension in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"):
         from PIL import Image, UnidentifiedImageError
         try:
@@ -352,7 +391,7 @@ def extract_text(data: bytes, filename: str) -> dict:
                 raise ValueError("Зображення має забагато сторінок: максимально 20.")
             language, language_warnings = _ocr_languages()
             warnings.extend(language_warnings)
-            texts = []
+            texts, evidence = [], []
             table_header = None
             for index in range(pages):
                 progress.page(index + 1, pages)
@@ -370,10 +409,13 @@ def extract_text(data: bytes, filename: str) -> dict:
                     warnings.append("Таблицю розпізнано по комірках. Рукописні номери внесіть вручну.")
                 else:
                     texts.append(_ocr_image(oriented, language))
+                evidence.append({'page':index+1,'angle':angle,'text':texts[-1],
+                                 'detected_rows':result.get('detected_rows', result['rows']) if result else None,
+                                 'locations':result.get('locations', []) if result else []})
             image.close()
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
             raise ValueError("Не вдалося прочитати зображення або воно завелике.") from exc
-        return {"text": "\n\n".join(texts), "pages": pages, "method": "ocr", "warnings": list(dict.fromkeys(warnings))}
+        return {"text": "\n\n".join(texts), "pages": pages, "method": "ocr", "warnings": list(dict.fromkeys(warnings)), 'page_evidence': evidence}
     raise ValueError("Підтримуються PDF, PNG, JPG, TIFF, BMP, WEBP, DOCX і TXT.")
 
 
@@ -451,7 +493,7 @@ def _header_field(value: str) -> str | None:
         return "catalog_number"
     if re.search(r"ідентифікаці|номер.*(?:зраз|протокол)", v):
         return "protocol_number"
-    if re.search(r"парті|партии", v):
+    if re.search(r"парті|партии|від якої відібрано зразки", v):
         return "batch_size"
     return None
 
@@ -476,7 +518,7 @@ def _act_date(value: str) -> str:
 
 def _act_metadata(preamble: str) -> tuple[str, str]:
     marker = re.search(
-        r"(?im)^\s*[|]?\s*акт(?:\s+відбору(?:\s+зразків(?:\s+продукції)?)?)?\s*[:：]?\s*"
+        r"(?im)^\s*[|]?\s*[аa][кk][тt](?:\s+відбору(?:\s+зразків(?:\s+продукції)?)?)?\s*[:：]?\s*"
         r"(?:№|No\.?|N[º°]?\.?|#)\s*([A-ZА-ЯІЇЄҐ0-9]+(?:\s*[-/]\s*[A-ZА-ЯІЇЄҐ0-9]+)*)",
         preamble,
     )
@@ -538,6 +580,16 @@ def parse_act(text: str) -> dict:
         return {"common": common, "items": items, "warnings": warnings + ["Текст акта порожній. Додайте текст або завантажте чіткіший скан."]}
     if len(text) > 500_000:
         raise ValueError("Текст акта завеликий: максимально 500 000 символів.")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    # Once an explicit table is available, prose in its preamble is not a
+    # product cell (e.g. a letter from a cannery contains food-related words).
+    has_table = False
+    for raw in lines:
+        columns = _table_columns(raw)
+        fields = [_header_field(value) for value in columns] if columns else []
+        if 'product_name' in fields and sum(field is not None for field in fields) >= 2:
+            has_table = True
+            break
     current = None
     previous_field = None
     table_header = None
@@ -562,13 +614,18 @@ def parse_act(text: str) -> dict:
                 break
             address_lines.append(value_line)
         common["sampling_description"] = _normalize(" ".join(address_lines))
-    for raw in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+    for raw in lines:
         line = _normalize(raw)
         if not line:
             previous_field = None
             continue
         if re.match(r"^Зразки харчових продуктів відібрано за адресою\s+[^:]", line, re.I):
             # The narrative preamble above also includes wrapped address lines.
+            previous_field = None
+            continue
+        combined = re.match(r"^Замовник\s*/\s*Постачальник\s*:\s*(.+)", line, re.I)
+        if combined:
+            common['customer'] = common['supplier'] = re.split(r",?\s+відповідно\s+до\b", combined[1], maxsplit=1, flags=re.I)[0].strip(' ,.;')
             previous_field = None
             continue
         cells = _table_columns(raw)
@@ -664,7 +721,7 @@ def parse_act(text: str) -> dict:
             table_header = None
             continue
         # A short unlabelled food line may be the product cell of a simple act.
-        if current is None and _PRODUCT_HINT.search(line) and not re.search(r"акт|відбор|перелік|підпис", line, re.I) and len(line) <= 200:
+        if not has_table and current is None and _PRODUCT_HINT.search(line) and not re.search(r"акт|відбор|перелік|підпис|догов|контракт|постачальник|замовник|адрес|отримувач|представник|директор|інженер", line, re.I) and len(line) <= 200:
             current = _empty_item()
             current["product_name"] = line
             items.append(current)

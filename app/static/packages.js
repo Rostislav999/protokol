@@ -33,7 +33,7 @@
   }
   function renderDetail(){
     const value=detail.package;report=null;
-    $('[data-package-detail]').innerHTML=`<button type="button" class="text-button" data-package-back>← Усі пакети</button><div class="package-heading"><div><h2>${esc(value.title)}</h2><p>${esc(value.customer||'Замовника не зазначено')}${value.reference?' · '+esc(value.reference):''}</p></div><span class="package-state ${value.status}">${states[value.status]}</span></div>${value.notes?`<p class="package-notes">${esc(value.notes)}</p>`:''}<div class="package-actions"><button type="button" class="button primary" data-package-work>${value.status==='archived'?'Повернути в роботу':'Продовжити роботу'}</button><button type="button" class="button secondary" data-package-check>Перевірити комплект</button><button type="button" class="button secondary" data-package-download>Завантажити пакет ZIP</button><button type="button" class="button quiet" data-package-edit>Відомості</button><button type="button" class="text-button" data-package-archive ${value.status==='archived'?'hidden':''}>До архіву</button></div><section class="panel package-check" data-package-check-result hidden></section><section class="panel package-documents"><div class="panel-heading"><h2>Файли пакета</h2><label class="confirmation"><input type="checkbox" data-package-show-old><span>Попередні файли</span></label></div><div data-package-files></div><details class="package-add-files"><summary>Додати файли вручну</summary><form data-package-upload><label class="field"><span>Документи</span><input type="file" multiple data-package-upload-files accept=".docx,.pdf,.zip,.xlsx,.png,.jpg,.jpeg,.tif,.tiff,.txt,.csv"></label><label class="field"><span>Розділ</span><select data-package-upload-section>${Object.entries(names).map(([id,name])=>`<option value="${id}">${name}</option>`).join('')}</select></label><label class="field"><span>Призначення</span><select data-package-upload-kind><option value="source">Вихідні файли</option><option value="attachment">Додаткові документи</option></select></label><button type="submit" class="button secondary" ${value.status==='archived'?'disabled':''}>Додати до пакета</button></form></details></section>`;
+    $('[data-package-detail]').innerHTML=`<button type="button" class="text-button" data-package-back>← Усі пакети</button><div class="package-heading"><div><h2>${esc(value.title)}</h2><p>${esc(value.customer||'Замовника не зазначено')}${value.reference?' · '+esc(value.reference):''}</p></div><span class="package-state ${value.status}">${states[value.status]}</span></div>${value.notes?`<p class="package-notes">${esc(value.notes)}</p>`:''}<div class="package-actions"><button type="button" class="button primary" data-package-work>${value.status==='archived'?'Повернути в роботу':'Продовжити роботу'}</button><button type="button" class="button secondary" data-package-check>Перевірити комплект</button><button type="button" class="button secondary" data-package-download>Завантажити пакет ZIP</button><button type="button" class="button quiet" data-package-edit>Відомості</button><button type="button" class="text-button" data-package-archive ${value.status==='archived'?'hidden':''}>До архіву</button><button type="button" class="text-button danger-text" data-package-delete>Видалити пакет</button></div><section class="panel package-check" data-package-check-result hidden></section><section class="panel package-documents"><div class="panel-heading"><h2>Файли пакета</h2><label class="confirmation"><input type="checkbox" data-package-show-old><span>Попередні файли</span></label></div><div data-package-files></div><details class="package-add-files"><summary>Додати файли вручну</summary><form data-package-upload><label class="field"><span>Документи</span><input type="file" multiple data-package-upload-files accept=".docx,.pdf,.zip,.xlsx,.png,.jpg,.jpeg,.tif,.tiff,.txt,.csv"></label><label class="field"><span>Розділ</span><select data-package-upload-section>${Object.entries(names).map(([id,name])=>`<option value="${id}">${name}</option>`).join('')}</select></label><label class="field"><span>Призначення</span><select data-package-upload-kind><option value="source">Вихідні файли</option><option value="attachment">Додаткові документи</option></select></label><button type="submit" class="button secondary" ${value.status==='archived'?'disabled':''}>Додати до пакета</button></form></details></section>`;
     renderFiles();
   }
   async function showDetail(id){
@@ -53,6 +53,24 @@
     }finally{working=false;buttons.forEach(button=>{button.disabled=false;button.textContent=button.dataset.caption;});}
   }
   function metadata(value){return Object.fromEntries(['title','customer','reference','notes'].map(key=>[key,value[key]]));}
+  async function deletePackage(id) {
+    if (working || window.OZWorkspace.busy) throw new Error('Дочекайтеся завершення поточної обробки.');
+    working = true;
+    const button = $('[data-package-delete]');
+    if (button) button.disabled = true;
+    try {
+      if (window.OZWorkspace.scope === id) await window.OZWorkspace.flush();
+      const current = (await api('/api/packages/' + id)).package;
+      if (!window.confirm(`Видалити пакет «${current.title}», його чернетки, оригінали, створені файли та історію листів? Дію не можна скасувати.`)) return;
+      if (window.OZWorkspace.scope === id) await window.OZWorkspace.activateScope('workspace');
+      const params = new URLSearchParams({expected_revision:current.revision,expected_updated_at:current.updated_at});
+      await api('/api/packages/' + id + '?' + params, {method:'DELETE'});
+      detailRequest++;selected='';detail=null;report=null;
+      $('[data-package-detail]').hidden=true;$('[data-package-list-view]').hidden=false;
+      $('[data-package-error]').hidden=true;
+      context();await listing();
+    } finally {working=false;if (button) button.disabled=false;}
+  }
   function issueGroups(issues){
     return [['error','Помилки'],['warning','Зауваження']].map(([level,title])=>{
       const rows=issues.filter(issue=>issue.level===level);if(!rows.length)return '';
@@ -120,6 +138,7 @@
       if(target.matches('[data-package-back]')){detailRequest++;selected='';detail=null;$('[data-package-list-view]').hidden=false;$('[data-package-detail]').hidden=true;await listing();}
       if(target.matches('[data-package-work]'))await openWork(id);
       if(target.matches('[data-package-edit]'))openForm(true);
+      if(target.matches('[data-package-delete]'))await deletePackage(id);
       if(target.matches('[data-package-check]'))await check();
       if(target.matches('[data-package-go]')){const section=target.dataset.packageGo;await openWork(id);document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:section}}));}
       if(target.matches('[data-package-ready]')){

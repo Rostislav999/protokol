@@ -1,6 +1,21 @@
 """Act and physical seal IDs must remain distinct from protocol/catalog numbers."""
 import pytest
 
+
+def test_act_heading_accepts_latin_ocr_lookalikes_and_explicit_combined_customer():
+    from app.extraction import parse_act
+    result = parse_act('''AKT № 12-345-6-789 від 13.11.2026
+Замовник/ Постачальник: ТОВ «Приклад», відповідно до Державного контракту про закупівлю
+Підстава: лист консервного заводу.
+№ | Найменування продукції | Маса партії
+1 | Свинина тушкована | 1000 кг
+''')
+    assert result['common']['act_number'] == '12-345-6-789'
+    assert result['common']['act_date'] == '2026-11-13'
+    assert result['common']['customer'] == result['common']['supplier'] == 'ТОВ «Приклад»'
+    assert len(result['items']) == 1
+    assert result['items'][0]['batch_size'] == '1000 кг'
+
 from app.extraction import parse_act
 
 
