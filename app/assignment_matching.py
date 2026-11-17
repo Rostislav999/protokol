@@ -22,6 +22,9 @@ def _standard_text(value: str) -> str:
     # Normalize only known document designators. Identifiers and edition years
     # are retained; we never infer them from a filename or a short numeric code.
     text = re.sub(r"\bDSTU(?=\s*\d)|Д[СC][ТT][УY]", "ДСТУ", text)
+    # Table rules crossing a scan often become punctuation between the
+    # explicit designator and its number. Preserve the number/year itself.
+    text = re.sub(r'\bДСТУ\s*[_.,"\'—]+\s*(?=\d)', 'ДСТУ ', text)
     text = re.sub(r"\bGOST(?=\s*\d)", "ГОСТ", text)
     text = re.sub(r"\bGN(?=\s*\d)", "ГН", text)
     text = re.sub(r"(?:ТУ|TY|TУ|ТY)\s*[УUY]", "ТУ У", text)

@@ -14,9 +14,10 @@
   const state = {
     templates: [], items: [], loaded: false, loading: false, busy: false, source: '', sourceUrl: '',
     text: '', today: '', nextNumber: null, initialNumber: '', jobId: uid(), result: null, editing: null,
-    issuers: [], issuerId: '', warnings: [], numbersChecking:false, numberError:''
+    issuers: [], issuerId: '', warnings: [], numbersChecking:false, numberError:'', deleted:[], audit:null, audit_expected:null
   };
   const clone = value => JSON.parse(JSON.stringify(value));
+  let preparingAct = false;
   const changed = () => window.OZWorkspace?.changed('assignments');
   const originText = source => source?.label || ({act:'З акта',manual:'Введено вручну',directory:'Із довідника',template:'Із шаблону',derived:'Обчислено програмою'})[source?.kind] || 'Джерело не збережено';
   const sourceHint = (item,key) => {const text=originText(item.sources?.[key]);return `<small class="field-source" data-assignment-origin="${key}">${text.startsWith('Джерело')?'':'Джерело: '}${esc(text)}</small>`;};
@@ -41,6 +42,7 @@
         <legend class="sr-only">Дані для завдань</legend>
         <div id="assignment-source" class="source-banner"></div>
         <div id="assignment-warnings" class="notice warning" hidden></div>
+        <div id="assignment-undo" class="notice soft assignment-undo" hidden><span id="assignment-undo-label" role="status"></span><button id="assignment-undo-delete" type="button" class="button secondary">Скасувати видалення</button></div>
         <details class="panel source-details"><summary>Розпізнаний текст акта <span>Переглянути або виправити</span></summary><div class="details-body"><label for="assignment-raw-text">Текст для повторного розбору</label><textarea id="assignment-raw-text" rows="8" spellcheck="false"></textarea><div class="source-actions"><small>Повторний розбір замінить поля та вибір шаблонів.</small><button id="assignment-reparse" type="button" class="button secondary">Повторно розібрати текст</button></div></div></details>
         <section class="panel assignment-number-panel">
           <div class="panel-heading"><div><h2>Номери та дата видачі</h2><p>Один номер зразка використовується в усіх його завданнях.</p></div><span class="subtle-tag">ЛІЧИЛЬНИК ЗБЕРІГАЄТЬСЯ</span></div>
@@ -65,6 +67,29 @@
       <div class="notice soft">${icon('info')}<div>Щоб змінити показники, методи випробувань, НД або відділення, відредагуйте сам Word-файл і додайте його як новий шаблон. Назва та синоніми для пошуку редагуються тут.</div></div>
     </section>`;
   $('.main-content').append(view);
+  const copyDialog = document.createElement('dialog');
+  copyDialog.id = 'assignment-copy-dialog';
+  copyDialog.className = 'modal';
+  copyDialog.setAttribute('aria-labelledby', 'assignment-copy-title');
+  copyDialog.innerHTML = `<form id="assignment-copy-form"><div class="modal-heading"><h2 id="assignment-copy-title">Кілька копій зразка</h2><button type="button" data-copy-close class="icon-button" aria-label="Закрити">${icon('close')}</button></div><div class="modal-body"><p id="assignment-copy-name"></p><label class="field"><span>Кількість нових копій</span><input id="assignment-copy-count" type="number" min="1" max="99" step="1" value="2" required inputmode="numeric"></label><p id="assignment-copy-hint"></p><p class="notice soft">Поля, відділення й шаблони буде скопійовано. Кожна копія матиме окремий номер і потребуватиме перевірки.</p></div><div class="modal-footer"><button type="button" data-copy-close class="button secondary">Скасувати</button><button type="submit" id="assignment-copy-submit" class="button primary">Додати копії</button></div></form>`;
+  document.body.append(copyDialog);
+  let copyTargetId = null;
+  $$('[data-copy-close]',copyDialog).forEach(button => button.addEventListener('click', () => copyDialog.close()));
+  copyDialog.addEventListener('close', () => {if (!copyDialog.open) copyTargetId = null;});
+  copyDialog.addEventListener('click', event => {if (event.target === copyDialog && !$('#assignment-copy-submit').disabled) copyDialog.close();});
+  copyDialog.addEventListener('cancel', event => {if ($('#assignment-copy-submit').disabled) event.preventDefault();});
+  $('#assignment-copy-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!event.target.reportValidity()) return;
+    const original = state.items.find(item => item.id === copyTargetId);
+    if (!original) {copyDialog.close();return;}
+    const button = $('#assignment-copy-submit');
+    if (button.disabled) return;
+    button.disabled = true;
+    $$('[data-copy-close]',copyDialog).forEach(control => {control.disabled = true;});
+    try {if (await copySample(original, Number($('#assignment-copy-count').value))) copyDialog.close();}
+    finally {button.disabled = false;$$('[data-copy-close]',copyDialog).forEach(control => {control.disabled = false;});}
+  });
   const dialog = document.createElement('dialog');
   dialog.id = 'assignment-template-dialog';
   dialog.className = 'modal';
@@ -415,11 +440,18 @@
   function renderSource() {
     $('#assignment-source').innerHTML = `${icon('file')}<div><strong>${esc(state.source || 'Ручне введення зразків')}</strong><small>Позицій: ${state.items.length} · НД та шаблони потребують перевірки</small></div>${state.sourceUrl ? `<a class="source-original-link" href="${esc(state.sourceUrl)}" target="_blank" rel="noopener noreferrer">Відкрити оригінал акта ${icon('arrow')}</a>` : ''}`;
   }
+  function clearSampleHistory() {
+    state.deleted = [];
+    copyTargetId = null;
+    if (copyDialog.open) copyDialog.close();
+  }
   async function importData(data, source) {
+    clearSampleHistory();
     const manual = !source || source === 'Ручне введення';
-    state.items = (data.items || []).map(item => blankItem({id:item.id || uid(), product_name:item.product_name || '', standard:item.standard || '', sample_weight:'',
+    state.items = (data.items || []).map(item => blankItem({id:item.id || uid(), product_name:item.product_name || '', standard:item.standard || '', sample_weight:'',source_location:window.OZActReview.cleanLocation(item.source_location),
       sources:Object.fromEntries(['product_name','standard','sample_weight'].map(key => [key,
         key === 'sample_weight' ? {kind:'manual',label:'Не заповнено'} : data.provenance?.items?.[item.id]?.[key] || {kind:manual?'manual':'act',label:manual?'Введено вручну':`З акта: ${source || 'акт відбору'}`,source:source || ''}]))}));
+    state.audit=window.OZActReview.cleanAudit(data.audit);state.audit_expected=window.OZActReview.cleanExpected(data.audit_expected);
     state.text = data.text || '';state.sourceGroup=data.sourceGroup||'';
     state.source = source || 'Акт відбору';
     $('#assignment-raw-text').value = state.text;
@@ -445,24 +477,30 @@
   document.addEventListener('protokol:assignments-import', async event => {
     if (state.busy) return notice('Дочекайтеся завершення поточної операції.', true);
     if (state.items.length && !window.confirm('Передати зразки з акта? Поточний список завдань буде замінено.')) return;
-    navigate();
-    switchTab(false);
-    if (!state.loaded) await load();
-    if (state.sourceUrl) URL.revokeObjectURL(state.sourceUrl);
-    state.sourceUrl = '';
-    await importData(event.detail, event.detail.source || 'Зразки з акта');
+    state.busy=true;$('#assignment-editor').disabled=true;updateReadiness();
+    try {
+      navigate();
+      switchTab(false);
+      if (!state.loaded) await load();
+      if (state.sourceUrl) URL.revokeObjectURL(state.sourceUrl);
+      state.sourceUrl = '';
+      await importData(event.detail, event.detail.source || 'Зразки з акта');
+    } catch(error) {notice(error.message,true);}
+    finally {state.busy=false;$('#assignment-editor').disabled=false;updateReadiness();}
   });
   $('#assignment-upload').addEventListener('click', () => $('#assignment-act-file').click());
   $('#assignment-act-file').addEventListener('change', async event => {
     const file = event.target.files[0];
-    if (!file || state.busy) return;
+    if (!file || state.busy || preparingAct) return;
     if (file.size > 25 * 1024 * 1024) return notice('Максимальний розмір файла — 25 МБ.', true);
     if (!/\.(pdf|jpe?g|png|tiff?|docx|txt)$/i.test(file.name)) return notice('Підтримуються PDF, JPG, PNG, TIFF, DOCX і TXT.', true);
-    state.busy = true;
-    $('#assignment-upload-panel').hidden = true;
-    $('#assignment-processing').hidden = false;
-    $('#assignment-processing-label').textContent = `Опрацьовуємо «${file.name}»…`;
+    preparingAct = true;
     try {
+      await window.OZWorkspace.startNewAct(file.name);
+      state.busy = true;
+      $('#assignment-upload-panel').hidden = true;
+      $('#assignment-processing').hidden = false;
+      $('#assignment-processing-label').textContent = `Опрацьовуємо «${file.name}»…`;
       const form = new FormData();
       form.append('file', file);
       const data = await window.OZTasks.run('act',[file],{section:'assignments'});
@@ -475,23 +513,27 @@
       notice(error.message, true);
     } finally {
       state.busy = false;
+      preparingAct = false;
       event.target.value = '';
       updateReadiness();
     }
   });
-  $('#assignment-manual').addEventListener('click', () => importData({items:[{}]}, 'Ручне введення'));
-  $('#assignment-new').addEventListener('click', () => {
-    if (state.busy) return;
-    if (state.items.length && !window.confirm('Почати новий список? Поточні незбережені дані буде очищено.')) return;
-    state.items = []; state.text = ''; state.source = ''; state.warnings = [];
-    if (state.sourceUrl) URL.revokeObjectURL(state.sourceUrl);
-    state.sourceUrl = '';
-    invalidate();
-    $('#assignment-editor').hidden = true;
-    $('#assignment-upload-panel').hidden = false;
-    $('#assignment-processing').hidden = true;
-    switchTab(false);
-    renderItems(); renderSource();
+  $('#assignment-manual').addEventListener('click', async () => {
+    if (state.busy || preparingAct) return;
+    preparingAct=true;
+    try {
+      await window.OZWorkspace.startNewAct('Новий акт — ручні завдання');
+      state.busy=true;$('#assignment-editor').disabled=true;
+      await importData({items:[{}]},'Ручне введення');
+    } catch(error) {notice(error.message,true);}
+    finally {preparingAct=false;state.busy=false;$('#assignment-editor').disabled=false;updateReadiness();}
+  });
+  $('#assignment-new').addEventListener('click', async () => {
+    if (state.busy || preparingAct) return;
+    preparingAct=true;
+    try {await window.OZWorkspace.startNewAct();switchTab(false);}
+    catch(error) {notice(error.message,true);}
+    finally {preparingAct=false;}
   });
   $('#assignment-raw-text').addEventListener('input',event => { state.text=event.target.value; changed(); });
   $('#assignment-reparse').addEventListener('click', async () => {
@@ -503,7 +545,7 @@
     button.disabled = true;
     try {
       const response = await post('/api/parse', {text});
-      await importData({...await response.json(), text}, state.source);
+      await importData({...await response.json(), text,audit:state.audit,audit_expected:state.audit_expected}, state.source);
     } catch (error) { notice(error.message, true); }
     finally { button.disabled = false; }
   });
@@ -547,14 +589,33 @@
     $('#assignment-item-count').textContent = state.items.length;
     $('#assignment-empty').hidden = state.items.length > 0;
     $('#assignment-items').innerHTML = state.items.map((item, index) => `<article class="panel item-card assignment-item" data-assignment-item="${esc(item.id)}">
-      <div class="item-heading"><div class="item-label"><span class="item-number">${index + 1}</span><div><h3 class="item-title">${esc(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Номер зразка: <strong class="assignment-number-preview">${esc(previewNumber(index))}</strong> · той самий для всіх відділень</p></div></div><button type="button" class="icon-button danger assignment-remove" aria-label="Видалити зразок ${index + 1}">${icon('trash')}</button></div>
+      <div class="item-heading"><div class="item-label"><span class="item-number">${index + 1}</span><div><h3 class="item-title">${esc(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Номер зразка: <strong class="assignment-number-preview">${esc(previewNumber(index))}</strong> · той самий для всіх відділень</p></div></div><div class="assignment-item-actions"><button type="button" class="button secondary assignment-copy" aria-label="Копіювати зразок ${index + 1} наступним">Копіювати наступним</button><button type="button" class="text-button assignment-copy-many" aria-label="Додати кілька копій зразка ${index + 1}">Кілька копій…</button><button type="button" class="icon-button danger assignment-remove" aria-label="Видалити зразок ${index + 1}">${icon('trash')}</button></div></div>
       <div class="form-grid"><label class="field"><span>Номер зразка</span><input type="number" min="1" max="2147483647" step="1" data-assignment-number value="${esc(item.assigned_number||item.sample_number||'')}" placeholder="${esc(previewNumber(index))}" ${item.assigned_number?'readonly':''}><small>${item.assigned_number?'Уже присвоєний номер зберігається.':'Порожнє поле — автоматична нумерація. Можна вказати номер окремо для цього зразка.'}</small></label></div><label class="confirmation notice warning" data-number-reuse-label ${item.number_conflict&&!item.assigned_number?'':'hidden'}><input type="checkbox" data-number-reuse ${item.allow_number_reuse?'checked':''}><span><span data-number-conflict>Номер ${esc(item.number_conflict)} раніше використаний.</span> Підтверджую повторне використання.</span></label>
-      <div class="form-grid"><label class="field wide"><span>Назва зразка *</span><input data-assignment-field="product_name" value="${esc(item.product_name)}" placeholder="Повне найменування з акта" required>${sourceHint(item,'product_name')}</label><label class="field"><span>НД на відповідність *</span><input data-assignment-field="standard" value="${esc(item.standard)}" placeholder="Наприклад, ДСТУ 4450:2005" required>${sourceHint(item,'standard')}</label><label class="field"><span>Спільна вага та кількість (за потреби)</span><input data-assignment-field="sample_weight" value="${esc(item.sample_weight)}" placeholder="Залиште порожнім для ваги з шаблонів"><small>Замінює вагу з шаблонів для відділень без ручних змін.</small>${sourceHint(item,'sample_weight')}</label></div>
+      <div class="form-grid"><label class="field wide"><span>Назва зразка *</span><input data-assignment-field="product_name" list="assignment-product-options" value="${esc(item.product_name)}" placeholder="Повне найменування з акта" required>${sourceHint(item,'product_name')}</label><label class="field"><span>НД на відповідність *</span><input data-assignment-field="standard" list="assignment-standard-options" value="${esc(item.standard)}" placeholder="Наприклад, ДСТУ 4450:2005" required>${sourceHint(item,'standard')}</label><label class="field"><span>Спільна вага та кількість (за потреби)</span><input data-assignment-field="sample_weight" value="${esc(item.sample_weight)}" placeholder="Залиште порожнім для ваги з шаблонів"><small>Замінює вагу з шаблонів для відділень без ручних змін.</small>${sourceHint(item,'sample_weight')}</label></div>
       <div class="assignment-match-toolbar"><button type="button" class="text-button assignment-find">Підібрати за назвою та НД</button><small>Дата видачі: ${esc(displayDate(state.today))}</small></div>
       <div class="assignment-departments">${DEPTS.map(d => renderDepartment(item,d)).join('')}</div>
     </article>`).join('');
+    renderProductOptions();
     updateNumberWarnings();updateReadiness();
   }
+  function renderProductOptions(excludeId = '') {
+    for (const [field,id] of [['product_name','assignment-product-options'],['standard','assignment-standard-options']]) {
+      let options = $(`#${id}`);
+      if (!options) {
+        options = document.createElement('datalist');
+        options.id = id;
+        $('#assignment-items').after(options);
+      }
+      const values = [...new Set([...state.templates.map(t => t[field]), ...state.items.filter(item => item.id !== excludeId).map(item => item[field])]
+        .filter(value => value?.trim()).map(value => value.trim()))].sort((a,b) => a.localeCompare(b,'uk',{numeric:true}));
+      options.innerHTML = values.map(value => `<option value="${esc(value)}"></option>`).join('');
+    }
+  }
+  $('#assignment-items').addEventListener('focusin', event => {
+    if (event.target.matches('[data-assignment-field="product_name"],[data-assignment-field="standard"]')) {
+      renderProductOptions(event.target.closest('[data-assignment-item]').dataset.assignmentItem);
+    }
+  });
   async function findMatches(item, render = true) {
     if (!item.product_name.trim() || !item.standard.trim()) return notice('Спочатку вкажіть назву та НД зразка.', true);
     const name = item.product_name, standard = item.standard;
@@ -661,6 +722,23 @@
     if (!card) return;
     const item = state.items.find(v => v.id === card.dataset.assignmentItem);
     if (!item) return;
+    if (event.target.closest('.assignment-copy')) {
+      await copySample(item);
+      return;
+    }
+    if (event.target.closest('.assignment-copy-many')) {
+      if (state.busy || state.numbersChecking || state.items.length >= 100) return;
+      copyTargetId = item.id;
+      const available = 100 - state.items.length;
+      $('#assignment-copy-name').textContent = item.product_name || 'Новий зразок';
+      $('#assignment-copy-count').max = String(available);
+      $('#assignment-copy-count').value = Math.min(2,available);
+      $('#assignment-copy-hint').textContent = `Можна додати до ${available} копій. Копії з’являться одразу після цього зразка.`;
+      copyDialog.showModal();
+      $('#assignment-copy-count').focus();
+      $('#assignment-copy-count').select();
+      return;
+    }
     const weightReset = event.target.closest('[data-dept-weight-reset]');
     if (weightReset) {
       const departmentId = weightReset.dataset.deptWeightReset;
@@ -672,7 +750,11 @@
       return;
     }
     if (event.target.closest('.assignment-remove')) {
-      if (item.product_name && !window.confirm(`Видалити зразок «${item.product_name}»?`)) return;
+      if (state.busy || state.numbersChecking) return;
+      freezeNumbers();
+      const index = state.items.indexOf(item);
+      state.deleted.push({item:clone(item),index,before:state.items[index - 1]?.id,after:state.items[index + 1]?.id});
+      if (state.deleted.length > 10) state.deleted.shift();
       state.items = state.items.filter(v => v !== item);
       invalidate(); renderItems(); renderSource();
     }
@@ -690,6 +772,61 @@
       invalidate(); renderItems();
     }
   });
+  function freezeNumbers() {
+    const numbers = state.items.map((_,index) => Number(previewNumber(index)));
+    state.items.forEach((item,index) => {
+      if (!item.assigned_number && Number.isInteger(numbers[index])) item.sample_number = String(numbers[index]);
+    });
+  }
+  $('#assignment-undo-delete').addEventListener('click', async () => {
+    if (state.busy || state.numbersChecking || !state.deleted.length) return;
+    if (state.items.length >= 100) return notice('Для відновлення звільніть місце: у списку може бути до 100 зразків.',true);
+    freezeNumbers();
+    const {item,index,before,after} = state.deleted.pop();
+    DEPTS.forEach(department => {item.departments[department.id].allow_standard_override = false;});
+    item.allow_number_reuse = false;
+    const afterIndex = state.items.findIndex(value => value.id === after);
+    const beforeIndex = state.items.findIndex(value => value.id === before);
+    const position = afterIndex >= 0 ? afterIndex : beforeIndex >= 0 ? beforeIndex + 1 : Math.min(index,state.items.length);
+    state.items.splice(position,0,item);
+    invalidate(); await hydrateNumbers(); renderNumbering(); renderItems(); renderSource();
+    $(itemSelector(item))?.scrollIntoView({behavior:'smooth',block:'center'});
+    const number = item.assigned_number || item.sample_number;
+    if (number && state.items.some(other => other !== item && String(other.assigned_number || other.sample_number) === String(number))) {
+      notice(`Зразок відновлено. Номер ${number} уже є в списку — змініть повторний номер перед створенням завдань.`,true);
+    }
+  });
+  async function copySample(original, count = 1) {
+    if (state.busy || state.numbersChecking) return false;
+    if (!Number.isInteger(count) || count < 1 || state.items.length + count > 100) {
+      notice('Укажіть кількість копій так, щоб у списку було не більше 100 зразків.', true);
+      return false;
+    }
+    const previews = state.items.map((_,index) => Number(previewNumber(index)));
+    const numbers = previews.filter(Number.isInteger);
+    const next = numbers.length ? Math.max(...numbers, (startingNumber() || 1) - 1) + 1 : null;
+    if (next !== null && next + count - 1 > 2147483647) {
+      notice('Для всіх копій потрібні вільні номери у дозволеному діапазоні.', true);
+      return false;
+    }
+    // Freeze existing automatic previews before inserting a new sample in the
+    // middle. Issued numbers and other samples must not change.
+    freezeNumbers();
+    const copies = Array.from({length:count},(_,index) => {
+      const item = {...clone(original), id:uid(), assigned_number:null, sample_number:next === null ? '' : String(next + index),
+        allow_number_reuse:false, number_conflict:null};
+      DEPTS.forEach(department => {item.departments[department.id].allow_standard_override = false;});
+      return item;
+    });
+    state.items.splice(state.items.indexOf(original) + 1, 0, ...copies);
+    invalidate(); await hydrateNumbers(); renderNumbering(); renderItems(); renderSource();
+    const card = $(itemSelector(copies[0]));
+    if (card) {
+      card.scrollIntoView({behavior:'smooth', block:'center'});
+      $('[data-assignment-field="product_name"]',card).focus({preventScroll:true});
+    }
+    return true;
+  }
   async function addSample(where) {
     if(state.busy||state.numbersChecking)return;
     if(state.items.length>=100)return notice('В одному списку може бути до 100 зразків.',true);
@@ -750,15 +887,24 @@
         count++;
       });
     });
+    issues.push(...(window.OZActReview?.issues('assignments')||[]).filter(issue=>issue.level==='error').map(issue=>issue.message));
     return {issues,count};
   }
   function updateReadiness() {
+    window.OZActReview?.update('assignments');
     const {issues,count} = missing();
     const confirmed = $('#assignment-confirmed').checked;
     const ready = !issues.length && confirmed && !state.busy;
     $('#assignment-generate').disabled = !ready;
+    $('#assignment-new').disabled = state.busy;
     $('#assignment-select-unambiguous').disabled = state.busy || !state.loaded || !state.items.length;
     ['#assignment-add-item','#assignment-add-before','#assignment-add-after-bottom'].forEach(id=>{$(id).disabled=state.busy||state.numbersChecking||state.items.length>=100;});
+    $$('.assignment-copy,.assignment-copy-many').forEach(button => {button.disabled=state.busy||state.numbersChecking||state.items.length>=100;});
+    $$('.assignment-remove').forEach(button => {button.disabled=state.busy||state.numbersChecking;});
+    $('#assignment-undo').hidden = !state.deleted.length;
+    const deleted = state.deleted.at(-1)?.item;
+    $('#assignment-undo-label').textContent = deleted ? `Видалено: ${deleted.product_name || 'Новий зразок'}. Доступно для відновлення: ${state.deleted.length}.` : '';
+    $('#assignment-undo-delete').disabled = state.busy || state.numbersChecking || state.items.length >= 100;
     $('#assignment-generation-help').classList.toggle('ready',ready);
     $('#assignment-generation-help').textContent = issues.length ? `Потрібно: ${issues.slice(0,3).join('; ')}${issues.length > 3 ? `; ще ${issues.length - 3}` : ''}.` : !confirmed ? 'Підтвердьте перевірку даних і шаблонів.' : state.result ? 'Архів можна завантажити повторно з тими самими номерами.' : `Буде створено ${count} завдань для ${state.items.length} зразків.`;
     $('#assignment-generate').innerHTML = state.busy ? 'Створюємо завдання…' : `${icon('download')}${state.result ? 'Завантажити повторно' : 'Створити завдання'}`;
@@ -792,6 +938,7 @@
       });
     });
     state.warnings.forEach(message => add(message,'#assignment-warnings','warning'));
+    issues.push(...(window.OZActReview?.issues('assignments')||[]));
     return issues;
   }
   $('#assignment-confirmed').addEventListener('change', updateReadiness);
@@ -920,12 +1067,12 @@
   });
   window.OZWorkspace?.register('assignments',{
     title:'Завдання на дослідження',isBusy:()=>state.busy,
-    reset:async()=>{state.items=[];state.text='';state.source='';state.sourceGroup='';state.warnings=[];state.initialNumber='';state.issuerId='';if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.sourceUrl='';$('#assignment-editor').hidden=true;$('#assignment-upload-panel').hidden=false;invalidate();await load();await hydrateNumbers();renderSource();renderNumbering();renderIssuerSummary();renderItems();},
+    reset:async()=>{state.audit=null;state.audit_expected=null;clearSampleHistory();state.items=[];state.text='';state.source='';state.sourceGroup='';state.warnings=[];state.initialNumber='';state.issuerId='';if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.sourceUrl='';$('#assignment-editor').hidden=true;$('#assignment-upload-panel').hidden=false;invalidate();await load();await hydrateNumbers();renderSource();renderNumbering();renderIssuerSummary();renderItems();},
     attachFiles:async()=>{const file=await window.OZWorkspace.sourceFile('assignments',state.source,'source',state.sourceGroup)||await window.OZWorkspace.sourceFile('acts',state.source,'source',state.sourceGroup);if(file){if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.sourceUrl=URL.createObjectURL(file);renderSource();const link=$('#assignment-source .source-original-link');link.removeAttribute('target');link.download=file.name;link.textContent='Завантажити оригінал акта';}else if(state.sourceHadFile&&!window.OZWorkspace.switching)notice('Для перегляду оригіналу акта оберіть файл повторно.');},
     hasData:() => state.items.length > 0 || !!state.text || !!state.source,
     snapshot:() => state.items.length || state.text || state.source ? ({source:state.source,sourceGroup:state.sourceGroup||'',text:state.text,sourceHadFile:!!state.sourceUrl,warnings:clone(state.warnings),
-      initialNumber:state.initialNumber,issuerId:state.issuerId,
-      items:state.items.map(item => ({id:item.id,product_name:item.product_name,standard:item.standard,sample_weight:item.sample_weight,sample_number:item.sample_number||'',allow_number_reuse:!!item.allow_number_reuse,
+      initialNumber:state.initialNumber,issuerId:state.issuerId,audit:clone(state.audit),audit_expected:state.audit_expected,
+      items:state.items.map(item => ({id:item.id,source_location:item.source_location||null,product_name:item.product_name,standard:item.standard,sample_weight:item.sample_weight,sample_number:item.sample_number||'',allow_number_reuse:!!item.allow_number_reuse,
         sources:clone(item.sources || {}),departments:Object.fromEntries(DEPTS.map(department => {
           const selection = item.departments[department.id];
           return [department.id,{enabled:!!selection.enabled,template_id:selection.template_id,sample_weight:selection.sample_weight,
@@ -935,14 +1082,16 @@
       if (state.busy) throw new Error('Дочекайтеся завершення поточної операції завдань.');
       await load();
       if (!state.loaded) throw new Error('Не вдалося завантажити актуальні шаблони та налаштування завдань.');
+      state.audit=window.OZActReview.cleanAudit(data.audit);state.audit_expected=window.OZActReview.cleanExpected(data.audit_expected);
       state.sourceGroup=String(data.sourceGroup||'');
       const warnings = Array.isArray(data.warnings) ? data.warnings.map(String).slice(0,200) : [];
+      clearSampleHistory();
       const seen = new Set();
       const choices = new Map();
       state.items = (Array.isArray(data.items) ? data.items : []).slice(0,100).map(saved => {
         const id = typeof saved.id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(saved.id) && !seen.has(saved.id) ? saved.id : uid();
         seen.add(id);
-        const item = blankItem({id,product_name:String(saved.product_name || '').slice(0,12000),standard:String(saved.standard || '').slice(0,12000),
+        const item = blankItem({id,source_location:window.OZActReview.cleanLocation(saved.source_location),product_name:String(saved.product_name || '').slice(0,12000),standard:String(saved.standard || '').slice(0,12000),
           sample_weight:String(saved.sample_weight || '').slice(0,12000),sample_number:String(saved.sample_number||'').slice(0,30),allow_number_reuse:!!saved.allow_number_reuse,sources:saved.sources && typeof saved.sources === 'object' ? clone(saved.sources) : {}});
         choices.set(id,clone(saved.departments || {}));
         return item;
@@ -999,4 +1148,22 @@
     }
   });
 
+  window.OZActReview.register('assignments',{
+    root:'#assignment-editor',panel:'#assignment-warnings',
+    get:()=>state,issues:reviewIssues,
+    selector:(item,field)=>['product_name','standard','sample_weight'].includes(field)?`${itemSelector(item)} [data-assignment-field="${field}"]`:null,
+    card:item=>itemSelector(item),
+    ocrFields:[['product_name','Назва зразка'],['standard','НД на відповідність'],['sample_weight','Спільна вага та кількість']],
+    applyOCR:(id,field,value,expected)=>{
+      const item=state.items.find(item=>item.id===id);
+      if(!item||String(item[field]||'')!==expected)throw new Error('Поле змінилося після початку розпізнавання. Ваші правки збережено; повторіть перевірку фрагмента.');
+      item[field]=value;item.sources||={};item.sources[field]={kind:'act',label:'Повторне розпізнавання',source:state.source};
+      if(field==='product_name'||field==='standard'){
+        item.matches={};item.reviewMatches={};item.matched=false;
+        DEPTS.forEach(department=>{item.departments[department.id].allow_standard_override=false;});
+      }
+      invalidate();renderItems();
+    },
+    setExpected:value=>{state.audit_expected=value;invalidate();updateReadiness();}
+  });
 })();

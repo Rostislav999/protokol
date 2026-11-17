@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .documents import FIELD_LABELS, TemplateError, render_protocol
 from .extraction import extract_text, parse_act
+from .act_review import add_review
 from .library import Library, ROOT
 from .matching import infer_subcategory, rank_templates
 from .assignments_api import assignments_router
@@ -117,10 +118,10 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="ОЗтаУСЯ", version="1.7.0")
+    app = FastAPI(title="ОЗтаУСЯ", version="1.8.0")
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
     with data_guard(directory):
-        create_automatic_backup(directory, "1.7.0")
+        create_automatic_backup(directory, "1.8.0")
         library = Library(directory / "templates")
         settings = SettingsStore(directory)
     app.state.library = library
@@ -204,6 +205,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             result = await run_in_threadpool(extract_text, data, filename)
             parsed = enriched(result["text"])
+            add_review(result, parsed)
             parsed["warnings"] = list(dict.fromkeys(result.get("warnings", []) + parsed.get("warnings", [])))
             return {**result, **parsed}
         except ValueError as exc:
@@ -295,6 +297,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         result = extract_text(data, name)
         progress.phase('Визначаємо реквізити та шаблони')
         parsed = enriched(result['text'], known_templates)
+        add_review(result, parsed)
         return {**result, **parsed, 'warnings': list(dict.fromkeys(result.get('warnings', []) + parsed.get('warnings', [])))}
 
     def import_documents(operation, files, options):
@@ -341,7 +344,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if (stage / 'workbench.sqlite3').exists():
             WorkStore(stage).rebase()
 
-    app.include_router(backup_router(directory, version="1.7.0", validate_staged=validate_restored))
+    app.include_router(backup_router(directory, version="1.8.0", validate_staged=validate_restored))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app

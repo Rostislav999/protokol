@@ -63,6 +63,55 @@ def test_packages_keep_all_drafts_separate_and_reject_stale_edits(client):
     assert client.get('/api/packages/workspace').status_code == 404
 
 
+@pytest.mark.parametrize('archived', [False, True])
+def test_delete_package_removes_only_its_data_and_resets_last_session(client, archived):
+    first, second = create(client), create(client, 'Залишити цей пакет')
+    data = {'items': [{'id': 'one', 'product_name': 'Свинина'}]}
+    assert save(client, first, 'acts', data).status_code == 200
+    assert save(client, second, 'acts', data).status_code == 200
+    assert client.put('/api/workspace/drafts/acts', json={'data': data}).status_code == 200
+    first_file = upload(client, first['id'])
+    second_file = upload(client, second['id'])
+    upload(client, 'workspace')
+    history = {'letters': [letter()]}
+    assert save(client, first, 'cover_letters', history).status_code == 200
+    assert save(client, second, 'cover_letters', history).status_code == 200
+    assert client.put('/api/workbench/session', json={'scope': first['id']}).status_code == 200
+    current = client.get('/api/packages/' + first['id']).json()['package']
+    if archived:
+        current = client.patch('/api/packages/' + first['id'], json={
+            **{key:current[key] for key in ('title','customer','reference','notes')},
+            'status':'archived','expected_revision':current['revision'],
+        }).json()
+    response = client.delete('/api/packages/' + first['id'], params={
+        'expected_revision':current['revision'],'expected_updated_at':current['updated_at'],
+    })
+    assert response.status_code == 200 and response.json()['deleted']
+    assert client.get('/api/packages/' + first['id']).status_code == 404
+    assert client.get('/api/packages/' + first['id'] + '/drafts').status_code == 404
+    assert client.get(f'/api/workbench/files/{first_file["id"]}', params={'scope':first['id']}).status_code == 404
+    assert client.get('/api/workbench/session').json()['scope'] == 'workspace'
+    assert client.get('/api/packages/' + second['id']).json()['drafts']['sections']['acts']['data'] == data
+    assert client.get(f'/api/workbench/files/{second_file["id"]}', params={'scope':second['id']}).content == b'act'
+    assert client.get('/api/workspace/drafts').json()['sections']['acts']['data'] == data
+    store = WorkStore(client.app.state.data_directory)
+    with store.transaction() as connection:
+        for table, key in [('package_files','scope'),('letter_versions','scope'),('package_drafts','package_id')]:
+            assert connection.execute(f'SELECT COUNT(*) FROM {table} WHERE {key}=?', (first['id'],)).fetchone()[0] == 0
+        assert connection.execute('SELECT COUNT(*) FROM letter_versions WHERE scope=?', (second['id'],)).fetchone()[0] > 0
+    WorkStore.validate(store.path)
+
+
+def test_delete_rejects_unseen_draft_changes_and_cannot_delete_workspace(client):
+    package = create(client)
+    params = {'expected_revision':package['revision'],'expected_updated_at':package['updated_at']}
+    assert save(client, package, 'acts', {'items':[{'product_name':'Нова правка'}]}).status_code == 200
+    assert client.delete('/api/packages/' + package['id'], params=params).status_code == 409
+    assert client.get('/api/packages/' + package['id']).status_code == 200
+    assert client.delete('/api/packages/workspace', params=params).status_code == 404
+    assert client.delete('/api/packages/' + package['id']).status_code == 422
+
+
 def test_package_search_metadata_conflicts_and_archive(client):
     package = create(client, 'Свинина тушкована', customer='Військова частина', reference='125/26', notes='Поставка №7')
     assert client.get('/api/packages', params={'q': 'СВИНИНА 125'}).json()['packages'][0]['id'] == package['id']

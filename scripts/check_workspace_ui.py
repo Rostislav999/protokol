@@ -28,7 +28,7 @@ SCRIPT = r'''void (async () => {try {
     assert(Object.values(providers.assignments.snapshot().items[0].departments).some(value=>value.sample_weight==='7 кг'),'Package restart lost a manual assignment weight');
     assert((await(await fetch('/api/template-choices')).json()).choices.some(value=>value.template_id==='sample-1053' && value.favorite),'Favorite template was lost on restart');
     assert((await(await fetch('/api/workbench/files?scope='+session.scope)).json()).files.some(value=>value.kind==='source'),'Package lost its original files');
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback','single-sided and double-sided print selection','prepend and append samples without renumbering','manual sample numbers and draft restore']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback','single-sided and double-sided print selection','prepend and append samples without renumbering','manual sample numbers and draft restore','copy next with separate identity and number','independent copied fields and durable drafts','product name autocomplete from the library','bulk copies with count and number limits','undo sample deletion without lost fields or renumbering','standard citation autocomplete without automatic changes','new acts without replacing previous drafts','pending local and concurrent drafts preserved separately','delete active and inactive packages with cancellation','source pages row overlays rotation and zoom','visible field warnings and keyboard jumps','sample count discrepancy blocks export until checked','review evidence survives save without restoring approval']}));
     return;
   }
   if (!__RESTORE_PHASE__) {
@@ -79,6 +79,82 @@ SCRIPT = r'''void (async () => {try {
       document.dispatchEvent(new CustomEvent('protokol:assignments-invalidated'));
       document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
     }
+    const copyTemplate=(await(await fetch('/api/assignments/templates')).json()).templates.find(value=>value.product_name&&value.standard);
+    await providers.assignments.restore({initialNumber:'1418',items:[
+      {id:'copy-source',product_name:copyTemplate.product_name,standard:'НД для ручної перевірки',sample_number:'1418',sample_weight:'4 кг',
+       departments:{[copyTemplate.department]:{enabled:true,template_id:copyTemplate.id,sample_weight:'7 кг',weight_edited:true}}},
+      {id:'copy-tail',product_name:'Інший зразок',standard:'Інший НД',sample_number:'1419',departments:{}}
+    ]});
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'assignments'}}));
+    const copySource=document.querySelector('[data-assignment-item="copy-source"]');
+    const nameInput=copySource.querySelector('[data-assignment-field="product_name"]');
+    assert(nameInput.list?.options.length>0,'Product name has no autocomplete library');
+    const suggestedNames=[...nameInput.list.options].map(option=>option.value);
+    assert(suggestedNames.includes(copyTemplate.product_name)&&new Set(suggestedNames).size===suggestedNames.length,'Autocomplete lost or duplicated library names');
+    copySource.querySelector('[data-dept-override]').click();
+    document.querySelector('#assignment-confirmed').checked=true;
+    copySource.querySelector('.assignment-copy').click();
+    await wait(()=>document.querySelectorAll('[data-assignment-item]').length===3&&!document.querySelector('.assignment-copy').disabled);
+    let copyDraft=providers.assignments.snapshot();
+    const copied=copyDraft.items[1];
+    assert(copied.id!=='copy-source'&&copied.id!=='copy-tail','Copy reused an existing sample identity');
+    assert(copyDraft.items.map(item=>item.sample_number).join(',')==='1418,1420,1419','Copy renumbered existing samples or reused a number');
+    assert(copied.product_name===copyTemplate.product_name&&copied.standard==='НД для ручної перевірки'&&copied.sample_weight==='4 кг','Copy lost sample fields');
+    assert(copied.departments[copyTemplate.department].template_id===copyTemplate.id&&copied.departments[copyTemplate.department].sample_weight==='7 кг','Copy lost template or manual department weight');
+    const copyCard=document.querySelector(`[data-assignment-item="${copied.id}"]`);
+    assert(!document.querySelector('#assignment-confirmed').checked&&!copyCard.querySelector('[data-dept-override]').checked,'Copy inherited review confirmations');
+    input(`[data-assignment-item="${copied.id}"] [data-dept-weight="${copyTemplate.department}"]`,'9 кг');
+    assert(providers.assignments.snapshot().items[0].departments[copyTemplate.department].sample_weight==='7 кг','Editing a copy changed its source');
+    input(`[data-assignment-item="${copied.id}"] [data-assignment-field="product_name"]`,suggestedNames.find(name=>name!==copied.product_name));
+    assert(providers.assignments.snapshot().items[0].product_name===copyTemplate.product_name,'Autocomplete selection changed another sample');
+    copyDraft=providers.assignments.snapshot();
+    await providers.assignments.restore(copyDraft);
+    assert(providers.assignments.snapshot().items[1].departments[copyTemplate.department].sample_weight==='9 кг','Copy was lost on draft restore');
+    const standardField=document.querySelector(`[data-assignment-item="${copied.id}"] [data-assignment-field="standard"]`);
+    standardField.focus();
+    assert([...standardField.list.options].some(option=>option.value===copyTemplate.standard),'Standard autocomplete is missing a library citation');
+    assert([...standardField.list.options].some(option=>option.value==='Інший НД'),'Standard autocomplete is missing another sample citation');
+    assert(standardField.value==='НД для ручної перевірки','Showing suggestions changed an entered standard');
+    input(`[data-assignment-item="${copied.id}"] [data-assignment-field="standard"]`,copyTemplate.standard);
+    assert(providers.assignments.snapshot().items[0].standard==='НД для ручної перевірки','Choosing a standard changed another sample');
+    const openCopies=()=>document.querySelector(`[data-assignment-item="${copied.id}"] .assignment-copy-many`).click();
+    openCopies();document.querySelector('#assignment-copy-dialog [data-copy-close]').click();
+    assert(providers.assignments.snapshot().items.length===3,'Cancelling the copy dialog added samples');
+    openCopies();input('#assignment-copy-count','100');
+    document.querySelector('#assignment-copy-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+    assert(providers.assignments.snapshot().items.length===3,'An oversized copy count changed the list');
+    input('#assignment-copy-count','2');document.querySelector('#assignment-copy-submit').click();
+    await wait(()=>!document.querySelector('#assignment-copy-dialog').open&&!document.querySelector('.assignment-copy').disabled);
+    const bulkDraft=providers.assignments.snapshot();
+    assert(bulkDraft.items.map(item=>item.sample_number).join(',')==='1418,1420,1421,1422,1419','Bulk copies changed existing numbers or failed to allocate distinct ones');
+    assert(new Set(bulkDraft.items.map(item=>item.id)).size===5,'Bulk copies share an identity');
+    assert(bulkDraft.items.slice(2,4).every(item=>item.departments[copyTemplate.department].sample_weight==='9 кг'&&item.standard===copyTemplate.standard),'Bulk copies lost fields or department weights');
+    document.querySelector(`[data-assignment-item="${bulkDraft.items[2].id}"] .assignment-remove`).click();
+    assert(providers.assignments.snapshot().items.length===4&&!document.querySelector('#assignment-undo').hidden,'Deletion has no undo action');
+    assert(providers.assignments.snapshot().items.map(item=>item.sample_number).join(',')==='1418,1420,1422,1419','Deletion renumbered remaining samples');
+    document.querySelector('#assignment-undo-delete').click();
+    await wait(()=>!document.querySelector('.assignment-copy').disabled&&document.querySelectorAll('[data-assignment-item]').length===5);
+    assert(JSON.stringify(providers.assignments.snapshot().items)===JSON.stringify(bulkDraft.items),'Undo did not restore the sample, fields, identity and original position');
+    document.querySelector('[data-assignment-item="copy-source"] .assignment-remove').click();
+    document.querySelector('[data-assignment-item="copy-tail"] .assignment-remove').click();
+    document.querySelector('#assignment-undo-delete').click();
+    await wait(()=>!document.querySelector('.assignment-copy').disabled&&document.querySelectorAll('[data-assignment-item]').length===4);
+    document.querySelector('#assignment-undo-delete').click();
+    await wait(()=>!document.querySelector('.assignment-copy').disabled&&document.querySelectorAll('[data-assignment-item]').length===5);
+    assert(JSON.stringify(providers.assignments.snapshot().items)===JSON.stringify(bulkDraft.items),'Repeated undo changed sample order or contents');
+    document.querySelector('[data-assignment-item="copy-tail"] .assignment-remove').click();
+    await providers.assignments.restore({initialNumber:'1',items:Array.from({length:99},(_,index)=>({id:'capacity-'+index,product_name:'',standard:'',departments:{}}))});
+    assert(document.querySelector('#assignment-undo').hidden,'Deleted samples leaked into a different draft');
+    document.querySelector('.assignment-copy-many').click();
+    assert(document.querySelector('#assignment-copy-count').max==='1','Copy dialog ignores the remaining sample capacity');
+    input('#assignment-copy-count','1');document.querySelector('#assignment-copy-submit').click();
+    await wait(()=>!document.querySelector('#assignment-copy-dialog').open);
+    assert(providers.assignments.snapshot().items.length===100&&[...document.querySelectorAll('.assignment-copy,.assignment-copy-many')].every(button=>button.disabled),'Copy controls allow more than 100 samples');
+    await providers.assignments.restore({initialNumber:'2147483646',items:[{id:'last-number',sample_number:'2147483646',product_name:'Свинина тушкована',departments:{}}]});
+    document.querySelector('.assignment-copy-many').click();input('#assignment-copy-count','2');document.querySelector('#assignment-copy-submit').click();
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert(providers.assignments.snapshot().items.length===1&&document.querySelector('#assignment-copy-dialog').open,'Number overflow partially added copies');
+    document.querySelector('#assignment-copy-dialog [data-copy-close]').click();
     await providers.assignments.restore({initialNumber:'1418',items:Array.from({length:15},(_,index)=>({id:'range-'+index,product_name:'',standard:'',departments:{}}))});
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'assignments'}}));
     const visibleNumbers=()=>[...document.querySelectorAll('.assignment-number-preview')].map(node=>node.textContent);
@@ -96,8 +172,73 @@ SCRIPT = r'''void (async () => {try {
     await new Promise(resolve=>setTimeout(resolve,350));
     await wait(()=>!document.querySelector('#assignment-add-item').disabled);
     assert(visibleNumbers()[0]==='1416'&&visibleNumbers()[1]==='1418','Editing one sample number renumbered other samples');
+    // Synthetic two-page PDF: exercise the real retained-original renderer
+    // without storing a user's scan in the repository or calling Office.
+    const pdfObjects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 5 0 R >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 6 0 R >>',
+      ...['1 0 0 rg 30 30 540 740 re f\n','0 0 1 rg 30 30 540 740 re f\n'].map(stream=>`<< /Length ${stream.length} >>\nstream\n${stream}endstream`)];
+    let pdfSource='%PDF-1.4\n',pdfOffsets=[0];
+    pdfObjects.forEach((object,index)=>{pdfOffsets.push(pdfSource.length);pdfSource+=`${index+1} 0 obj\n${object}\nendobj\n`;});
+    const xref=pdfSource.length;pdfSource+=`xref\n0 7\n0000000000 65535 f \n`+pdfOffsets.slice(1).map(offset=>String(offset).padStart(10,'0')+' 00000 n \n').join('')+`trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+    const reviewGroup=crypto.randomUUID().replaceAll('-',''),reviewScope=window.OZWorkspace.scope;
+    await window.OZWorkspace.retainFiles([new File([pdfSource],'review-fixture.pdf',{type:'application/pdf'})],'acts','source',{scope:reviewScope,group:reviewGroup});
+    assert((await fetch('/api/workbench/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:reviewScope,section:'acts',group:reviewGroup})})).ok,'Review source did not activate');
+    await providers.acts.restore({source:'review-fixture.pdf',sourceGroup:reviewGroup,method:'ocr-table',common:{customer:'Замовник',sampling_description:'Адреса відбору'},
+      audit:{detected:5,pages:[{page:1,angle:0,detected:1},{page:2,angle:0,detected:4}]},
+      items:[1,2].map((number,index)=>({id:'audit-'+number,product_name:'Свинина тушкована',standard:index?'ee) ДСТУ 4450:2005':'ДСТУ 4450:2005',protocol_number:'AUDIT-'+number,protocol_date:'17.11.2026',template_id:'sample-1053',source_location:{page:number,angle:0,bbox:[.1,.2,.9,.4]}}))});
+    window.OZWorkspace.changed('acts');
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
+    await wait(()=>document.querySelector('#review-section .act-source-pane img')?.naturalWidth>0&&document.querySelector('#extraction-warnings .audit-issue'));
+    assert(document.querySelector('#extraction-warnings').dataset.level==='error'&&document.querySelector('#generate').disabled,'Missing samples do not block generation');
+    assert(document.querySelector('#extraction-warnings .audit-issue').textContent.includes('за оригіналом 5'),'Count discrepancy is buried below other notices');
+    document.querySelector('#extraction-warnings [data-audit-jump]').click();
+    assert(document.querySelector('#acts-audit-count').closest('details').open,'Count issue does not reveal its correction control');
+    const suspicious=document.querySelector('[data-item="audit-2"] [data-field="standard"]');
+    assert(suspicious.classList.contains('audit-suspect'),'OCR noise has no field highlight');
+    assert((suspicious.getAttribute('aria-describedby')||'').split(' ').some(id=>document.getElementById(id)?.classList.contains('audit-field-note')),'Suspicious field does not describe its warning to assistive technology');
+    document.querySelector('[data-source-row="audit-2"]').click();
+    await wait(()=>document.querySelector('#review-section [data-scan-page]').value==='2'&&!document.querySelector('#review-section .scan-row-highlight').hidden);
+    assert(document.querySelector('#review-section [data-scan-pages]').textContent==='/ 2','Preview lost the PDF page count');
+    document.querySelector('#review-section [data-scan-rotate]').click();
+    await wait(()=>document.querySelector('#review-section .act-source-pane img').naturalWidth>document.querySelector('#review-section .act-source-pane img').naturalHeight&&!document.querySelector('#review-section [data-scan-rotate]').disabled);
+    input('#review-section [data-scan-zoom]','400','change');
+    assert(document.querySelector('#review-section .scan-paper').style.width==='400%','Scan zoom did not apply');
+    const beforeRepeatOCR=JSON.stringify(providers.acts.snapshot().items);
+    suspicious.focus();document.querySelector('#review-section [data-scan-reocr]').click();
+    await wait(()=>document.querySelector('#review-section .scan-paper').classList.contains('ocr-selecting'));
+    assert(document.querySelector('#review-section [data-scan-status]').textContent.includes('НД'),'Repeat OCR lost the focused target field');
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    assert(!document.querySelector('#review-section .scan-paper').classList.contains('ocr-selecting')&&JSON.stringify(providers.acts.snapshot().items)===beforeRepeatOCR,'Cancelling repeat OCR changed sample fields');
+    input('[data-item="audit-2"] [data-field="standard"]','ДСТУ 4450:2005');
+    await wait(()=>!document.querySelector('[data-item="audit-2"] [data-field="standard"]').classList.contains('audit-suspect'));
+    input('#acts-audit-count','2','change');
+    document.querySelector('#review-confirmed').checked=true;document.querySelector('#review-confirmed').dispatchEvent(new Event('change',{bubbles:true}));
+    await wait(()=>!document.querySelector('#generate').disabled);
+    assert(providers.acts.snapshot().audit_expected===2,'Manual count was not captured in the draft');
+    input('[data-item="audit-1"] select[data-field="template_id"]','','change');
+    await wait(()=>document.querySelector('[data-item="audit-1"] [data-template-picker-control]')?.classList.contains('audit-invalid'));
+    const templateIssue=[...document.querySelectorAll('#extraction-warnings .audit-issue')].find(row=>row.textContent.includes('Позиція 1: шаблон'));
+    assert(templateIssue,'Missing template is absent from the persistent review panel');
+    templateIssue.closest('details')?.setAttribute('open','');templateIssue.querySelector('[data-audit-jump]').click();
+    await wait(()=>document.activeElement.matches('[data-template-picker-control]')&&document.activeElement.closest('[data-item]').dataset.item==='audit-1');
+    input('[data-item="audit-1"] select[data-field="template_id"]','sample-1053','change');
+    await window.OZWorkspace.flush();
+    const auditSaved=(await(await fetch('/api/workspace/drafts')).json()).sections.acts.data;
+    assert(auditSaved.audit_expected===2&&auditSaved.items[1].source_location.page===2,'Saved draft lost review facts');
+    await providers.acts.restore(auditSaved);await providers.acts.attachFiles();
+    assert(!document.querySelector('#review-confirmed').checked,'Restoring source evidence restored an export approval');
+    document.querySelector('#prepare-assignments').click();
+    await wait(()=>!window.OZWorkspace.busy&&providers.assignments.snapshot()?.items.length===2);
+    assert(providers.assignments.snapshot().audit_expected===2&&providers.assignments.snapshot().items[1].source_location.page===2,'Transfer lost count evidence or source-page association');
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
     document.querySelector('#start-manual').click();
+    await wait(()=>!window.OZWorkspace.busy&&providers.acts.snapshot()?.method==='manual');
+    // Keep exercising explicit legacy-workspace restore separately from the
+    // new default of starting acts in independent document packages.
+    const manualAct=providers.acts.snapshot();
+    await window.OZWorkspace.activateScope('workspace');
+    await providers.acts.restore(manualAct);window.OZWorkspace.changed('acts');
     input('[data-common="customer"]','Замовник Ω');
     input('[data-common="sampling_description"]','Відібрано замовником');
     input('[data-field="product_name"]','Свинина тушкована');
@@ -327,6 +468,53 @@ SCRIPT = r'''void (async () => {try {
     await window.OZWorkspace.flush();
     // The old ungrouped workspace remains available while cases get independent drafts.
     input('[data-field="protocol_date"]','29.10.2026');await window.OZWorkspace.flush();
+    const previousWork=(await(await fetch('/api/workspace/drafts')).json());
+    const competing={...previousWork.sections.assignments.data,source:'Чернетка з іншого вікна'};
+    assert((await fetch('/api/workspace/drafts/assignments',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:competing,expected_revision:previousWork.sections.assignments.revision})})).ok,'Conflict fixture did not save');
+    input('[data-assignment-field="standard"]','Поточна правка перед новим актом');
+    try{await window.OZWorkspace.flush();}catch{}
+    assert(document.querySelector('.workspace-draft'),'Stale draft was silently overwritten');
+    const packagesBefore=new Set((await(await fetch('/api/packages')).json()).packages.map(value=>value.id));
+    const oldConfirm=window.confirm;let newActPrompts=0;window.confirm=()=>{newActPrompts++;return false;};
+    document.querySelector('#new-act').click();
+    await wait(()=>window.OZWorkspace.scope!=='workspace'&&!window.OZWorkspace.busy&&!document.querySelector('#upload-section').hidden);
+    const newActScope=window.OZWorkspace.scope;
+    const renameFetch=window.fetch;let releaseRename=null;
+    window.fetch=async(url,options)=>{
+      if(String(url)==='/api/packages/'+newActScope&&options?.method==='PATCH')await new Promise(resolve=>{releaseRename=resolve;});
+      return renameFetch(url,options);
+    };
+    const rename=window.OZWorkspace.startNewAct('новий-акт.txt');
+    try {
+      await wait(()=>releaseRename!==null);
+      assert(window.OZWorkspace.busy,'Prepared act can switch cases while its import context is being named');
+      let blocked=false;try{await window.OZWorkspace.activateScope('workspace');}catch{blocked=true;}
+      assert(blocked&&window.OZWorkspace.scope===newActScope,'Concurrent navigation redirected a new act into another case');
+    } finally {releaseRename?.();await rename;window.fetch=renameFetch;}
+    assert(newActPrompts===0&&!document.querySelector('.workspace-draft'),'Starting a new act still asks to replace old drafts');
+    assert(Object.values(providers).every(provider=>provider.snapshot()===null),'A new act inherited prior section fields');
+    const afterNew=(await(await fetch('/api/workspace/drafts')).json());
+    assert(afterNew.sections.acts.data.common.customer==='Замовник Ω'&&afterNew.sections.assignments.data.source===competing.source,'New act overwrote previous or concurrent work');
+    const preserved=(await(await fetch('/api/packages')).json()).packages.filter(value=>!packagesBefore.has(value.id)&&value.id!==newActScope);
+    assert(preserved.length===1,'Unsaved old work was not preserved separately');
+    const preservedDrafts=(await(await fetch('/api/packages/'+preserved[0].id+'/drafts')).json()).sections;
+    assert(preservedDrafts.assignments.data.items[0].standard==='Поточна правка перед новим актом','Pending current edits were lost when starting a new act');
+    const actText='Замовник: Новий замовник\n№ | Найменування продукції | Нормативний документ\n'+Array.from({length:5},(_,index)=>`${index+1} | Свинина тушкована | ДСТУ 4450:2005`).join('\n');
+    const actFiles=new DataTransfer();actFiles.items.add(new File([actText],'новий-акт.txt',{type:'text/plain'}));
+    const actInput=document.querySelector('#act-file');actInput.files=actFiles.files;actInput.dispatchEvent(new Event('change',{bubbles:true}));
+    await wait(()=>providers.acts.snapshot()?.source==='новий-акт.txt'&&providers.acts.snapshot()?.items.length===5&&!window.OZTasks.busy);
+    assert(window.OZWorkspace.scope===newActScope,'Uploading into a prepared new act created another package');
+    document.querySelector('#prepare-assignments').click();
+    await wait(()=>providers.assignments.snapshot()?.items.length===5&&!window.OZWorkspace.busy&&document.querySelector('.assignment-copy')?.disabled===false);
+    await window.OZWorkspace.flush();
+    document.querySelector('#assignment-new').click();
+    await wait(()=>window.OZWorkspace.scope!==newActScope&&!window.OZWorkspace.busy);
+    assert(newActPrompts===0&&Object.values(providers).every(provider=>provider.snapshot()===null),'New assignment act asks to discard previous sections');
+    const importedDrafts=(await(await fetch('/api/packages/'+newActScope+'/drafts')).json()).sections;
+    assert(importedDrafts.acts.data.items.length===5&&importedDrafts.assignments.data.items.length===5,'Previous act was not saved before opening the next one');
+    assert((await(await fetch('/api/workbench/files?scope='+newActScope)).json()).files.some(file=>file.filename==='новий-акт.txt'),'New act did not retain its original file');
+    window.confirm=oldConfirm;
+    await window.OZWorkspace.activateScope('workspace');
     document.querySelector('[data-view="packages"]').click();
     document.querySelector('[data-package-new]').click();
     await wait(()=>document.querySelector('#package-form[open]'));
@@ -367,7 +555,28 @@ SCRIPT = r'''void (async () => {try {
     document.querySelector('[data-package-form-save]').click();
     await wait(()=>window.OZWorkspace.scope!==firstPackage && !window.OZWorkspace.switching && !document.querySelector('#package-form').open);
     assert(Object.values(providers).every(provider=>provider.snapshot()===null),'A new package inherited another package’s fields');
+    const emptyPackage=window.OZWorkspace.scope;
+    await window.OZPackages.open();
+    await wait(()=>document.querySelector('[data-package-delete]'));
+    const deleteConfirm=window.confirm;window.confirm=()=>false;
+    document.querySelector('[data-package-delete]').click();
+    await wait(()=>!document.querySelector('[data-package-delete]').disabled);
+    assert(window.OZWorkspace.scope===emptyPackage&&(await fetch('/api/packages/'+emptyPackage)).ok,'Cancelling deletion removed or closed a package');
+    window.confirm=()=>true;document.querySelector('[data-package-delete]').click();
+    await wait(()=>window.OZWorkspace.scope==='workspace'&&!document.querySelector('[data-package-list-view]').hidden);
+    assert((await fetch('/api/packages/'+emptyPackage)).status===404,'Deleting an active package left it on the server');
+    assert((await fetch('/api/packages/'+firstPackage)).ok,'Deleting an active package removed another package');
+    window.confirm=deleteConfirm;
     await window.OZWorkspace.activateScope(firstPackage);
+    const inactive=(await(await fetch('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'Видалити неактивний пакет',drafts:{acts:{items:[]}}})})).json());
+    await window.OZPackages.open();document.querySelector('[data-package-back]').click();
+    await wait(()=>document.querySelector(`[data-package-select="${inactive.id}"]`));
+    document.querySelector(`[data-package-select="${inactive.id}"]`).click();
+    await wait(()=>document.querySelector('[data-package-delete]')&&!document.querySelector('[data-package-detail]').hidden&&document.querySelector('.package-heading').textContent.includes('Видалити неактивний'));
+    document.querySelector('[data-package-delete]').click();
+    await wait(()=>!document.querySelector('[data-package-list-view]').hidden);
+    assert((await fetch('/api/packages/'+inactive.id)).status===404&&window.OZWorkspace.scope===firstPackage,'Deleting another package changed the active case');
+    assert(providers.acts.snapshot().common.customer==='Замовник Ω','Package deletion changed an unrelated open act');
     document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'cover_letters'}}));
     document.dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true}));await window.OZWorkspace.flush();
     document.dispatchEvent(new KeyboardEvent('keydown',{key:'1',altKey:true,bubbles:true,cancelable:true}));

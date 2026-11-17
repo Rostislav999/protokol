@@ -3,6 +3,13 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.mark.parametrize('value', ['ДСТУ _ 4450:2005', 'ДСТУ . 4450:2005', 'ДСТУ " 4450:2005'])
+def test_scanned_rule_marks_do_not_hide_an_explicit_standard(value):
+    from app.assignment_matching import standards_match
+    assert standards_match(value, 'ДСТУ 4450:2005')
+    assert not standards_match(value, 'ДСТУ 4450:2006')
+
 from app.assignment_matching import normalize_standard, rank_assignments, standards_match
 from app.extraction import _header_field, parse_act
 

@@ -7,10 +7,11 @@
   let activeSection = 'acts';
   let loaded = false;
   let loadError = '';
-  let scope = 'workspace', packageInfo = null, switching = false;
+  let scope = 'workspace', packageInfo = null, switching = false, startingAct = false;
   const sectionNames = ['acts','assignments','excel','cover_letters'];
   const draftBase = (value=scope) => value==='workspace'?'/api/workspace/drafts':`/api/packages/${encodeURIComponent(value)}/drafts`;
   const restoring = new Set();
+  const scopeBusy = () => switching || restoring.size > 0 || [...providers.values()].some(provider => provider.isBusy?.()) || !!window.OZTasks?.busy || !!window.OZOffice?.busy;
   const $ = selector => document.querySelector(selector);
   const ui = document.createElement('section');
   ui.className = 'workspace-tools panel';
@@ -219,6 +220,8 @@
     if (!issues.length) { const ok = document.createElement('p'); ok.className = 'notice success'; ok.textContent = 'Автоматичних зауважень немає.'; list.append(ok); }
     for (const issue of issues) {
       const row = document.createElement('div'); row.className = `workspace-issue ${issue.level === 'error' ? 'workspace-error' : ''}`;
+      const severity = document.createElement('strong'); severity.className='workspace-issue-severity';
+      severity.textContent=issue.level==='error'?'Виправити':'Звірити';row.append(severity);
       const label = document.createElement('span'); label.textContent = `${providers.get(issue.section)?.title || ''}: ${issue.message}`;
       row.append(label);
       if (issue.selector || providers.get(issue.section)?.reveal) row.append(button('Перейти до поля', () => reveal(issue)));
@@ -310,7 +313,51 @@
     get scope(){return scope;},get package(){return packageInfo;},get switching(){return switching;},
     get hasData(){return [...providers.values()].some(provider=>provider.snapshot?.()!=null)||[...drafts.values()].some(item=>item.entry!=null);},
     updatePackage(value){if(value?.id===scope){packageInfo=value;document.dispatchEvent(new CustomEvent('protokol:package-context',{detail:{scope,package:packageInfo}}));}},
-    get busy(){return switching||restoring.size>0||[...providers.values()].some(provider=>provider.isBusy?.())||!!window.OZTasks?.busy||!!window.OZOffice?.busy;},
+    get busy(){return startingAct||scopeBusy();},
+    async startNewAct(title='Новий акт') {
+      await ready;
+      if (!loaded) throw new Error(loadError || 'Не вдалося завантажити збережену роботу.');
+      if (this.busy) throw new Error('Дочекайтеся завершення поточної обробки.');
+      const panes=sectionNames.map(name=>document.getElementById(name+'-view')).filter(Boolean);
+      const pendingChanges=[...drafts.values()].filter(item=>item.pending&&item.dirty);
+      startingAct=true;panes.forEach(pane=>pane.inert=true);
+      try {
+        if (scope !== 'workspace' && !this.hasData) {
+          if (packageInfo?.title==='Новий акт' && title!=='Новий акт') {
+            const current=packageInfo;
+            const updated=await request('/api/packages/'+scope,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+              title:String(title||'Новий акт').slice(0,200),customer:current.customer,reference:current.reference,notes:current.notes,
+              status:current.status,expected_revision:current.revision
+            })});
+            this.updatePackage(updated);
+          }
+          return scope;
+        }
+        // Pending drafts already exist on disk. Preserve current edits in a
+        // separate case instead of overwriting those drafts or asking the user
+        // to dismiss each section just to begin a different act.
+        for (const name of sectionNames) if (!state(name).pending) await persist(name);
+        const saved=Object.fromEntries(sectionNames.map(name=>{
+          const item=state(name);
+          return [name,item.pending&&!item.dirty?item.entry?.data:providers.get(name)?.snapshot()];
+        }).filter(([,value])=>value!=null));
+        if ((scope==='workspace'||pendingChanges.length) && Object.keys(saved).length) {
+          const act=saved.acts||{},stamp=new Date().toLocaleString('uk-UA',{timeZone:'Europe/Kyiv'});
+          await request('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            title:String(act.common?.act_number?`Акт №${act.common.act_number}`:act.source||`Збережена робота — ${stamp}`).slice(0,200),
+            customer:String(act.common?.customer||'').slice(0,1000),reference:String(act.common?.act_number||'').slice(0,200),
+            drafts:saved,copy_scope:scope
+          })});
+        }
+        const next=await request('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:String(title||'Новий акт').slice(0,200),drafts:{}})});
+        pendingChanges.forEach(item=>{clearTimeout(item.timer);item.dirty=false;});
+        await this.activateScope(next.id,false,true);
+        return next.id;
+      } catch(error) {
+        pendingChanges.forEach(item=>{item.dirty=true;});
+        throw error;
+      } finally {startingAct=false;panes.forEach(pane=>pane.inert=false);renderDrafts();}
+    },
     snapshot(section){return JSON.parse(JSON.stringify(providers.get(section)?.snapshot()||{}));},
     async bundle(){
       await saveAll();
@@ -346,9 +393,9 @@
       if(!response.ok)throw new Error('Не вдалося відкрити збережений вихідний файл.');
       return new File([await response.blob()],entry.filename,{type:response.headers.get('Content-Type')||''});
     },
-    async activateScope(next,initialized=false){
+    async activateScope(next,initialized=false,forNewAct=false){
       if(!initialized)await ready;
-      if(this.busy)throw new Error('Дочекайтеся завершення або скасуйте поточну обробку документів.');
+      if(scopeBusy()||startingAct&&!forNewAct)throw new Error('Дочекайтеся завершення або скасуйте поточну обробку документів.');
       const previousScope=scope,previousPackage=packageInfo,previousDrafts=new Map(drafts);
       const previousValues=new Map([...providers].map(([name,provider])=>[name,provider.snapshot?.()]));
       const panes=sectionNames.map(name=>document.getElementById(name+'-view')).filter(Boolean);
