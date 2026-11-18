@@ -135,7 +135,7 @@ def test_thousand_excel_records_survive_draft_and_export(client):
                "I": "20.10.2026"}, "warnings": ["Перевірте дату. " * 65]} for index in range(1000)]
     draft = {"records": records}
     assert client.put("/api/workspace/drafts/excel", json={"data": draft}).status_code == 200
-    assert len(client.get("/api/workspace/drafts/excel").json()["data"]["records"]) == 1000
+    assert len(client.get("/api/workspace/drafts").json()["sections"]["excel"]["data"]["records"]) == 1000
     payload = json.dumps({"records": records, "confirmed": True}, ensure_ascii=False).encode()
     assert len(payload) > 1024 * 1024
     response = client.post("/api/excel/generate", files={"records_file": ("records.json", payload)})

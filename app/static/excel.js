@@ -194,7 +194,8 @@
     if (files.some(file => !/\.(docx|pdf|zip)$/i.test(file.name))) return showError(new Error('Підтримуються файли DOCX, PDF і ZIP із протоколами.'));
     if (files.some(file => !file.size || file.size > limits.file)) return showError(new Error('Кожен файл має бути непорожнім і не більшим за 25 МБ.'));
     if (files.reduce((sum,file) => sum+file.size,0) > limits.total) return showError(new Error('Загальний розмір файлів — до 1 ГБ.'));
-    if (state.records.length >= limits.records) return showError(new Error('У списку вже 1000 протоколів.'));
+    const minimumRecords = files.length;
+    if (state.records.length + minimumRecords > limits.records) return showError(new Error('У списку може бути до 1000 протоколів.'));
     invalidate();
     state.busy = true;
     $('#excel-processing').hidden = false;
@@ -204,7 +205,16 @@
       $('#excel-processing h2').textContent = 'Читаємо протоколи';
       for (const [index, batch] of batches.entries()) {
         $('#excel-processing p').textContent = `Частина ${index+1} з ${batches.length}. Розпізнаємо дані для таблиці…`;
-        const data = await window.OZTasks.run('excel',batch,{section:'excel'});
+        let data;
+        try {
+          data = await window.OZTasks.run('excel',batch,{section:'excel'});
+        } catch (error) {
+          if (!error.message.startsWith('Не вдалося прочитати протоколи.')) throw error;
+          state.warnings.push(error.message);
+          render();
+          changed();
+          continue;
+        }
         const imported = (data.records || []).map(value => {
           const record = importedRecord(value);
           const source = data.sourceFiles?.[value.file_index];
