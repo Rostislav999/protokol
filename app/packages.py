@@ -183,7 +183,7 @@ def packages_router(directory: Path, template_exists):
         try:
             content = await file.read(MAX_FILE + 1)
             try:
-                data = _draft_data(json.loads(draft)) if draft else None
+                data = _draft_data(json.loads(draft), section=section) if draft else None
             except (ValueError, WorkspaceError) as exc:
                 raise HTTPException(422, 'Некоректна чернетка для створеного файла.') from exc
             return run(store.add_file, scope, section, kind, file.filename or 'Документ', content, data, group)
@@ -195,6 +195,34 @@ def packages_router(directory: Path, template_exists):
         entry = run(store.file, scope, file_id)
         return Response(entry['data'], media_type=mimetypes.guess_type(entry['filename'])[0] or 'application/octet-stream',
                         headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(entry['filename'])})
+
+    @router.get('/api/workbench/files/{file_id}/protocol')
+    def protocol_source(file_id: str, scope: str = Query(WORKSPACE, pattern=SCOPE_PATTERN),
+                        member: str | None = Query(None, max_length=4096)):
+        from .excel_api import MAX_FILE as MAX_PROTOCOL_FILE
+
+        entry = run(store.file, scope, file_id)
+        filename, data = entry['filename'], entry['data']
+        if entry['section'] != 'excel' or entry['kind'] != 'source':
+            raise HTTPException(404, 'Джерело протоколу не знайдено.')
+        if member is not None:
+            try:
+                if Path(filename).suffix.lower() != '.zip':
+                    raise ValueError
+                with ZipFile(BytesIO(data)) as archive:
+                    info = archive.getinfo(member)
+                    if info.is_dir() or info.file_size > MAX_PROTOCOL_FILE or Path(member).suffix.lower() not in {'.pdf', '.docx'}:
+                        raise ValueError
+                    filename = safe_filename(member)
+                    data = archive.read(info)
+            except (BadZipFile, KeyError, OSError, RuntimeError, ValueError) as exc:
+                raise HTTPException(422, 'Не вдалося відкрити протокол із ZIP.') from exc
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {'.pdf', '.docx'}:
+            raise HTTPException(415, 'Підтримуються протоколи PDF і DOCX.')
+        return Response(data, media_type=mimetypes.guess_type(filename)[0],
+                        headers={'Content-Disposition': "inline; filename*=UTF-8''" + quote(filename),
+                                 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store'})
 
     @router.post('/api/workbench/sources')
     def activate_sources(values: SourceBatch):

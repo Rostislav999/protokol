@@ -14,7 +14,7 @@ from .workspace import SECTIONS, MAX_REVISION, _draft_data, _encode
 
 WORKSPACE = 'workspace'
 MAX_FILE = 150 * 1024 * 1024
-MAX_PACKAGE_FILES = 500
+MAX_PACKAGE_FILES = 2000
 HISTORY_LIMIT = 100
 ID = re.compile(r'^[a-f0-9]{32}$')
 KINDS = {'source', 'excel_template', 'output_word', 'output_pdf', 'output_excel', 'attachment'}
@@ -158,7 +158,7 @@ class WorkStore:
                 self._save_draft(connection, package_id, section, data, 0, capture=False)
             if copy_scope:
                 self.scope(connection, copy_scope)
-                for row in connection.execute('SELECT * FROM package_files WHERE scope=? AND (?<>? OR active=1)', (copy_scope, copy_scope, WORKSPACE)).fetchall():
+                for row in connection.execute(f'SELECT {FILE_COLUMNS} FROM package_files WHERE scope=? AND (?<>? OR active=1)', (copy_scope, copy_scope, WORKSPACE)).fetchall():
                     if copy_scope == WORKSPACE:
                         section = (drafts or {}).get(row['section'])
                         if row['kind'].startswith('output_') and (section is None or row['fingerprint'] != fingerprint(section)):
@@ -176,8 +176,8 @@ class WorkStore:
                         if row['kind'] == 'excel_template' and not (
                                 (section or {}).get('templateWasSelected') or (section or {}).get('legacyTemplateName')):
                             continue
-                    connection.execute('INSERT INTO package_files VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                                       (uuid4().hex, package_id, row['section'], row['kind'], row['filename'], row['digest'], row['size'], row['data'], row['fingerprint'], row['active'], row['created_at']))
+                    connection.execute('INSERT INTO package_files SELECT ?,?,section,kind,filename,digest,size,data,fingerprint,active,created_at '
+                                       'FROM package_files WHERE id=?', (uuid4().hex, package_id, row['id']))
                 for row in connection.execute('SELECT * FROM letter_versions WHERE scope=? AND ?<>?', (copy_scope, copy_scope, WORKSPACE)).fetchall():
                     connection.execute('INSERT INTO letter_versions VALUES (?,?,?,?,?,?,?,?)',
                                        (uuid4().hex, package_id, row['letter_id'], row['title'], row['label'], row['data'], row['digest'], row['created_at']))
@@ -209,13 +209,13 @@ class WorkStore:
             self.scope(connection, package_id)
             rows = connection.execute('SELECT * FROM package_drafts WHERE package_id=?', (package_id,)).fetchall()
             return {'schema_version': 1, 'revisions': {row['section']: row['revision'] for row in rows},
-                    'sections': {row['section']: {'revision': row['revision'], 'updated_at': row['updated_at'], 'data': _draft_data(json.loads(row['data']))}
+                    'sections': {row['section']: {'revision': row['revision'], 'updated_at': row['updated_at'], 'data': _draft_data(json.loads(row['data']), section=row['section'])}
                                  for row in rows if row['data'] is not None}}
 
     def _save_draft(self, connection, package_id, section, data, expected_revision, capture=True):
         if section not in SECTIONS:
             raise WorkbenchError('Невідомий розділ чернетки.')
-        clean = _draft_data(data) if data is not None else None
+        clean = _draft_data(data, section=section) if data is not None else None
         row = connection.execute('SELECT revision,data FROM package_drafts WHERE package_id=? AND section=?', (package_id, section)).fetchone()
         revision = row['revision'] if row else 0
         if expected_revision is not None and expected_revision != revision:
@@ -310,7 +310,7 @@ class WorkStore:
                         self.touch(connection, scope)
                 return self._file_info(connection.execute(f'SELECT {FILE_COLUMNS} FROM package_files WHERE id=?', (old['id'],)).fetchone())
             if connection.execute('SELECT COUNT(*) FROM package_files WHERE scope=?', (scope,)).fetchone()[0] >= MAX_PACKAGE_FILES:
-                raise WorkbenchError('У пакеті вже 500 файлів. Створіть наступний пакет.')
+                raise WorkbenchError('У пакеті вже 2000 файлів. Створіть наступний пакет.')
             if kind.startswith('output_') or kind == 'excel_template':
                 connection.execute('UPDATE package_files SET active=0 WHERE scope=? AND section=? AND kind=?', (scope, section, kind))
             file_id = uuid4().hex
@@ -380,7 +380,7 @@ class WorkStore:
                 raise WorkbenchError('Версії пакетів виходять за підтримуваний діапазон.')
             connection.execute('UPDATE package_drafts SET revision=?', (floor,))
             for row in connection.execute('SELECT package_id,section,data FROM package_drafts WHERE data IS NOT NULL').fetchall():
-                clean = _draft_data(json.loads(row['data']))
+                clean = _draft_data(json.loads(row['data']), section=row['section'])
                 connection.execute('UPDATE package_drafts SET data=? WHERE package_id=? AND section=?', (_encode(clean).decode(), row['package_id'], row['section']))
             connection.execute('UPDATE packages SET revision=MAX(revision+1,?)', (floor,))
 
@@ -417,7 +417,7 @@ class WorkStore:
                 if row['package_id'] not in ids or row['section'] not in SECTIONS or not 1 <= row['revision'] < MAX_REVISION:
                     raise ValueError('Некоректна чернетка пакета.')
                 if row['data'] is not None:
-                    _draft_data(json.loads(row['data']))
+                    _draft_data(json.loads(row['data']), section=row['section'])
             for row in connection.execute('SELECT * FROM package_files'):
                 if not ID.fullmatch(row['id']) or row['scope'] not in ids | {WORKSPACE} or row['section'] not in SECTIONS or row['kind'] not in KINDS or row['active'] not in (0, 1):
                     raise ValueError('Некоректний файл пакета.')

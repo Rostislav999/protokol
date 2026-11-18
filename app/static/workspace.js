@@ -318,13 +318,24 @@
     },
     context(section){return {scope,section,draft:this.snapshot(section)};},
     async retainFiles(files,section,kind='source',context={scope,section}){
+      const entries=[];
       for(const file of files){
         const form=new FormData();form.append('file',file);form.append('scope',context.scope);form.append('section',section);form.append('kind',kind);
         if(context.group)form.append('group',context.group);
         if(context.draft)form.append('draft',JSON.stringify(context.draft));
-        await request('/api/workbench/files',{method:'POST',body:form});
+        entries.push(await request('/api/workbench/files',{method:'POST',body:form}));
       }
       document.dispatchEvent(new CustomEvent('protokol:package-files',{detail:{scope:context.scope}}));
+      return entries;
+    },
+    async protocolSource(reference){
+      const params=new URLSearchParams({scope});
+      const list=await request('/api/workbench/files?'+params);
+      const entry=list.files.find(file=>file.section==='excel' && file.kind==='source' &&
+        file.filename===reference.filename && file.digest===reference.digest && file.fingerprint===reference.group);
+      if(!entry)throw new Error('Збережений протокол не знайдено.');
+      if(reference.member)params.set('member',reference.member);
+      return '/api/workbench/files/'+entry.id+'/protocol?'+params;
     },
     async sourceFile(section,name,kind='source',group=''){
       const list=await request('/api/workbench/files?scope='+encodeURIComponent(scope));

@@ -105,14 +105,28 @@ def test_encrypted_and_invalid_pdf_have_actionable_errors():
             reader.read_protocol_pdf(bad)
 
 
-def test_page_and_render_limits_are_checked_before_ocr(monkeypatch):
+def test_page_limit_is_checked_before_ocr(monkeypatch):
     monkeypatch.setattr(reader, "MAX_PAGES", 1)
     with pytest.raises(ValueError, match="20 сторінок"):
         reader.read_protocol_pdf(pdf_with_images(native=True))
-    monkeypatch.setattr(reader, "MAX_PAGES", 20)
-    monkeypatch.setattr(reader, "MAX_PIXELS", 10)
-    with pytest.raises(ValueError, match="40 млн"):
-        reader.read_protocol_pdf(pdf_with_images())
+
+
+def test_large_page_is_rendered_within_ocr_budget(monkeypatch):
+    monkeypatch.setattr(reader, "MAX_PIXELS", 100_000)
+    monkeypatch.setattr(reader, "_ocr_languages", lambda: ("ukr", []))
+    sizes = []
+
+    def recognize(image, language, psm):
+        sizes.append(image.size)
+        return OCR
+
+    monkeypatch.setattr(reader, "_ocr_image", recognize)
+    text, _ = reader.read_protocol_pdf(pdf_with_images())
+    assert OCR in text
+    assert len(sizes) == 1
+    width, height = sizes[0]
+    assert 90_000 <= width * height <= reader.MAX_PIXELS
+    assert width / height == pytest.approx(300 / 500, abs=.005)
 
 
 def test_ocr_failure_does_not_become_a_successful_empty_protocol(monkeypatch):

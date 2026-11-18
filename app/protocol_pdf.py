@@ -1,6 +1,7 @@
 """Read protocol PDFs locally using native text or the prepared OCR engine."""
 from __future__ import annotations
 
+from math import sqrt
 import re
 
 from .extraction import _ocr_image, _ocr_languages
@@ -107,10 +108,16 @@ def read_protocol_pdf(data: bytes) -> tuple[str, list[str]]:
             if len(re.sub(r"\W", "", text)) >= 40:
                 texts.append(text)
                 continue
-            if page.rect.width * page.rect.height * SCALE * SCALE > MAX_PIXELS:
-                raise ValueError(f"Сторінка {index} PDF завелика для OCR (40 млн пікселів).")
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(SCALE, SCALE), alpha=False)
-            image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+            width, height = page.rect.width, page.rect.height
+            # Allow for integer rounding in the raster bounds.
+            scale = min(SCALE, sqrt((MAX_PIXELS * .99) / (width * height)))
+            matrix = fitz.Matrix(scale, scale)
+            bounds = (page.rect * matrix).irect
+            if bounds.is_empty or bounds.width * bounds.height > MAX_PIXELS:
+                raise ValueError(f"Не вдалося підібрати розмір сторінки {index} PDF для OCR.")
+            pixmap = page.get_pixmap(matrix=matrix, colorspace=fitz.csGRAY, alpha=False)
+            image = Image.frombytes("L", (pixmap.width, pixmap.height), pixmap.samples)
+            del pixmap
             try:
                 if _ink_fraction(image) < .002:
                     texts.append("")

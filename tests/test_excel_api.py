@@ -128,3 +128,32 @@ def test_supplier_directory_enrichment_never_borrows_another_company_code():
     assert supplier_with_code("ТОВ «Невідомий»", suppliers) == "ТОВ «Невідомий»"
     assert supplier_with_code("код ЄДРПОУ: 00123456", suppliers) == "ТОВ «Перший», код ЄДРПОУ: 00123456"
     assert supplier_with_code("ТОВ «Перший», код ЄДРПОУ: 11111111", suppliers).endswith("11111111")
+
+
+def test_thousand_excel_records_survive_draft_and_export(client):
+    records = [{"source": f"Протокол {index}", "values": {"D": f"№87-015-3000-{index:04}-2",
+               "I": "20.10.2026"}, "warnings": ["Перевірте дату. " * 65]} for index in range(1000)]
+    draft = {"records": records}
+    assert client.put("/api/workspace/drafts/excel", json={"data": draft}).status_code == 200
+    assert len(client.get("/api/workspace/drafts/excel").json()["data"]["records"]) == 1000
+    payload = json.dumps({"records": records, "confirmed": True}, ensure_ascii=False).encode()
+    assert len(payload) > 1024 * 1024
+    response = client.post("/api/excel/generate", files={"records_file": ("records.json", payload)})
+    assert response.status_code == 200, response.text
+    assert response.json()["counts"] == {"added": 1000, "updated": 0, "skipped": 0}
+
+
+def test_zip_protocol_can_be_opened_from_its_retained_source(client):
+    data = generated_protocols(client)
+    record = import_record(client)
+    assert record["file_index"] == 0
+    member = record["archive_member"]
+    stored = client.post("/api/workbench/files", data={"section": "excel", "kind": "source"},
+                         files={"file": ("Протоколи.zip", data)})
+    assert stored.status_code == 200
+    url = "/api/workbench/files/" + stored.json()["id"] + "/protocol"
+    opened = client.get(url, params={"member": member})
+    assert opened.status_code == 200
+    with ZipFile(BytesIO(data)) as archive:
+        assert opened.content == archive.read(member)
+    assert client.get(url, params={"member": "unknown.docx"}).status_code == 422

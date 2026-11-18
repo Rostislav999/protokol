@@ -20,3 +20,32 @@ main{margin-left:246px;min-height:100vh;display:flex;flex-direction:column}.topb
 @media(max-width:720px){.act-preparation-actions{width:100%}.act-preparation-actions>.button{width:100%}}
 
 .brand-mark img{width:100%;height:100%;object-fit:contain}
+
+.excel-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.excel-review-layout .item-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+}
+
+.excel-original {
+  min-width: 0;
+}
+
+.excel-original iframe,
+.excel-original .word-preview {
+  width: 100%;
+  height: min(68vh, 52rem);
+  overflow: auto;
+  border: 1px solid var(--line, #d9dee6);
+}
+
+@media (max-width: 900px) {
+  .excel-review-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

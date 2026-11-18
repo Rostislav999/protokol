@@ -26,10 +26,12 @@
     try{
       await window.OZWorkspace.ready;
       const section=options.section||operation,context={scope:window.OZWorkspace.scope,section,group:crypto.randomUUID().replaceAll('-','')};
+      const sources=[];
       for(let index=0;index<files.length;index++){
         if(cancelRequested)abort();
         update({phase:'Зберігаємо вихідні файли…',filename:files[index].name,file_index:index+1,files_total:files.length});
-        await window.OZWorkspace.retainFiles([files[index]],section,'source',context);
+        const [entry]=await window.OZWorkspace.retainFiles([files[index]],section,'source',context);
+        sources.push(entry);
       }
       if(cancelRequested)abort();
       const form=new FormData();files.forEach(file=>form.append('files',file));form.append('exact_pages',String(options.exact_pages!==false));
@@ -42,7 +44,7 @@
           const result=await request(`/api/tasks/${jobId}/result`);
           if(cancelRequested)abort();$('[data-task-cancel]').disabled=true;
           await request('/api/workbench/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:context.scope,section,group:context.group,append:operation==='excel'})});
-          result.sourceGroup=context.group;hideTimer=setTimeout(()=>panel.hidden=true,900);return result;
+          result.sourceFiles=sources;result.sourceGroup=context.group;hideTimer=setTimeout(()=>panel.hidden=true,900);return result;
         }
         if(state.status==='cancelled')abort();
         if(state.status==='failed')throw new Error(state.error||'Не вдалося опрацювати файли.');

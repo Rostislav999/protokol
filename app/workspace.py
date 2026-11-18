@@ -42,7 +42,7 @@ def _encode(value: Any) -> bytes:
         raise WorkspaceError("Чернетка має містити лише коректні JSON-дані без NaN та нескінченності.") from exc
 
 
-def _draft_data(value: dict, *, depth: int = 0) -> dict:
+def _draft_data(value: dict, *, depth: int = 0, section: str = "") -> dict:
     """Keep editable work while ensuring an approval never survives a restart."""
     def clean(item: Any, level: int) -> Any:
         if level > MAX_DEPTH:
@@ -59,8 +59,9 @@ def _draft_data(value: dict, *, depth: int = 0) -> dict:
     if not isinstance(value, dict):
         raise WorkspaceError("Дані розділу чернетки мають бути об’єктом.")
     for key in ("items", "records", "rows"):
-        if isinstance(value.get(key), list) and len(value[key]) > MAX_ROWS:
-            raise WorkspaceError("Чернетка може містити не більше 100 позицій у розділі.")
+        limit = 1000 if section == "excel" and key == "records" else MAX_ROWS
+        if isinstance(value.get(key), list) and len(value[key]) > limit:
+            raise WorkspaceError(f"Чернетка може містити не більше {limit} позицій у розділі.")
     if len(_encode(value)) > MAX_SECTION_BYTES:
         raise WorkspaceError("Чернетка розділу завелика: дозволено до 4 МБ.", 413)
     data = clean(value, depth)
@@ -141,7 +142,7 @@ class DraftStore:
                     or not isinstance(entry.get("updated_at"), str)):
                 raise WorkspaceError("Пошкоджено розділ чернетки. Файл збережено без змін.", 409)
             try:
-                _draft_data(entry["data"])
+                _draft_data(entry["data"], section=key)
                 datetime.fromisoformat(entry["updated_at"].replace("Z", "+00:00"))
             except (ValueError, TypeError) as exc:
                 raise WorkspaceError("Пошкоджено дані чернетки. Файл збережено без змін.", 409) from exc
@@ -186,7 +187,7 @@ class DraftStore:
 
     def save(self, section: str, data: dict, expected_revision: int | None = None) -> dict:
         self._section(section)
-        clean = _draft_data(data)
+        clean = _draft_data(data, section=section)
         with self._exclusive_write():
             state = self._read()
             revision = self._expect(state, section, expected_revision) + 1

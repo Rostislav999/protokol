@@ -6,6 +6,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const uid = () => globalThis.crypto?.randomUUID?.() || `excel-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const limits = {records:1000,file:25*1024**2,total:1024**3,batchBytes:100*1024**2,batchFiles:100};
   const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, busy:false, result:null, fileUrl:'', reportUrl:'', legacyTemplateName:''};
   const changed = () => window.OZWorkspace?.changed('excel');
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -19,7 +20,7 @@
   section.innerHTML = `
     <div class="page-heading"><div><p class="eyebrow">АКТ АБО ПРОТОКОЛИ → ПЕРЕВІРКА → ТАБЛИЦЯ</p><h1 id="excel-title">Excel за актом і протоколами</h1><p class="subtitle">Перенесіть дані поточного акта або завантажте готові протоколи. Знайома таблиця D–N; два стовпці про відповідність не заповнюються.</p></div><button id="excel-clear" type="button" class="button secondary">Новий список</button></div>
     <div id="excel-load-error" class="notice warning" hidden><p></p><button id="excel-retry" type="button" class="text-button">Спробувати знову</button></div>
-    <section class="panel common-panel"><div class="panel-heading"><div><h2>Протоколи випробувань</h2><p>Виберіть один або кілька DOCX, PDF чи ZIP із протоколами.</p></div></div><div class="source-actions"><button id="excel-upload" type="button" class="button primary">${icon('upload')}Додати протоколи</button><small>До 100 файлів, по 25 МБ. Загалом до 100 МБ.</small></div><input id="excel-files" type="file" accept=".docx,.pdf,.zip" multiple hidden></section>
+    <section class="panel common-panel"><div class="panel-heading"><div><h2>Протоколи випробувань</h2><p>Виберіть один або кілька DOCX, PDF чи ZIP із протоколами.</p></div></div><div class="source-actions"><button id="excel-upload" type="button" class="button primary">${icon('upload')}Додати протоколи</button><small>До 1000 протоколів, по 25 МБ. Загалом до 1 ГБ.</small></div><input id="excel-files" type="file" accept=".docx,.pdf,.zip" multiple hidden></section>
     <section id="excel-processing" class="panel processing" hidden aria-live="polite"><div class="spinner"></div><h2>Читаємо протоколи</h2><p>Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.</p></section>
     <div id="excel-warnings" class="notice warning" hidden></div>
     <fieldset id="excel-editor" style="border:0;padding:0;min-width:0;margin:0">
@@ -140,9 +141,13 @@
     $('#excel-empty').hidden = state.records.length > 0;
     $('#excel-warnings').hidden = state.warnings.length === 0;
     $('#excel-warnings').innerHTML = `<strong>Повідомлення імпорту</strong><ul>${state.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul>`;
+    for (const pane of $$('.excel-original .word-preview')) {
+      window.OZDocumentPreview.invalidate(pane);
+      pane.previewObserver?.disconnect();
+    }
     $('#excel-records').innerHTML = state.records.map((record,index) => {
       const missing = state.fields.filter(field => !String(record.values[field.column] || '').trim()).map(field => field.label);
-      return `<article class="panel item-card" data-excel-record="${esc(record.id)}"><div class="item-heading"><div class="item-label"><span class="item-number">${index+1}</span><div><h3 class="item-title">${esc(record.values.G || 'Протокол без назви')}</h3><p class="item-subtitle" style="overflow-wrap:anywhere">${esc(record.source || 'Протокол')} · ${esc(record.values.D || 'номер не визначено')}</p></div></div><button type="button" class="icon-button danger excel-remove" aria-label="Видалити протокол ${index+1}">${icon('trash')}</button></div>${record.warnings?.length ? `<details class="notice warning"><summary>Попередження джерела: ${record.warnings.length}</summary><ul>${record.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul></details>` : ''}<div class="item-grid">${state.fields.map(field => `<label class="field ${['G','M'].includes(field.column) ? 'full' : ''}"><span>${esc(field.column)} · ${esc(field.label)}${field.column === 'D' ? ' *' : ''}</span><input data-excel-column="${esc(field.column)}" value="${esc(record.values[field.column] || '')}" ${field.type === 'number' ? 'inputmode="decimal"' : ''} placeholder="${field.type === 'date' ? 'ДД.ММ.РРРР' : ['M','N'].includes(field.column) ? 'Код ЄДРПОУ' : ''}" ${field.column === 'D' ? 'required' : ''}><small class="field-source" data-excel-origin="${esc(field.column)}">Джерело: ${esc(originText(record.sources?.[field.column]))}</small></label>`).join('')}</div><p class="item-footnote" data-excel-missing>${missing.length ? `Не заповнено: ${esc(missing.join('; '))}.` : 'Усі поля заповнені.'}</p></article>`;
+      return `<article class="panel item-card" data-excel-record="${esc(record.id)}"><div class="item-heading"><div class="item-label"><span class="item-number">${index+1}</span><div><h3 class="item-title">${esc(record.values.G || 'Протокол без назви')}</h3><p class="item-subtitle" style="overflow-wrap:anywhere">${esc(record.source || 'Протокол')} · ${esc(record.values.D || 'номер не визначено')}</p></div></div><div class="source-actions">${record.original ? '<button type="button" class="button secondary excel-preview" aria-expanded="false">Відкрити протокол</button>' : ''}<button type="button" class="icon-button danger excel-remove" aria-label="Видалити протокол ${index+1}">${icon('trash')}</button></div></div>${record.warnings?.length ? `<details class="notice warning"><summary>Попередження джерела: ${record.warnings.length}</summary><ul>${record.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul></details>` : ''}<div class="item-grid">${state.fields.map(field => `<label class="field ${['G','M'].includes(field.column) ? 'full' : ''}"><span>${esc(field.column)} · ${esc(field.label)}${field.column === 'D' ? ' *' : ''}</span><input data-excel-column="${esc(field.column)}" value="${esc(record.values[field.column] || '')}" ${field.type === 'number' ? 'inputmode="decimal"' : ''} placeholder="${field.type === 'date' ? 'ДД.ММ.РРРР' : ['M','N'].includes(field.column) ? 'Код ЄДРПОУ' : ''}" ${field.column === 'D' ? 'required' : ''}><small class="field-source" data-excel-origin="${esc(field.column)}">Джерело: ${esc(originText(record.sources?.[field.column]))}</small></label>`).join('')}</div><p class="item-footnote" data-excel-missing>${missing.length ? `Не заповнено: ${esc(missing.join('; '))}.` : 'Усі поля заповнені.'}</p></article>`;
     }).join('');
     updateReadiness();
   }
@@ -163,30 +168,56 @@
     const supplier = detail.provenance?.common?.supplier;
     if (supplier && record.sources.M?.kind !== 'directory') record.sources.M = clone(supplier);
   }
+  function importBatches(files) {
+    const batches = [];
+    let batch = [], bytes = 0;
+    for (const file of files) {
+      const archive = /\.zip$/i.test(file.name);
+      if (batch.length && (archive || batch.length === limits.batchFiles || bytes + file.size > limits.batchBytes)) {
+        batches.push(batch);
+        batch = [];
+        bytes = 0;
+      }
+      if (archive) batches.push([file]);
+      else {
+        batch.push(file);
+        bytes += file.size;
+      }
+    }
+    if (batch.length) batches.push(batch);
+    return batches;
+  }
+
   async function importFiles(files) {
-    if (state.busy || !files.length || !await load()) return;
-    if (files.length > 100) return showError(new Error('За один раз можна додати до 100 файлів.'));
+    if (state.busy || !files.length || !await load() || state.busy) return;
+    if (files.length > limits.records) return showError(new Error('За один раз можна додати до 1000 файлів.'));
     if (files.some(file => !/\.(docx|pdf|zip)$/i.test(file.name))) return showError(new Error('Підтримуються файли DOCX, PDF і ZIP із протоколами.'));
-    if (files.some(file => !file.size || file.size > 25 * 1024 * 1024)) return showError(new Error('Кожен файл має бути непорожнім і не більшим за 25 МБ.'));
-    if (files.reduce((sum,file) => sum+file.size,0) > 100 * 1024 * 1024) return showError(new Error('Загальний розмір файлів — до 100 МБ.'));
+    if (files.some(file => !file.size || file.size > limits.file)) return showError(new Error('Кожен файл має бути непорожнім і не більшим за 25 МБ.'));
+    if (files.reduce((sum,file) => sum+file.size,0) > limits.total) return showError(new Error('Загальний розмір файлів — до 1 ГБ.'));
+    if (state.records.length >= limits.records) return showError(new Error('У списку вже 1000 протоколів.'));
     invalidate();
     state.busy = true;
-    $('#excel-processing h2').textContent = 'Читаємо протоколи';
-    $('#excel-processing p').textContent = 'Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.';
     $('#excel-processing').hidden = false;
     updateReadiness();
     try {
-      const form = new FormData();
-      files.forEach(file => form.append('files',file));
-      const data = await window.OZTasks.run('excel',files,{section:'excel'});
-      const imported = (data.records || []).map(record => importedRecord(record));
-      if (state.records.length + imported.length > 100) throw new Error('Список містить більше 100 протоколів. Створіть окремий комплект.');
-      state.records.push(...imported);
-      state.warnings.push(...(data.warnings || []));
-      if (!imported.length && !(data.warnings || []).length) throw new Error('У файлах не знайдено протоколів для імпорту.');
-      render();
-      changed();
-    } catch (error) { showError(error); }
+      const batches = importBatches(files);
+      $('#excel-processing h2').textContent = 'Читаємо протоколи';
+      for (const [index, batch] of batches.entries()) {
+        $('#excel-processing p').textContent = `Частина ${index+1} з ${batches.length}. Розпізнаємо дані для таблиці…`;
+        const data = await window.OZTasks.run('excel',batch,{section:'excel'});
+        const imported = (data.records || []).map(value => {
+          const record = importedRecord(value);
+          const source = data.sourceFiles?.[value.file_index];
+          if (source) record.original = {filename:source.filename,digest:source.digest,group:data.sourceGroup,member:value.archive_member};
+          return record;
+        });
+        if (state.records.length + imported.length > limits.records) throw new Error('Список перевищить 1000 протоколів. Частину не додано.');
+        state.records.push(...imported);
+        state.warnings.push(...(data.warnings || []));
+        render();
+        changed();
+      }
+    } catch (error) { if (error.name !== 'AbortError') showError(error); }
     finally { state.busy=false; $('#excel-processing').hidden=true; updateReadiness(); }
   }
   async function importAct(detail) {
@@ -249,6 +280,62 @@
     $('[data-excel-missing]',card).textContent=missing.length ? `Не заповнено: ${missing.join('; ')}.` : 'Усі поля заповнені.';
     invalidate(); updateReadiness();
   });
+  async function togglePreview(button, card, record) {
+    const existing = $('.excel-original',card);
+    if (existing) {
+      const documentPane = $('.word-preview',existing);
+      window.OZDocumentPreview.invalidate(documentPane);
+      documentPane?.previewObserver?.disconnect();
+      const layout = existing.parentElement;
+      layout.replaceWith($('.item-grid',layout));
+      button.setAttribute('aria-expanded','false');
+      button.textContent = 'Відкрити протокол';
+      return;
+    }
+    const panel = document.createElement('div');
+    panel.className = 'excel-original';
+    panel.innerHTML = '<p role="status">Відкриваємо протокол…</p>';
+    const status = $('p',panel);
+    const grid = $('.item-grid',card);
+    const layout = document.createElement('div');
+    layout.className = 'excel-review-layout';
+    grid.replaceWith(layout);
+    layout.append(panel,grid);
+    button.setAttribute('aria-expanded','true');
+    button.textContent = 'Закрити протокол';
+    try {
+      const url = await window.OZWorkspace.protocolSource(record.original);
+      if (!panel.isConnected) return;
+      if (/\.pdf$/i.test(record.original.member || record.original.filename)) {
+        const frame = document.createElement('iframe');
+        frame.title = 'Оригінал протоколу PDF';
+        frame.src = url;
+        const link = document.createElement('a');
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = 'Відкрити PDF в окремому вікні';
+        panel.replaceChildren(link,frame);
+      } else {
+        const response = await api(url);
+        const data = await response.arrayBuffer();
+        if (!panel.isConnected) return;
+        const pane = document.createElement('div');
+        pane.className = 'word-preview';
+        panel.append(pane);
+        await window.OZDocumentPreview.render(data,pane);
+        if (!panel.isConnected) pane.previewObserver?.disconnect();
+        status.remove();
+      }
+    } catch (error) { status.textContent = error.message; }
+  }
+  $('#excel-records').addEventListener('click',event => {
+    const button=event.target.closest('.excel-preview');
+    if (!button) return;
+    const card=button.closest('[data-excel-record]');
+    const record=state.records.find(value => value.id === card.dataset.excelRecord);
+    if (record?.original) togglePreview(button,card,record);
+  });
   $('#excel-records').addEventListener('click',event => {
     const remove=event.target.closest('.excel-remove');
     if (!remove || state.busy) return;
@@ -265,7 +352,8 @@
     const exportContext=window.OZWorkspace.context('excel');
     try {
       const form=new FormData();
-      form.append('payload',JSON.stringify({records:state.records.map(({source,values,warnings})=>({source,values,warnings})),confirmed:true}));
+      const payload = JSON.stringify({records:state.records.map(({source,values,warnings})=>({source,values,warnings})),confirmed:true});
+      form.append('records_file',new Blob([payload],{type:'application/json'}),'records.json');
       await window.OZWorkspace.flushSection('excel');
       const data=await (await api('/api/excel/generate',{method:'POST',body:form})).json();
       const decoded=atob(data.workbook_base64 || '');
@@ -300,11 +388,15 @@
       if (state.busy) throw new Error('Дочекайтеся завершення поточної операції Excel.');
       if (!await load()) throw new Error('Не вдалося завантажити структуру Excel для відновлення чернетки.');
       const fields = new Set(state.fields.map(field => field.column));
-      state.records = (Array.isArray(data.records) ? data.records : []).slice(0,100).map(saved => ({
+      state.records = (Array.isArray(data.records) ? data.records : []).slice(0,limits.records).map(saved => ({
         id:typeof saved.id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(saved.id) ? saved.id : uid(),
         source:String(saved.source || 'Джерело чернетки').slice(0,1000),
         values:Object.fromEntries(Object.entries(saved.values || {}).filter(([key]) => fields.has(key)).map(([key,value]) => [key,String(value ?? '').slice(0,4000)])),
         warnings:Array.isArray(saved.warnings) ? saved.warnings.map(value => String(value).slice(0,5000)).slice(0,200) : [],
+        original:saved.original && typeof saved.original.filename === 'string' &&
+          /^[a-f0-9]{64}$/.test(saved.original.digest) && /^[a-f0-9]{32}$/.test(saved.original.group) ?
+          {filename:saved.original.filename,digest:saved.original.digest,group:saved.original.group,
+            member:typeof saved.original.member === 'string' ? saved.original.member : null} : undefined,
         sources:saved.sources && typeof saved.sources === 'object' ? clone(saved.sources) : {}
       }));
       state.warnings = Array.isArray(data.warnings) ? data.warnings.map(String).slice(0,200) : [];

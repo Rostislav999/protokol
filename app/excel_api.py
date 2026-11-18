@@ -21,7 +21,8 @@ from .supplier_details import supplier_with_code
 MAX_FILE = 25 * 1024 * 1024
 MAX_TOTAL = 100 * 1024 * 1024
 MAX_EXPANDED = 150 * 1024 * 1024
-MAX_RECORDS = 100
+MAX_IMPORT_RECORDS = 100
+MAX_RECORDS = 1000
 SOURCE_URL = "https://github.com/Rostislav999/-"
 _COLUMNS = {column for column, _ in FIELDS}
 
@@ -75,7 +76,7 @@ class ActExcelItem(BaseModel):
 class ActExcelInput(BaseModel):
     model_config = ConfigDict(extra="ignore")
     common: ActExcelCommon = Field(default_factory=ActExcelCommon)
-    items: list[ActExcelItem] = Field(min_length=1, max_length=MAX_RECORDS)
+    items: list[ActExcelItem] = Field(min_length=1, max_length=MAX_IMPORT_RECORDS)
     source: str = Field(default="", max_length=1000)
 
 
@@ -170,12 +171,12 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
         return 1
     files_total = sum(count_files(filename, data) for filename, data in files)
 
-    def append(filename, data):
+    def append(filename, data, file_index, member=None):
         nonlocal protocol_count, expanded
         protocol_count += 1
         progress.file(protocol_count, max(files_total, protocol_count), filename)
         expanded += len(data)
-        if protocol_count > MAX_RECORDS or expanded > MAX_EXPANDED:
+        if protocol_count > MAX_IMPORT_RECORDS or expanded > MAX_EXPANDED:
             raise ValueError("Комплект перевищує 100 протоколів або 150 МБ після розпакування.")
         if not data or len(data) > MAX_FILE:
             warnings.append(filename + ": файл порожній або перевищує 25 МБ.")
@@ -189,13 +190,14 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
             if record.values["M"] and not supplier_code(raw_supplier):
                 sources["M"] = {"kind": "directory", "label": "Довідник постачальників", "source": record.source, "original": raw_supplier}
             records.append({"id": uuid4().hex, "source": record.source, "values": record.values, "sources": sources,
-                            "warnings": record.warnings, "missing": record.missing()})
+                            "warnings": record.warnings, "missing": record.missing(),
+                            "file_index": file_index, "archive_member": member})
         except ValueError as exc:
             warnings.append(filename + ": " + str(exc))
 
-    for filename, data in files:
+    for file_index, (filename, data) in enumerate(files):
         if not filename.lower().endswith(".zip"):
-            append(filename, data)
+            append(filename, data, file_index)
             continue
         try:
             with ZipFile(io.BytesIO(data)) as archive:
@@ -208,7 +210,7 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
                              and member.filename.lower().endswith((".docx", ".pdf"))]
                 if not documents:
                     raise ValueError("У ZIP немає протоколів DOCX або PDF.")
-                if protocol_count + len(documents) > MAX_RECORDS:
+                if protocol_count + len(documents) > MAX_IMPORT_RECORDS:
                     raise ValueError("Комплект перевищує 100 протоколів.")
                 for member in documents:
                     if member.flag_bits & 1:
@@ -216,7 +218,7 @@ def import_protocols(files: list[tuple[str, bytes]], suppliers: list[dict]) -> d
                     elif member.file_size > MAX_FILE:
                         warnings.append(_source_name(member.filename) + ": файл перевищує 25 МБ.")
                     else:
-                        append(_source_name(member.filename), archive.read(member))
+                        append(_source_name(member.filename), archive.read(member), file_index, member.filename)
         except (BadZipFile, RuntimeError, OSError, EOFError, ValueError) as exc:
             warnings.append(filename + ": " + str(exc))
     if not records:
@@ -237,7 +239,7 @@ def excel_router(settings: SettingsStore) -> APIRouter:
     async def read_protocols(files: list[UploadFile] = File(...)):
         uploaded, total = [], 0
         try:
-            if not 1 <= len(files) <= MAX_RECORDS:
+            if not 1 <= len(files) <= MAX_IMPORT_RECORDS:
                 raise ValueError("Оберіть від 1 до 100 файлів.")
             for file in files:
                 filename = _source_name(file.filename)
@@ -260,11 +262,14 @@ def excel_router(settings: SettingsStore) -> APIRouter:
         return records_from_act(payload, settings.all()["suppliers"])
 
     @router.post("/generate")
-    async def generate(payload: str = Form(...), template: UploadFile | None = File(None)):
+    async def generate(payload: str | None = Form(None), template: UploadFile | None = File(None),
+                       records_file: UploadFile | None = File(None)):
         try:
-            if len(payload) > 3 * 1024 * 1024:
+            max_payload = 8 * 1024 * 1024
+            raw = await records_file.read(max_payload + 1) if records_file is not None else (payload or "").encode()
+            if len(raw) > max_payload:
                 raise ValueError("Дані комплекту завеликі.")
-            values = ExcelGeneration.model_validate_json(payload)
+            values = ExcelGeneration.model_validate_json(raw)
             if not values.confirmed:
                 raise ValueError("Підтвердьте перевірку даних і попереджень перед створенням Excel.")
             workbook = None
@@ -292,5 +297,7 @@ def excel_router(settings: SettingsStore) -> APIRouter:
         finally:
             if template is not None:
                 await template.close()
+            if records_file is not None:
+                await records_file.close()
 
     return router
