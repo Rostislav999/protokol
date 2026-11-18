@@ -52,14 +52,14 @@ jobs:
           "$PWD\build\windows\tesseract" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           python scripts/prepare_ocr.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check drafts and review in the native renderer
+        run: python -m scripts.check_workspace_ui
       - name: Run application tests
         run: python -m pytest -q --junitxml=build/windows/tests.xml
       - name: Summarize failed application tests
         id: test_report
-        if: failure()
+        if: failure() && hashFiles('build/windows/tests.xml') != ''
         run: python -m scripts.report_test_failures
-      - name: Check drafts and review in the native renderer
-        run: python -m scripts.check_workspace_ui
       - name: Build installer and test installed application
         run: python scripts/build_windows.py --version 1.8.1
       - name: Upload installer and validation results

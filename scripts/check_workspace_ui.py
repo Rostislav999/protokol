@@ -679,6 +679,9 @@ def main() -> int:
         with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
             summary.write('### Native workspace check\n\n```json\n' + report + '\n```\n')
     print(json.dumps(result, ensure_ascii=False), flush=True)
+    if not result["ok"] and os.environ.get("GITHUB_ACTIONS") == "true":
+        error = str(result["error"]).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Native workspace check::{error}", flush=True)
     return code if code else (0 if result["ok"] else 1)
 
 
