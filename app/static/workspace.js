@@ -366,7 +366,8 @@
     },
     snapshot(section,{includeSaved=false}={}){
       const current=providers.get(section)?.snapshot();
-      return JSON.parse(JSON.stringify(current ?? (includeSaved ? state(section).entry?.data : null) ?? {}));
+      const saved=includeSaved && state(section).pending ? state(section).entry?.data : null;
+      return JSON.parse(JSON.stringify(current ?? saved ?? {}));
     },
     async bundle(){
       await saveAll();
