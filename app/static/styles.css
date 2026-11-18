@@ -49,3 +49,32 @@ main{margin-left:246px;min-height:100vh;display:flex;flex-direction:column}.topb
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.excel-comparison {
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+
+.excel-comparison-table {
+  overflow-x: auto;
+}
+
+.excel-comparison-table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.excel-comparison-table th,
+.excel-comparison-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.excel-comparison-check {
+  background: var(--warning-bg, #fff4dd);
+  color: var(--warning-ink, #674200);
+}

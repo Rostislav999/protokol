@@ -266,3 +266,10 @@ def test_supplier_export_contains_only_code_as_text(supplier, expected):
         assert cell_text(cell, []) == expected
         if expected:
             assert cell.get("t") == "inlineStr"
+
+
+def test_protocol_without_recognized_number_remains_available_for_review():
+    record = extract_text("ПРОТОКОЛ ВИПРОБУВАНЬ\nДата виготовлення: 20.10.2026")
+    assert record.values["D"] == ""
+    assert record.values["I"] == "20.10.2026"
+    assert any("Номер протоколу не розпізнано" in warning for warning in record.warnings)

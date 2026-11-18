@@ -358,6 +358,12 @@
         throw error;
       } finally {startingAct=false;panes.forEach(pane=>pane.inert=false);renderDrafts();}
     },
+    hasPendingDraft(section){return state(section).pending;},
+    acceptReplacement(section){
+      state(section).pending=false;
+      renderDrafts();
+      changed(section);
+    },
     snapshot(section){return JSON.parse(JSON.stringify(providers.get(section)?.snapshot()||{}));},
     async bundle(){
       await saveAll();

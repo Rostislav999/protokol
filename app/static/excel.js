@@ -7,7 +7,7 @@
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const uid = () => globalThis.crypto?.randomUUID?.() || `excel-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const limits = {records:1000,file:25*1024**2,total:1024**3,batchBytes:100*1024**2,batchFiles:100};
-  const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, busy:false, result:null, fileUrl:'', reportUrl:'', legacyTemplateName:''};
+  const state = {fields:[], records:[], warnings:[], loaded:false, loading:null, actBusy:false, busy:false, result:null, fileUrl:'', reportUrl:'', legacyTemplateName:''};
   const changed = () => window.OZWorkspace?.changed('excel');
   const clone = value => JSON.parse(JSON.stringify(value));
   const originText = source => source?.label || ({act:'З акта',protocol:'Із протоколу',manual:'Введено вручну',directory:'Із довідника',template:'Із шаблону',derived:'Обчислено з даних джерела'})[source?.kind] || 'Джерело не збережено';
@@ -20,6 +20,10 @@
   section.innerHTML = `
     <div class="page-heading"><div><p class="eyebrow">АКТ АБО ПРОТОКОЛИ → ПЕРЕВІРКА → ТАБЛИЦЯ</p><h1 id="excel-title">Excel за актом і протоколами</h1><p class="subtitle">Перенесіть дані поточного акта або завантажте готові протоколи. Знайома таблиця D–N; два стовпці про відповідність не заповнюються.</p></div><button id="excel-clear" type="button" class="button secondary">Новий список</button></div>
     <div id="excel-load-error" class="notice warning" hidden><p></p><button id="excel-retry" type="button" class="text-button">Спробувати знову</button></div>
+    <section class="panel common-panel"><div class="panel-heading"><div><h2>Акт відбору для звірки</h2><p id="excel-act-status">Завантажте скан акта, за яким підготовлено протоколи.</p></div></div>
+      <div class="source-actions"><button id="excel-act-upload" type="button" class="button secondary">${icon('upload')}Завантажити скан акта</button>
+      <button id="excel-act-review" type="button" class="text-button" hidden>Переглянути дані акта</button></div>
+      <input id="excel-act-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.docx,.txt" hidden></section>
     <section class="panel common-panel"><div class="panel-heading"><div><h2>Протоколи випробувань</h2><p>Виберіть один або кілька DOCX, PDF чи ZIP із протоколами.</p></div></div><div class="source-actions"><button id="excel-upload" type="button" class="button primary">${icon('upload')}Додати протоколи</button><small>До 1000 протоколів, по 25 МБ. Загалом до 1 ГБ.</small></div><input id="excel-files" type="file" accept=".docx,.pdf,.zip" multiple hidden></section>
     <section id="excel-processing" class="panel processing" hidden aria-live="polite"><div class="spinner"></div><h2>Читаємо протоколи</h2><p>Розпізнаємо дані для таблиці. Скан PDF може потребувати кількох хвилин.</p></section>
     <div id="excel-warnings" class="notice warning" hidden></div>
@@ -125,13 +129,16 @@
   function issues() { return reviewIssues().filter(issue => issue.level === 'error').map(issue => issue.message); }
   function updateReadiness() {
     const missing = issues();
-    $('#excel-upload').disabled = state.busy || !state.loaded;
-    $('#excel-clear').disabled = state.busy;
-    $('#excel-editor').disabled = state.busy;
-    $('#excel-generate').disabled = state.busy || missing.length > 0 || !$('#excel-confirmed').checked;
-    $('#excel-generate').innerHTML = state.busy ? 'Опрацьовуємо…' : `${icon('download')}Створити Excel`;
-    $('#excel-generation-help').textContent = state.busy ? 'Дочекайтеся завершення операції.' : missing.length ? `Потрібно: ${missing.slice(0,3).join('; ')}.` : !$('#excel-confirmed').checked ? 'Підтвердьте перевірку даних.' : `До таблиці буде передано ${state.records.length} протоколів.`;
-    $('#excel-generation-help').classList.toggle('ready', !state.busy && !missing.length && $('#excel-confirmed').checked);
+    const busy = state.busy || state.actBusy;
+    $('#excel-upload').disabled = busy || !state.loaded;
+    $('#excel-act-upload').disabled = busy;
+    $('#excel-act-review').disabled = busy;
+    $('#excel-clear').disabled = busy;
+    $('#excel-editor').disabled = busy;
+    $('#excel-generate').disabled = busy || missing.length > 0 || !$('#excel-confirmed').checked;
+    $('#excel-generate').innerHTML = busy ? 'Опрацьовуємо…' : `${icon('download')}Створити Excel`;
+    $('#excel-generation-help').textContent = busy ? 'Дочекайтеся завершення операції.' : missing.length ? `Потрібно: ${missing.slice(0,3).join('; ')}.` : !$('#excel-confirmed').checked ? 'Підтвердьте перевірку даних.' : `До таблиці буде передано ${state.records.length} протоколів.`;
+    $('#excel-generation-help').classList.toggle('ready', !busy && !missing.length && $('#excel-confirmed').checked);
     $('#excel-legacy-template').hidden = !state.legacyTemplateName;
     $('#excel-legacy-template p').textContent = `Ця чернетка раніше доповнювала книгу «${state.legacyTemplateName}». Тепер буде створено нову зведену таблицю лише з протоколами поточного списку. Попередня книга не змінюється.`;
   }
@@ -147,7 +154,7 @@
     }
     $('#excel-records').innerHTML = state.records.map((record,index) => {
       const missing = state.fields.filter(field => !String(record.values[field.column] || '').trim()).map(field => field.label);
-      return `<article class="panel item-card" data-excel-record="${esc(record.id)}"><div class="item-heading"><div class="item-label"><span class="item-number">${index+1}</span><div><h3 class="item-title">${esc(record.values.G || 'Протокол без назви')}</h3><p class="item-subtitle" style="overflow-wrap:anywhere">${esc(record.source || 'Протокол')} · ${esc(record.values.D || 'номер не визначено')}</p></div></div><div class="source-actions">${record.original ? '<button type="button" class="button secondary excel-preview" aria-expanded="false">Відкрити протокол</button>' : ''}<button type="button" class="icon-button danger excel-remove" aria-label="Видалити протокол ${index+1}">${icon('trash')}</button></div></div>${record.warnings?.length ? `<details class="notice warning"><summary>Попередження джерела: ${record.warnings.length}</summary><ul>${record.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul></details>` : ''}<div class="item-grid">${state.fields.map(field => `<label class="field ${['G','M'].includes(field.column) ? 'full' : ''}"><span>${esc(field.column)} · ${esc(field.label)}${field.column === 'D' ? ' *' : ''}</span><input data-excel-column="${esc(field.column)}" value="${esc(record.values[field.column] || '')}" ${field.type === 'number' ? 'inputmode="decimal"' : ''} placeholder="${field.type === 'date' ? 'ДД.ММ.РРРР' : ['M','N'].includes(field.column) ? 'Код ЄДРПОУ' : ''}" ${field.column === 'D' ? 'required' : ''}><small class="field-source" data-excel-origin="${esc(field.column)}">Джерело: ${esc(originText(record.sources?.[field.column]))}</small></label>`).join('')}</div><p class="item-footnote" data-excel-missing>${missing.length ? `Не заповнено: ${esc(missing.join('; '))}.` : 'Усі поля заповнені.'}</p></article>`;
+      return `<article class="panel item-card" data-excel-record="${esc(record.id)}"><div class="item-heading"><div class="item-label"><span class="item-number">${index+1}</span><div><h3 class="item-title">${esc(record.values.G || 'Протокол без назви')}</h3><p class="item-subtitle" style="overflow-wrap:anywhere">${esc(record.source || 'Протокол')} · ${esc(record.values.D || 'номер не визначено')}</p></div></div><div class="source-actions">${record.original ? '<button type="button" class="button secondary excel-preview" aria-expanded="false">Відкрити протокол</button><button type="button" class="button secondary excel-compare" aria-expanded="false">Звірити з актом</button>' : ''}<button type="button" class="icon-button danger excel-remove" aria-label="Видалити протокол ${index+1}">${icon('trash')}</button></div></div>${record.warnings?.length ? `<details class="notice warning"><summary>Попередження джерела: ${record.warnings.length}</summary><ul>${record.warnings.map(value => `<li>${esc(value)}</li>`).join('')}</ul></details>` : ''}<div class="item-grid">${state.fields.map(field => `<label class="field ${['G','M'].includes(field.column) ? 'full' : ''}"><span>${esc(field.column)} · ${esc(field.label)}${field.column === 'D' ? ' *' : ''}</span><input data-excel-column="${esc(field.column)}" value="${esc(record.values[field.column] || '')}" ${field.type === 'number' ? 'inputmode="decimal"' : ''} placeholder="${field.type === 'date' ? 'ДД.ММ.РРРР' : ['M','N'].includes(field.column) ? 'Код ЄДРПОУ' : ''}" ${field.column === 'D' ? 'required' : ''}><small class="field-source" data-excel-origin="${esc(field.column)}">Джерело: ${esc(originText(record.sources?.[field.column]))}</small></label>`).join('')}</div><p class="item-footnote" data-excel-missing>${missing.length ? `Не заповнено: ${esc(missing.join('; '))}.` : 'Усі поля заповнені.'}</p></article>`;
     }).join('');
     updateReadiness();
   }
@@ -189,7 +196,7 @@
   }
 
   async function importFiles(files) {
-    if (state.busy || !files.length || !await load() || state.busy) return;
+    if (state.busy || state.actBusy || !files.length || !await load() || state.busy || state.actBusy) return;
     if (files.length > limits.records) return showError(new Error('За один раз можна додати до 1000 файлів.'));
     if (files.some(file => !/\.(docx|pdf|zip)$/i.test(file.name))) return showError(new Error('Підтримуються файли DOCX, PDF і ZIP із протоколами.'));
     if (files.some(file => !file.size || file.size > limits.file)) return showError(new Error('Кожен файл має бути непорожнім і не більшим за 25 МБ.'));
@@ -268,6 +275,42 @@
     } catch (error) { showError(error); }
     finally { state.busy=false; $('#excel-processing').hidden=true; updateReadiness(); }
   }
+  function showComparisonAct() {
+    const act = window.OZWorkspace.snapshot('acts');
+    const count = act.items?.length || 0;
+    $('#excel-act-status').textContent = count ? `${act.source || 'Поточний акт відбору'} · Позицій: ${count}.` :
+      'Завантажте скан акта, за яким підготовлено протоколи.';
+    $('#excel-act-review').hidden = !count && !act.source;
+  }
+  $('#excel-act-upload').addEventListener('click',() => $('#excel-act-file').click());
+  $('#excel-act-review').addEventListener('click',() => {
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
+  });
+  $('#excel-act-file').addEventListener('change',async event => {
+    const file = event.target.files[0];
+    event.target.value = '';
+    if (!file || state.busy || state.actBusy) return;
+    state.actBusy=true;
+    updateReadiness();
+    try {
+      if (await window.OZImportActForComparison(file)) {
+        $('#excel-error').hidden = true;
+        $('#excel-confirmed').checked = false;
+        for (const panel of $$('.excel-comparison')) panel.remove();
+        for (const control of $$('.excel-compare')) control.setAttribute('aria-expanded','false');
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') showError(error);
+    } finally {
+      state.actBusy=false;
+      showComparisonAct();
+      updateReadiness();
+    }
+  });
+  document.addEventListener('protokol:act-loaded',showComparisonAct);
+  document.addEventListener('protokol:view',event => {
+    if (event.detail.name === 'excel') showComparisonAct();
+  });
   $('#excel-upload').addEventListener('click',() => $('#excel-files').click());
   $('#excel-files').addEventListener('change',async event => { const files=[...event.target.files]; event.target.value=''; await importFiles(files); });
   $('#excel-clear').addEventListener('click',() => {
@@ -288,8 +331,92 @@
     if (column === 'G') $('.item-title',card).textContent=event.target.value || 'Протокол без назви';
     const missing=state.fields.filter(field => !String(record.values[field.column] || '').trim()).map(field => field.label);
     $('[data-excel-missing]',card).textContent=missing.length ? `Не заповнено: ${missing.join('; ')}.` : 'Усі поля заповнені.';
+    $('[data-excel-act-position]',card)?.dispatchEvent(new Event('change'));
     invalidate(); updateReadiness();
   });
+  function comparisonValue(field, value) {
+    const text = String(value || '').trim();
+    if (field.column === 'D') return numberKey(text);
+    if (field.type === 'number' && text) {
+      const amount = Number(text.replace(/\s/g,'').replace(',','.'));
+      if (Number.isFinite(amount)) return String(amount);
+    }
+    return text.normalize('NFC').replace(/\s+/g,' ').toLocaleLowerCase('uk-UA');
+  }
+
+  async function toggleComparison(button, card, record) {
+    const existing = $('.excel-comparison',card);
+    if (existing) {
+      existing.remove();
+      button.setAttribute('aria-expanded','false');
+      return;
+    }
+    const panel = document.createElement('section');
+    panel.className = 'excel-comparison';
+    panel.setAttribute('aria-label','Звірка протоколу з актом');
+    panel.innerHTML = '<p role="status">Завантажуємо позиції поточного акта…</p>';
+    $('.item-heading',card).after(panel);
+    button.setAttribute('aria-expanded','true');
+    const status = $('p',panel);
+    try {
+      const {common,items,source} = window.OZWorkspace.snapshot('acts');
+      if (!items?.length) {
+        status.textContent = 'Додайте або відкрийте акт відбору з позиціями в цьому пакеті.';
+        const openAct = document.createElement('button');
+        openAct.type = 'button';
+        openAct.className = 'text-button';
+        openAct.textContent = 'Перейти до акта відбору';
+        openAct.onclick = () => document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
+        panel.append(openAct);
+        return;
+      }
+      const {records:positions} = await (await api('/api/excel/from-act',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({common,items,source})
+      })).json();
+      if (!panel.isConnected) return;
+      const matches = positions.map((position,index) => ({position,index}))
+        .filter(({position}) => numberKey(record.values.D) && numberKey(position.values.D) === numberKey(record.values.D));
+      panel.innerHTML = `<label class="field"><span>Позиція акта${source ? ' · '+esc(source) : ''}</span>
+        <select data-excel-act-position><option value="">Оберіть позицію</option>${positions.map(({values},index) =>
+        `<option value="${index}">${index+1}. ${esc([values.D,values.G].filter(Boolean).join(' · '))}</option>`).join('')}</select></label>
+        <p data-excel-compare-summary role="status"></p><div class="excel-comparison-table"></div>`;
+      const select = $('[data-excel-act-position]',panel);
+      const summary = $('[data-excel-compare-summary]',panel);
+      const table = $('.excel-comparison-table',panel);
+      select.value = matches.length === 1 ? String(matches[0].index) : '';
+      function compare() {
+        table.replaceChildren();
+        if (select.value === '') {
+          summary.textContent = matches.length > 1 ? 'В акті є кілька позицій із цим номером. Оберіть потрібну.' :
+            'Номер протоколу не знайдено в акті. Оберіть позицію вручну.';
+          return;
+        }
+        const fromAct = positions[Number(select.value)].values;
+        let different = 0, incomplete = 0;
+        const rows = state.fields.map(field => {
+          const protocol = record.values[field.column] || '';
+          const act = fromAct[field.column] || '';
+          const left = comparisonValue(field,protocol), right = comparisonValue(field,act);
+          if (!left && !right) return '';
+          const difference = left && right && left !== right;
+          const missing = !left || !right;
+          if (difference) different++;
+          if (missing) incomplete++;
+          const message = difference ? 'Розбіжність' : missing ? 'Бракує даних' : 'Збіг';
+          return `<tr${difference || missing ? ' class="excel-comparison-check"' : ''}>
+            <th scope="row">${esc(field.label)}</th><td>${esc(protocol || '—')}</td>
+            <td>${esc(act || '—')}</td><td>${message}</td></tr>`;
+        }).join('');
+        summary.textContent = rows ? `Розбіжності: ${different}. Бракує даних: ${incomplete}.` :
+          'У вибраній позиції та протоколі немає заповнених полів для звірки.';
+        if (rows) table.innerHTML = `<table><thead><tr><th scope="col">Поле</th><th scope="col">Протокол</th>
+          <th scope="col">Акт відбору</th><th scope="col">Звірка</th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+      select.addEventListener('change',compare);
+      compare();
+    } catch (error) { status.textContent = error.message; }
+  }
+
   async function togglePreview(button, card, record) {
     const existing = $('.excel-original',card);
     if (existing) {
@@ -340,11 +467,13 @@
     } catch (error) { status.textContent = error.message; }
   }
   $('#excel-records').addEventListener('click',event => {
-    const button=event.target.closest('.excel-preview');
+    const button=event.target.closest('.excel-preview, .excel-compare');
     if (!button) return;
     const card=button.closest('[data-excel-record]');
     const record=state.records.find(value => value.id === card.dataset.excelRecord);
-    if (record?.original) togglePreview(button,card,record);
+    if (!record?.original) return;
+    if (button.classList.contains('excel-compare')) toggleComparison(button,card,record);
+    else togglePreview(button,card,record);
   });
   $('#excel-records').addEventListener('click',event => {
     const remove=event.target.closest('.excel-remove');

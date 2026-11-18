@@ -185,12 +185,16 @@ def extract_text(text: str, source: str = "") -> Record:
     ids = {protocol_key(t) for t in titles}
     if len(ids) > 1:
         raise ValueError("В файле несколько протоколов. Разделите их на отдельные файлы.")
-    match = re.search(r"№\s*(" + NUMBER + ")", text)
-    if not titles and not match:
-        raise ValueError("Не найден номер протокола. Проверьте формат документа / распознавание PDF.")
-    if not titles and not re.search(r"Ідентифікаційний\s+номер\s+та\s+назва\s+зразка\s*:|Висновок\s*:\s*Представлений\s+зразок", text, re.I):
+    structure = re.search(r"Ідентифікаційний\s+номер\s+та\s+назва\s+зразка\s*:|Висновок\s*:\s*Представлений\s+зразок", text, re.I)
+    if titles:
+        v["D"] = "№" + protocol_key(titles[0])
+    elif structure or re.search(r"ПРОТОКОЛ\s+ВИПРОБУВАНЬ", text, re.I):
+        match = re.search(r"№\s*(" + NUMBER + ")", text) if structure else None
+        v["D"] = "№" + protocol_key(match[1]) if match else ""
+        if not v["D"]:
+            record.warnings.append("Номер протоколу не розпізнано. Відкрийте оригінал і введіть номер вручну.")
+    else:
         raise ValueError("Не знайдено заголовок або структуру протоколу випробувань. Акт відбору не є протоколом.")
-    v["D"] = "№" + protocol_key(titles[0] if titles else match[1])
     title = re.search(r"ПРОТОКОЛ\s+ВИПРОБУВАНЬ[^\n]*\n([^\n]+)", text, re.I)
     v["E"] = date_text(title[1]) if title else ""
     catalog = find_value(text, r"Номер за Каталогом продуктів харчування|Код каталогу(?: ХП)?")

@@ -332,25 +332,42 @@
     state.sourceUrl = '';
   }
 
-  async function extractFile(file) {
+  window.OZImportActForComparison = file => extractFile(file, {keepScope:true});
+
+  async function extractFile(file, {keepScope=false} = {}) {
     if (state.busy || preparingAct) return;
-    if (file.size > 25 * 1024 * 1024) { toast('Файл завеликий. Максимальний розмір — 25 МБ.', true); return; }
-    if (!/\.(pdf|jpe?g|png|tiff?|docx|txt)$/i.test(file.name)) { toast('Підтримуються PDF, JPG, PNG, TIFF, DOCX і TXT.', true); return; }
+    const invalid = file.size > 25 * 1024 * 1024 ? 'Файл завеликий. Максимальний розмір — 25 МБ.' :
+      /\.(pdf|jpe?g|png|tiff?|docx|txt)$/i.test(file.name) ? '' : 'Підтримуються PDF, JPG, PNG, TIFF, DOCX і TXT.';
+    if (invalid) {
+      if (keepScope) throw new Error(invalid);
+      toast(invalid,true);
+      return;
+    }
     preparingAct = true;
     try {
-      await window.OZWorkspace.startNewAct(file.name);
+      if (keepScope) {
+        await window.OZWorkspace.ready;
+        if (window.OZWorkspace.busy) throw new Error('Дочекайтеся завершення поточної обробки.');
+        if ((snapshotAct() || window.OZWorkspace.hasPendingDraft('acts')) &&
+            !window.confirm('Замінити акт відбору для цього пакета? Завантажені протоколи залишаться у списку.')) return false;
+      } else {
+        await window.OZWorkspace.startNewAct(file.name);
+      }
       state.busy = true;
       showStage('processing');
       $('#processing-label').textContent = `Опрацьовуємо «${file.name}»…`;
-      const form = new FormData();
-      form.append('file', file);
       const data = await window.OZTasks.run('act',[file],{section:'acts'});
       revokeSourceUrl();state.sourceUrl=URL.createObjectURL(file);
       state.sourceGroup=data.sourceGroup||'';
       applyExtraction(data, file.name);
+      if (keepScope) {
+        if (window.OZWorkspace.hasPendingDraft('acts')) window.OZWorkspace.acceptReplacement('acts');
+        return true;
+      }
       toast('Акт опрацьовано. Перевірте всі поля та оберіть шаблони.');
     } catch (error) {
       showStage(state.items.length||state.text?'review':'upload');
+      if (keepScope) throw error;
       toast(error.message, error.name!=='AbortError');
     } finally { state.busy = false; preparingAct = false; actFile.value = ''; }
   }
