@@ -1,0 +1,287 @@
+.excel-review-dialog {
+  width: calc(100% - 16px);
+  max-width: none;
+  height: calc(100dvh - 16px);
+  max-height: none;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.excel-review-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.excel-review-dialog::backdrop {
+  background: rgb(14 27 39 / 55%);
+}
+
+.excel-review-header,
+.excel-review-nav,
+.excel-review-source,
+.excel-review-tools,
+.excel-review-field-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.excel-review-header {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.excel-review-header h2,
+.excel-review-source h3 {
+  margin: 0;
+}
+
+.excel-review-header h2 {
+  white-space: nowrap;
+  font-size: var(--heading-font, 20px);
+}
+
+.excel-review-nav {
+  margin-inline: auto;
+  min-width: 0;
+}
+
+.excel-review-nav select {
+  width: min(36vw, 34rem);
+  min-width: 0;
+}
+
+.excel-review-nav span,
+.excel-review-page-number {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.excel-review-panes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 0;
+}
+
+.excel-review-pane {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.excel-review-pane + .excel-review-pane {
+  border-left: 1px solid var(--line);
+}
+
+.excel-review-source {
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.excel-review-source > div {
+  min-width: 0;
+}
+
+.excel-review-source h3 {
+  font-size: var(--ui-font);
+}
+
+.excel-review-source p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: var(--small-font);
+}
+
+.excel-review-tools {
+  flex-wrap: wrap;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--small-font);
+}
+
+.excel-review-tools button,
+.excel-review-tools input,
+.excel-review-dialog select,
+.excel-review-table input {
+  min-height: 34px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--field-border, var(--line));
+  border-radius: 5px;
+  font: inherit;
+}
+
+.excel-review-dialog select,
+.excel-review-table input {
+  padding: 4px 8px;
+}
+
+.excel-review-tools button {
+  min-width: 34px;
+  font-size: 1.1rem;
+}
+
+.excel-review-tools button:disabled {
+  opacity: .45;
+}
+
+.excel-review-page-number input {
+  width: 3rem;
+  padding: 0 3px;
+  text-align: center;
+  margin-right: 4px;
+}
+
+.excel-review-scroll {
+  position: relative;
+  overflow: auto;
+  min-height: 0;
+  background: var(--preview-bg);
+  overscroll-behavior: contain;
+}
+
+.excel-review-message {
+  margin: 0;
+  padding: 24px 16px;
+  color: var(--muted);
+}
+
+.excel-review-document {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
+  padding: 12px;
+  color: #17232f;
+}
+
+.excel-review-document > img,
+.excel-review-document > pre,
+.excel-review-document .word-page {
+  background: #fff;
+  box-shadow: 0 1px 5px rgb(20 30 40 / 16%);
+}
+
+.excel-review-document > img {
+  display: block;
+  max-width: none;
+  margin: 0 auto;
+  cursor: grab;
+  user-select: none;
+}
+
+.excel-review-document > img.dragging {
+  cursor: grabbing;
+}
+
+.excel-review-document > pre {
+  box-sizing: border-box;
+  width: 48rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 24px;
+  margin: 0 auto;
+}
+
+.excel-review-document .word-sheet-stack .word-page {
+  margin-bottom: 0 !important;
+}
+
+.excel-review-fields {
+  border-top: 1px solid var(--line);
+}
+
+.excel-review-fields summary {
+  padding: 9px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.excel-review-fields summary span {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.excel-review-field-body {
+  max-height: 33dvh;
+  overflow: auto;
+  padding: 0 16px 12px;
+}
+
+.excel-review-field-header {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.excel-review-field-header select {
+  max-width: min(52vw, 38rem);
+}
+
+.excel-review-field-header p {
+  margin: 0;
+}
+
+.excel-review-table {
+  overflow-x: auto;
+}
+
+.excel-review-table table {
+  width: 100%;
+  min-width: 560px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.excel-review-table th,
+.excel-review-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.excel-review-table th:last-child,
+.excel-review-table td:last-child {
+  width: 8.5rem;
+}
+
+.excel-review-table input {
+  width: 100%;
+}
+
+.excel-review-difference {
+  background: var(--warning-bg);
+  color: var(--warning-ink);
+}
+
+@media (max-width: 760px) {
+  .excel-review-header {
+    flex-wrap: wrap;
+    padding: 4px 10px;
+  }
+  .excel-review-nav {
+    order: 1;
+    width: 100%;
+  }
+  .excel-review-nav select {
+    flex: 1;
+  }
+  .excel-review-header [data-review-close] {
+    margin-left: auto;
+  }
+  .excel-review-panes {
+    grid-template-rows: repeat(2, minmax(0,1fr));
+    grid-template-columns: minmax(0,1fr);
+  }
+  .excel-review-pane + .excel-review-pane {
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+}

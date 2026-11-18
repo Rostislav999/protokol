@@ -108,7 +108,7 @@
     image.style.filter=`url(#${filter.id})`;
   }
   let stampFilterId=0;
-  async function render(data,target,{className='ozdocx'}={}) {
+  async function render(data,target,{className='ozdocx',adaptive=true}={}) {
     const revision=(target.previewRevision||0)+1;target.previewRevision=revision;
     const stage=document.createElement('div');stage.className='word-preview-staging';
     const styles=document.createElement('div'),content=document.createElement('div');
@@ -121,12 +121,12 @@
       content.querySelectorAll('a').forEach(link=>{link.removeAttribute('href');link.removeAttribute('target');});
       content.querySelectorAll('script,iframe,object,embed').forEach(node=>node.remove());
       await document.fonts.ready;
-      const pages=paginate(content,className);
       if(target.previewRevision!==revision){stage.remove();return null;}
+      const pages=paginate(content,className);
       stage.className='word-sheet-stack';
       target.replaceChildren(stage);
-      if(!target.previewObserver){target.previewObserver=new ResizeObserver(()=>fit(target,target.dataset.zoom||'fit'));target.previewObserver.observe(target);}
-      fit(target,target.dataset.zoom||'fit');
+      if(adaptive&&!target.previewObserver){target.previewObserver=new ResizeObserver(()=>fit(target,target.dataset.zoom||'fit'));target.previewObserver.observe(target);}
+      if(adaptive)fit(target,target.dataset.zoom||'fit');
       return pages;
     }catch(error){stage.remove();throw error;}
   }

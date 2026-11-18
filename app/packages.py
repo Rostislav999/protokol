@@ -80,6 +80,27 @@ class Choice(BaseModel):
     used: bool = False
 
 
+def protocol_file(entry: dict, member: str | None) -> tuple[str, bytes]:
+    from .excel_api import MAX_FILE as MAX_PROTOCOL_FILE
+
+    filename, data = entry['filename'], entry['data']
+    if entry['section'] != 'excel' or entry['kind'] != 'source':
+        raise HTTPException(404, 'Джерело протоколу не знайдено.')
+    if member is not None:
+        try:
+            if Path(filename).suffix.lower() != '.zip':
+                raise ValueError
+            with ZipFile(BytesIO(data)) as archive:
+                info = archive.getinfo(member)
+                if info.is_dir() or info.file_size > MAX_PROTOCOL_FILE or Path(member).suffix.lower() not in {'.pdf', '.docx'}:
+                    raise ValueError
+                filename = safe_filename(member)
+                data = archive.read(info)
+        except (BadZipFile, KeyError, OSError, RuntimeError, ValueError) as exc:
+            raise HTTPException(422, 'Не вдалося відкрити протокол із ZIP.') from exc
+    return filename, data
+
+
 def packages_router(directory: Path, template_exists):
     router = APIRouter(tags=['packages'])
     store = WorkStore(directory)
@@ -201,10 +222,12 @@ def packages_router(directory: Path, template_exists):
 
     @router.get('/api/workbench/files/{file_id}/preview')
     def preview(file_id: str, scope: str = Query(WORKSPACE, pattern=SCOPE_PATTERN),
-                page: int = Query(1, ge=1, le=20), rotation: int = Query(0, ge=0, le=270, multiple_of=90)):
+                page: int = Query(1, ge=1, le=20), rotation: int = Query(0, ge=0, le=270, multiple_of=90),
+                member: str | None = Query(None, max_length=4096)):
         source = run(store.file, scope, file_id)
+        filename, original = (source['filename'], source['data']) if member is None else protocol_file(source, member)
         try:
-            data, pages = preview_original(source['data'], source['filename'], page, rotation)
+            data, pages = preview_original(original, filename, page, rotation)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         return Response(data, media_type='image/png', headers={'X-Page-Count':str(pages), 'Cache-Control':'no-store'})
@@ -242,24 +265,7 @@ def packages_router(directory: Path, template_exists):
     @router.get('/api/workbench/files/{file_id}/protocol')
     def protocol_source(file_id: str, scope: str = Query(WORKSPACE, pattern=SCOPE_PATTERN),
                         member: str | None = Query(None, max_length=4096)):
-        from .excel_api import MAX_FILE as MAX_PROTOCOL_FILE
-
-        entry = run(store.file, scope, file_id)
-        filename, data = entry['filename'], entry['data']
-        if entry['section'] != 'excel' or entry['kind'] != 'source':
-            raise HTTPException(404, 'Джерело протоколу не знайдено.')
-        if member is not None:
-            try:
-                if Path(filename).suffix.lower() != '.zip':
-                    raise ValueError
-                with ZipFile(BytesIO(data)) as archive:
-                    info = archive.getinfo(member)
-                    if info.is_dir() or info.file_size > MAX_PROTOCOL_FILE or Path(member).suffix.lower() not in {'.pdf', '.docx'}:
-                        raise ValueError
-                    filename = safe_filename(member)
-                    data = archive.read(info)
-            except (BadZipFile, KeyError, OSError, RuntimeError, ValueError) as exc:
-                raise HTTPException(422, 'Не вдалося відкрити протокол із ZIP.') from exc
+        filename, data = protocol_file(run(store.file, scope, file_id), member)
         suffix = Path(filename).suffix.lower()
         if suffix not in {'.pdf', '.docx'}:
             raise HTTPException(415, 'Підтримуються протоколи PDF і DOCX.')

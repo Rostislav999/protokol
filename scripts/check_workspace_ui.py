@@ -28,7 +28,7 @@ SCRIPT = r'''void (async () => {try {
     assert(Object.values(providers.assignments.snapshot().items[0].departments).some(value=>value.sample_weight==='7 кг'),'Package restart lost a manual assignment weight');
     assert((await(await fetch('/api/template-choices')).json()).choices.some(value=>value.template_id==='sample-1053' && value.favorite),'Favorite template was lost on restart');
     assert((await(await fetch('/api/workbench/files?scope='+session.scope)).json()).files.some(value=>value.kind==='source'),'Package lost its original files');
-    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback','single-sided and double-sided print selection','prepend and append samples without renumbering','manual sample numbers and draft restore','copy next with separate identity and number','independent copied fields and durable drafts','product name autocomplete from the library','bulk copies with count and number limits','undo sample deletion without lost fields or renumbering','standard citation autocomplete without automatic changes','new acts without replacing previous drafts','pending local and concurrent drafts preserved separately','delete active and inactive packages with cancellation','source pages row overlays rotation and zoom','visible field warnings and keyboard jumps','sample count discrepancy blocks export until checked','review evidence survives save without restoring approval']}));
+    console.log('OZ_WORKSPACE_RESULT:'+JSON.stringify({ok:true,checks:['four durable drafts','reload and explicit restore','leading zeroes','manual provenance','confirmation reset','built-in Excel form and legacy draft migration','assignment manual weight','whole-library template selection and search','manual template restore and re-review','searchable template picker with Word preview','dedicated cover letter section','live A4 preview','persistent action bar','cover letter editor before download','cover letter autosave and restore','outgoing register and status changes','saved signer profiles','editable copy from outgoing history','persistent readable text size','appearance preview save cancel and reset','theme accent density and default editor survive restart','unchanged document ink draft and approval','linked date review','isolated document packages','package restart and retained original files','automatic and named letter revisions','favorite and recent templates','technical report without document bodies','keyboard shortcuts','cancellable background imports','printer selection refresh cancellation and no silent fallback','single-sided and double-sided print selection','prepend and append samples without renumbering','manual sample numbers and draft restore','copy next with separate identity and number','independent copied fields and durable drafts','product name autocomplete from the library','bulk copies with count and number limits','undo sample deletion without lost fields or renumbering','standard citation autocomplete without automatic changes','new acts without replacing previous drafts','pending local and concurrent drafts preserved separately','delete active and inactive packages with cancellation','source pages row overlays rotation and zoom','visible field warnings and keyboard jumps','sample count discrepancy blocks export until checked','review evidence survives save without restoring approval','act and protocol previews side by side with independent scales and persisted edits']}));
     return;
   }
   if (!__RESTORE_PHASE__) {
@@ -228,6 +228,38 @@ SCRIPT = r'''void (async () => {try {
     assert(auditSaved.audit_expected===2&&auditSaved.items[1].source_location.page===2,'Saved draft lost review facts');
     await providers.acts.restore(auditSaved);await providers.acts.attachFiles();
     assert(!document.querySelector('#review-confirmed').checked,'Restoring source evidence restored an export approval');
+    const protocolArchive=new JSZip(), protocolMembers=['пакет/перший.pdf','пакет/другий.pdf'];
+    protocolMembers.forEach(member=>protocolArchive.file(member,pdfSource));
+    const protocolGroup=crypto.randomUUID().replaceAll('-','');
+    const [retained]=await window.OZWorkspace.retainFiles([
+      new File([await protocolArchive.generateAsync({type:'blob'})],'review-protocols.zip',{type:'application/zip'})
+    ],'excel','source',{scope:reviewScope,group:protocolGroup});
+    await providers.excel.restore({records:protocolMembers.map((member,index)=>({
+      id:'scanned-'+index,source:member.split('/')[1],values:{D:'№AUDIT-'+(index+1)},
+      original:{filename:retained.filename,digest:retained.digest,group:protocolGroup,member}
+    }))});
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'excel'}}));
+    document.querySelector('#excel-review-open').click();
+    const reviewDialog=document.querySelector('.excel-review-dialog');
+    const actPane=reviewDialog.querySelector('[data-review-pane="act"]'), protocolPane=reviewDialog.querySelector('[data-review-pane="protocol"]');
+    const hasPage=(pane,page)=>pane.querySelector('img')?.naturalWidth>0&&pane.querySelector('[data-page-number]').value===String(page)&&!pane.querySelector('[data-page-number]').disabled;
+    await wait(()=>reviewDialog.open&&hasPage(actPane,1)&&hasPage(protocolPane,1));
+    const actZoom=actPane.querySelector('[data-zoom]').value;
+    input('.excel-review-dialog [data-review-pane="protocol"] [data-zoom]','150','change');
+    assert(protocolPane.querySelector('img').style.zoom==='1.5'&&actPane.querySelector('[data-zoom]').value===actZoom,'Both documents zoomed together');
+    protocolPane.querySelector('[data-page-step="1"]').click();
+    await wait(()=>hasPage(protocolPane,2)&&hasPage(actPane,1));
+    reviewDialog.querySelector('summary').click();
+    input('[data-review-value="I"]','20.10.2026');
+    reviewDialog.querySelector('[data-protocol-step="1"]').click();
+    await wait(()=>hasPage(actPane,2)&&hasPage(protocolPane,1));
+    assert(reviewDialog.querySelector('[data-protocol-count]').textContent==='2 / 2','Protocol navigation lost its position');
+    reviewDialog.querySelector('[data-protocol-step="-1"]').click();
+    await wait(()=>hasPage(actPane,1)&&hasPage(protocolPane,1));
+    assert(reviewDialog.querySelector('[data-review-value="I"]').value==='20.10.2026','Switching scans lost a manual Excel edit');
+    reviewDialog.querySelector('[data-review-close]').click();
+    await providers.excel.reset();
+    document.dispatchEvent(new CustomEvent('protokol:navigate',{detail:{name:'acts'}}));
     document.querySelector('#prepare-assignments').click();
     await wait(()=>!window.OZWorkspace.busy&&providers.assignments.snapshot()?.items.length===2);
     assert(providers.assignments.snapshot().audit_expected===2&&providers.assignments.snapshot().items[1].source_location.page===2,'Transfer lost count evidence or source-page association');
