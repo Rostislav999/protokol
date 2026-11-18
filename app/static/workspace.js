@@ -247,15 +247,18 @@
   }, true);
 
   const backupDialog = document.createElement('dialog'); backupDialog.className = 'modal workspace-modal';
-  backupDialog.innerHTML = `<div class="modal-heading"><h2>Резервні копії</h2><button type="button" class="icon-button" aria-label="Закрити">×</button></div><div class="modal-body"><p>Копія містить довідники, обидві бібліотеки шаблонів, нумерацію, видані завдання та збережені чернетки. Збережіть ZIP також на іншому носії.</p><button type="button" id="workspace-backup-export" class="button primary">Завантажити резервну копію</button><h3>Автоматичні копії</h3><div id="workspace-backup-history"></div><h3>Відновлення з ZIP</h3><label class="field"><span>Резервна копія програми</span><input type="file" id="workspace-backup-file" accept=".zip"></label><label class="confirmation"><input type="checkbox" id="workspace-backup-confirmed"><span>Замінити поточні дані даними з копії, включно з нумерацією та чернетками. Перед заміною програма збереже поточні дані в окрему копію.</span></label><button type="button" id="workspace-backup-restore" class="button secondary">Відновити дані</button><p id="workspace-backup-status" role="status" aria-live="polite"></p></div>`;
+  backupDialog.innerHTML = `<div class="modal-heading"><h2>Резервні копії</h2><button type="button" class="icon-button" aria-label="Закрити">×</button></div><div class="modal-body"><p>Копія містить довідники, обидві бібліотеки шаблонів, нумерацію, видані завдання та збережені чернетки. Збережіть ZIP також на іншому носії.</p><button type="button" id="workspace-backup-export" class="button primary">Завантажити резервну копію</button><h3>Автоматичні копії</h3><p class="notice warning" id="workspace-automatic-backup-warning" hidden></p><div id="workspace-backup-history"></div><h3>Відновлення з ZIP</h3><label class="field"><span>Резервна копія програми</span><input type="file" id="workspace-backup-file" accept=".zip"></label><label class="confirmation"><input type="checkbox" id="workspace-backup-confirmed"><span>Замінити поточні дані даними з копії, включно з нумерацією та чернетками. Перед заміною програма збереже поточні дані в окрему копію.</span></label><button type="button" id="workspace-backup-restore" class="button secondary">Відновити дані</button><p id="workspace-backup-status" role="status" aria-live="polite"></p></div>`;
   document.body.append(backupDialog);
   backupDialog.querySelector('.icon-button').onclick = () => backupDialog.close();
   const backupStatus = (message, error = false) => { const node = $('#workspace-backup-status'); node.textContent = message; node.classList.toggle('workspace-error', error); };
   async function backupHistory() {
     const history = await request('/api/backups/status');
+    const warning = $('#workspace-automatic-backup-warning');
+    warning.textContent = history.automatic_error ? `Автоматичну копію не створено. ${history.automatic_error}` : '';
+    warning.hidden = !history.automatic_error;
     const list = $('#workspace-backup-history'); list.replaceChildren();
     const entries = history.backups || history.recent || [];
-    if (!entries.length) { const note = document.createElement('p'); note.textContent = 'Автоматична копія з’явиться перед першим запуском нової версії зі збереженими даними або перед відновленням.'; list.append(note); }
+    if (!entries.length && !history.automatic_error) { const note = document.createElement('p'); note.textContent = 'Автоматична копія з’явиться перед першим запуском нової версії зі збереженими даними або перед відновленням.'; list.append(note); }
     for (const entry of entries) {
       const row = document.createElement('p'); const link = document.createElement('a');
       link.href = '/api/backups/files/' + encodeURIComponent(entry.name);

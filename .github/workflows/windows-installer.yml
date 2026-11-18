@@ -61,7 +61,7 @@ jobs:
         if: failure() && hashFiles('build/windows/tests.xml') != ''
         run: python -m scripts.report_test_failures
       - name: Build installer and test installed application
-        run: python scripts/build_windows.py --version 1.8.2
+        run: python scripts/build_windows.py --version 1.8.3
       - name: Upload installer and validation results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

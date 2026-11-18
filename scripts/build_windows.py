@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = ROOT / "build/windows"
@@ -187,6 +188,13 @@ def build(version: str) -> Path:
         preserved = STAGE / "installed-check/data/preserve-user-data.txt"
         preserved.parent.mkdir(parents=True, exist_ok=True)
         preserved.write_text("Keep library and numbering on uninstall.", encoding="utf-8")
+        large_data = preserved.parent / "retained-protocols.bin"
+        large_size = 513 * 1024 * 1024
+        with large_data.open("wb") as source:
+            source.truncate(large_size)
+        upgrade_backups = preserved.parent.with_name("data-backups")
+        upgrade_backups.mkdir(exist_ok=True)
+        (upgrade_backups / ".automatic-state.json").write_text('{"app_version":"1.8.2"}', encoding="utf-8")
         default_data = Path(os.environ["LOCALAPPDATA"]) / "Protokol/data"
         default_data.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=default_data, prefix="installer-validation-", delete=False) as marker:
@@ -194,6 +202,10 @@ def build(version: str) -> Path:
         try:
             try:
                 check_bundle(installed / "Protokol.exe", STAGE / "installed-check", window=False)
+                latest_backup = max(upgrade_backups.glob("backup-*.zip"), key=lambda path: path.stat().st_mtime)
+                with ZipFile(latest_backup) as archive:
+                    if archive.getinfo("data/retained-protocols.bin").file_size != large_size:
+                        raise RuntimeError("The upgrade backup did not include the large existing data file.")
                 check_bundle(installed / "Protokol.exe", STAGE / "installed-check", window=True)
             finally:
                 subprocess.run([str(installed / "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
@@ -203,7 +215,7 @@ def build(version: str) -> Path:
                     time.sleep(0.25)
                 if installed.exists():
                     raise RuntimeError("The test installation was not fully removed.")
-            if not preserved.is_file() or not default_marker.is_file():
+            if not preserved.is_file() or not default_marker.is_file() or large_data.stat().st_size != large_size:
                 raise RuntimeError("Uninstall removed persistent user data.")
         finally:
             default_marker.unlink(missing_ok=True)
@@ -212,6 +224,7 @@ def build(version: str) -> Path:
     (output / "windows-validation.json").write_text(json.dumps({
         "version": version, "installer": installer.name, "sha256": checksum,
         "checks": ["bundled OCR and Excel", "native window and file download", "silent installation",
+                   "installed startup and automatic backup with more than 512 MiB of existing data",
                    "installed OCR and Excel", "installed native window and download", "uninstall preserves user data"],
     }, indent=2), encoding="utf-8")
     return installer
@@ -220,7 +233,7 @@ def build(version: str) -> Path:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-only", action="store_true", help="Verify and stage the private Tesseract distribution.")
-    parser.add_argument("--version", default="1.8.2")
+    parser.add_argument("--version", default="1.8.3")
     args = parser.parse_args(argv)
     if os.name != "nt" or platform.machine().lower() not in ("amd64", "x86_64"):
         parser.error("Build on 64-bit Windows; use the Windows installer GitHub Actions workflow.")

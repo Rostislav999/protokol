@@ -235,6 +235,7 @@ def test_routes_export_restore_and_download_only_known_local_backups(data):
     with TestClient(app) as client:
         exported = client.get("/api/backups/export")
         assert exported.status_code == 200 and exported.content.startswith(b"PK")
+        assert not list(BackupStore(data).backup_directory.glob("*.tmp"))
         assert client.post("/api/backups/restore", files={"file": ("copy.zip", exported.content)}).status_code == 422
         restored = client.post("/api/backups/restore", files={"file": ("copy.zip", exported.content)}, data={"confirmed": "true"})
         assert restored.status_code == 200, restored.text
@@ -242,3 +243,28 @@ def test_routes_export_restore_and_download_only_known_local_backups(data):
         assert len(entries) == 1
         assert client.get("/api/backups/files/" + entries[0]["name"]).status_code == 200
         assert client.get("/api/backups/files/not-a-backup.zip").status_code == 404
+
+
+@pytest.mark.parametrize("failure", ["size", "disk"])
+def test_failed_automatic_backup_leaves_existing_data_accessible(data, monkeypatch, failure):
+    from app.main import VERSION, create_app
+
+    original = (data / "settings.json").read_bytes()
+    if failure == "size":
+        monkeypatch.setattr(backups, "MAX_UNCOMPRESSED_BYTES", 64)
+    else:
+        def fail_archive(*args, **kwargs):
+            raise OSError("simulated full disk")
+        monkeypatch.setattr(BackupStore, "prepare_archive", fail_archive)
+
+    with TestClient(create_app(data)) as client:
+        assert client.get("/api/health").status_code == 200
+        assert client.get("/openapi.json").json()["info"]["version"] == VERSION
+        status = client.get("/api/backups/status").json()
+        assert status["automatic_error"]
+        assert not status["backups"]
+    assert (data / "settings.json").read_bytes() == original
+    assert NumberingStore(data / "numbering.sqlite3").status() == {"next_number": 1397}
+    backup_dir = BackupStore(data).backup_directory
+    assert not (backup_dir / ".automatic-state.json").exists()
+    assert not list(backup_dir.glob("*.tmp"))

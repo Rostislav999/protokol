@@ -6,10 +6,12 @@ SQLite's backup API captures committed WAL data without copying live sidecars.
 """
 from __future__ import annotations
 
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 from io import BytesIO
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -18,18 +20,21 @@ import sqlite3
 import stat
 import tempfile
 from threading import RLock
-from typing import Callable
+from typing import BinaryIO, Callable
 from uuid import uuid4
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 FORMAT_VERSION = 1
 MANIFEST = "backup-manifest.json"
-MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
-MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 8 * 1024**3
+MAX_UNCOMPRESSED_BYTES = 8 * 1024**3
+MAX_JSON_BYTES = 512 * 1024**2
+COPY_CHUNK = 1024**2
 MAX_FILES = 10000
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 EXCLUDED_DIRECTORIES = {"tessdata", "backups", "logs", "__pycache__", ".local", ".pytest_cache"}
@@ -37,6 +42,7 @@ _BACKUP_NAME = re.compile(r"backup-[0-9]{8}T[0-9]{12}Z-[a-f0-9]{12}\.zip")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}")
 _LOCKS: dict[str, RLock] = {}
 _LOCKS_GUARD = RLock()
+LOG = logging.getLogger(__name__)
 
 
 class BackupError(ValueError):
@@ -80,19 +86,29 @@ def _excluded(relative: str) -> bool:
             or name.startswith((".restore-", ".backup-")))
 
 
-def _sqlite_snapshot(source: Path) -> bytes:
-    with tempfile.TemporaryDirectory(prefix="oz-sqlite-backup-") as temporary:
+@contextmanager
+def _sqlite_snapshot(source: Path, work_directory: Path):
+    with tempfile.TemporaryDirectory(prefix=".backup-sqlite-", dir=work_directory) as temporary:
         target = Path(temporary) / "snapshot.sqlite3"
-        connection = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
-        destination = sqlite3.connect(target)
         try:
-            connection.backup(destination)
+            with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)) as connection:
+                with closing(sqlite3.connect(target)) as destination:
+                    connection.backup(destination)
         except sqlite3.Error as exc:
-            raise BackupError("Не вдалося створити узгоджену копію бази нумерації.") from exc
-        finally:
-            destination.close()
-            connection.close()
-        return target.read_bytes()
+            raise BackupError("Не вдалося створити узгоджену копію бази даних.") from exc
+        yield target
+
+
+def _copy_with_checksum(source: BinaryIO, target: BinaryIO, limit: int) -> dict:
+    checksum = sha256()
+    size = 0
+    while block := source.read(COPY_CHUNK):
+        size += len(block)
+        if size > limit:
+            raise BackupError("Розмір даних резервної копії перевищує дозволений.")
+        target.write(block)
+        checksum.update(block)
+    return {"sha256": checksum.hexdigest(), "size": size}
 
 
 def _validate_numbering(path: Path) -> None:
@@ -216,49 +232,74 @@ class BackupStore:
                 result.append((relative, source))
         return sorted(result)
 
-    def export(self, *, version: str = "", reason: str = "manual") -> bytes:
+    def _write_archive(self, output: BinaryIO, *, version: str, reason: str) -> dict:
         with self.lock:
             files = self._files()
             if len(files) > MAX_FILES:
                 raise BackupError("Забагато файлів для однієї резервної копії.")
             total = 0
             checksums = {}
-            output = BytesIO()
-            with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+            with ZipFile(output, "w", ZIP_DEFLATED, compresslevel=1) as archive:
                 for relative, source in files:
-                    if source.stat().st_size > MAX_UNCOMPRESSED_BYTES - total:
-                        raise BackupError("Дані перевищують ліміт резервної копії 512 МБ.")
-                    raw = _sqlite_snapshot(source) if source.suffix.lower() == ".sqlite3" else source.read_bytes()
-                    total += len(raw)
-                    if total > MAX_UNCOMPRESSED_BYTES:
-                        raise BackupError("Дані перевищують ліміт резервної копії 512 МБ.")
-                    checksums[relative] = {"sha256": sha256(raw).hexdigest(), "size": len(raw)}
-                    archive.writestr("data/" + relative, raw)
-                archive.writestr(MANIFEST, json.dumps({
+                    remaining = MAX_UNCOMPRESSED_BYTES - total
+                    if source.stat().st_size > remaining:
+                        raise BackupError("Дані перевищують ліміт резервної копії.")
+                    # A committed SQLite snapshot is staged on the same volume
+                    # and streamed into the ZIP like every other file.
+                    snapshot = (_sqlite_snapshot(source, self.directory.parent)
+                                if source.suffix.lower() == ".sqlite3" else nullcontext(source))
+                    with snapshot as path, path.open("rb") as reader:
+                        if path.stat().st_size > remaining:
+                            raise BackupError("Дані перевищують ліміт резервної копії.")
+                        with archive.open("data/" + relative, "w", force_zip64=True) as member:
+                            details = _copy_with_checksum(reader, member, remaining)
+                    checksums[relative] = details
+                    total += details["size"]
+                    if output.tell() > MAX_ARCHIVE_BYTES:
+                        raise BackupError("Стиснена резервна копія перевищує ліміт.")
+                manifest = {
                     "format": "oztausya-backup", "format_version": FORMAT_VERSION,
                     "app_version": version, "created_at": _now(), "reason": reason, "files": checksums,
-                }, ensure_ascii=False, indent=2).encode("utf-8"))
-            data = output.getvalue()
-            if len(data) > MAX_ARCHIVE_BYTES:
-                raise BackupError("Стиснена резервна копія перевищує ліміт 256 МБ.")
-            return data
+                }
+                index = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+                if len(index) > MAX_MANIFEST_BYTES:
+                    raise BackupError("Покажчик резервної копії завеликий.")
+                archive.writestr(MANIFEST, index)
+            if output.tell() > MAX_ARCHIVE_BYTES:
+                raise BackupError("Стиснена резервна копія перевищує ліміт.")
+            return manifest
 
-    def _save_copy(self, raw: bytes) -> dict:
+    def export(self, *, version: str = "", reason: str = "manual") -> bytes:
+        output = BytesIO()
+        self._write_archive(output, version=version, reason=reason)
+        return output.getvalue()
+
+    def prepare_archive(self, *, version: str = "", reason: str = "manual") -> tuple[Path, dict]:
         self.backup_directory.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".backup-", suffix=".tmp", dir=self.backup_directory, delete=False) as output:
+                temporary = Path(output.name)
+                manifest = self._write_archive(output, version=version, reason=reason)
+            return temporary, manifest
+        except BaseException:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            raise
+
+    def _save_copy(self, *, version: str = "", reason: str) -> dict:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         filename = f"backup-{timestamp}-{uuid4().hex[:12]}.zip"
         target = self.backup_directory / filename
-        temporary = target.with_suffix(".tmp")
+        temporary, manifest = self.prepare_archive(version=version, reason=reason)
         try:
-            temporary.write_bytes(raw)
+            size = temporary.stat().st_size
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
-        with ZipFile(BytesIO(raw)) as archive:
-            manifest = _json(archive.read(MANIFEST))
         return {"filename": filename, "created_at": manifest["created_at"], "reason": manifest["reason"],
                 "name": filename, "app_version": manifest["app_version"], "version": manifest["app_version"],
-                "size": len(raw), "files": len(manifest["files"])}
+                "size": size, "files": len(manifest["files"])}
 
     def automatic(self, version: str, *, keep: int = 7) -> dict | None:
         with self.lock:
@@ -268,14 +309,20 @@ class BackupStore:
                 raise BackupError("Пошкоджено стан автоматичного резервного копіювання.")
             if previous.get("app_version") == version:
                 return None
-            result = self._save_copy(self.export(version=version, reason="before-version-change")) if self._files() else None
+            result = self._save_copy(version=version, reason="before-version-change") if self._files() else None
             self.backup_directory.mkdir(parents=True, exist_ok=True)
             temporary = state_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"app_version": version, "checked_at": _now()}), encoding="utf-8")
-            os.replace(temporary, state_path)
+            try:
+                temporary.write_text(json.dumps({"app_version": version, "checked_at": _now()}), encoding="utf-8")
+                os.replace(temporary, state_path)
+            finally:
+                temporary.unlink(missing_ok=True)
             automatic = [entry for entry in self.status()["backups"] if entry["reason"] == "before-version-change"]
             for entry in automatic[max(1, keep):]:
-                (self.backup_directory / entry["filename"]).unlink()
+                try:
+                    (self.backup_directory / entry["filename"]).unlink(missing_ok=True)
+                except OSError:
+                    LOG.warning("Could not remove an old automatic backup", exc_info=True)
             return result
 
     def status(self) -> dict:
@@ -300,17 +347,18 @@ class BackupStore:
             return {"backups": entries, "latest": entries[0] if entries else None,
                     "max_archive_bytes": MAX_ARCHIVE_BYTES}
 
-    def _unpack(self, raw: bytes, stage: Path) -> dict:
-        if not raw or len(raw) > MAX_ARCHIVE_BYTES:
-            raise BackupError("Оберіть ZIP резервної копії розміром до 256 МБ.")
+    def _unpack(self, raw: bytes | BinaryIO, stage: Path) -> dict:
+        source = BytesIO(raw) if isinstance(raw, bytes) else raw
         try:
-            with ZipFile(BytesIO(raw)) as archive:
+            if not 0 < source.seek(0, os.SEEK_END) <= MAX_ARCHIVE_BYTES:
+                raise BackupError("Оберіть ZIP резервної копії розміром до 8 ГБ.")
+            with ZipFile(source) as archive:
                 entries = archive.infolist()
                 if len(entries) > MAX_FILES + 1 or len({entry.filename.casefold() for entry in entries}) != len(entries):
                     raise BackupError("Забагато або повторні файли в резервній копії.")
-                if sum(entry.file_size for entry in entries) > MAX_UNCOMPRESSED_BYTES + MAX_MANIFEST_BYTES:
-                    raise BackupError("Розпаковані дані перевищують ліміт 512 МБ.")
                 manifest_info = archive.getinfo(MANIFEST)
+                if sum(entry.file_size for entry in entries) - manifest_info.file_size > MAX_UNCOMPRESSED_BYTES:
+                    raise BackupError("Розпаковані дані перевищують ліміт 8 ГБ.")
                 if manifest_info.file_size > MAX_MANIFEST_BYTES:
                     raise BackupError("Покажчик резервної копії завеликий.")
                 manifest = _json(archive.read(manifest_info))
@@ -334,13 +382,14 @@ class BackupStore:
                     info = archive.getinfo("data/" + name)
                     if info.file_size != details["size"]:
                         raise BackupError("Розмір файла не відповідає покажчику резервної копії.")
-                    with archive.open(info) as stream:
-                        content = stream.read(details["size"] + 1)
-                    if len(content) != details["size"] or sha256(content).hexdigest() != details.get("sha256"):
-                        raise BackupError("Контрольна сума файла резервної копії не збігається.")
                     target = stage.joinpath(*PurePosixPath(name).parts)
+                    if target.suffix.lower() == ".json" and info.file_size > MAX_JSON_BYTES:
+                        raise BackupError("JSON-файл резервної копії завеликий.")
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(content)
+                    with archive.open(info) as stream, target.open("xb") as output:
+                        copied = _copy_with_checksum(stream, output, details["size"])
+                    if copied["size"] != details["size"] or copied["sha256"] != details.get("sha256"):
+                        raise BackupError("Контрольна сума файла резервної копії не збігається.")
                 for name in files:
                     target = stage.joinpath(*PurePosixPath(name).parts)
                     if target.suffix.lower() == ".json":
@@ -365,7 +414,7 @@ class BackupStore:
         except (BadZipFile, KeyError, OSError, RuntimeError, EOFError) as exc:
             raise BackupError("Не вдалося прочитати ZIP резервної копії.") from exc
 
-    def restore(self, raw: bytes, *, confirmed: bool, validate_staged: Callable[[Path], None] | None = None,
+    def restore(self, raw: bytes | BinaryIO, *, confirmed: bool, validate_staged: Callable[[Path], None] | None = None,
                 after_restore: Callable[[], None] | None = None) -> dict:
         if not confirmed:
             raise BackupError("Підтвердьте заміну поточних даних резервною копією. Перед заміною буде збережено поточний стан.")
@@ -388,7 +437,7 @@ class BackupStore:
                             shutil.copytree(source, stage / source.name, symlinks=True)
                         elif source.name.casefold().endswith(".lock") and source.is_file() and not source.is_symlink():
                             shutil.copy2(source, stage / source.name)
-                recovery = self._save_copy(self.export(reason="before-restore"))
+                recovery = self._save_copy(reason="before-restore")
                 if self.directory.exists():
                     os.replace(self.directory, old)
                     moved_old = True
@@ -438,22 +487,27 @@ def create_automatic_backup(directory: Path, version: str, *, keep: int = 7) -> 
 
 
 def backup_router(directory: Path, *, validate_staged: Callable[[Path], None] | None = None,
-                  after_restore: Callable[[], None] | None = None, version: str = "") -> APIRouter:
+                  after_restore: Callable[[], None] | None = None, version: str = "",
+                  automatic_error: str = "") -> APIRouter:
     store = BackupStore(directory)
     router = APIRouter(prefix="/api/backups", tags=["backups"])
 
     @router.get("/status")
     def status():
-        return store.status()
+        return {**store.status(), "automatic_error": automatic_error}
 
     @router.get("/export")
     def export():
         try:
-            raw = store.export(version=version)
+            path, _ = store.prepare_archive(version=version)
         except BackupError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            LOG.warning("Manual backup could not be saved", exc_info=True)
+            raise HTTPException(503, "Не вдалося зберегти резервну копію. Перевірте вільне місце та доступ до диска.") from exc
         filename = "OZtaUSYa-backup-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + ".zip"
-        return Response(raw, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        return FileResponse(path, filename=filename, media_type="application/zip",
+                            background=BackgroundTask(path.unlink, missing_ok=True))
 
     @router.get("/download/{filename}")
     @router.get("/files/{filename}")
@@ -469,13 +523,11 @@ def backup_router(directory: Path, *, validate_staged: Callable[[Path], None] | 
     @router.post("/restore")
     async def restore(file: UploadFile = File(...), confirmed: bool = Form(False)):
         try:
-            raw = await file.read(MAX_ARCHIVE_BYTES + 1)
-        finally:
-            await file.close()
-        try:
-            return await run_in_threadpool(store.restore, raw, confirmed=confirmed,
+            return await run_in_threadpool(store.restore, file.file, confirmed=confirmed,
                                            validate_staged=validate_staged, after_restore=after_restore)
         except BackupError as exc:
             raise HTTPException(422, str(exc)) from exc
+        finally:
+            await file.close()
 
     return router

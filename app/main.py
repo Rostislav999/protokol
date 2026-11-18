@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 from contextlib import asynccontextmanager
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Literal
@@ -38,11 +39,13 @@ from .tasks import TaskManager, tasks_router
 from .diagnostics import Diagnostics, DiagnosticMiddleware, diagnostics_router
 from . import progress
 from .word_tools import word_router
-from .backups import backup_router, create_automatic_backup
+from .backups import BackupError, backup_router, create_automatic_backup
 from .workspace import DraftStore, WorkspaceError, workspace_router
 from .storage_lock import DataAccessMiddleware, data_guard
 from .assignment_library import AssignmentLibrary
 
+VERSION = "1.8.3"
+LOG = logging.getLogger(__name__)
 MAX_UPLOAD = 25 * 1024 * 1024
 local_tessdata = ROOT / ".local/tessdata"
 if (local_tessdata / "ukr.traineddata").exists():
@@ -118,10 +121,17 @@ async def read_upload(file: UploadFile) -> bytes:
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    app = FastAPI(title="ОЗтаУСЯ", version="1.8.2")
+    app = FastAPI(title="ОЗтаУСЯ", version=VERSION)
     directory = data_dir or Path(os.environ.get("PROTOKOL_DATA_DIR", ROOT / "data"))
+    automatic_error = ""
     with data_guard(directory):
-        create_automatic_backup(directory, "1.8.2")
+        try:
+            create_automatic_backup(directory, VERSION)
+        except (BackupError, OSError) as exc:
+            LOG.warning("Automatic backup before update failed", exc_info=True)
+            automatic_error = str(exc) if isinstance(exc, BackupError) else (
+                "Не вдалося записати копію. Перевірте вільне місце та доступ до диска."
+            )
         library = Library(directory / "templates")
         settings = SettingsStore(directory)
     app.state.library = library
@@ -344,7 +354,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if (stage / 'workbench.sqlite3').exists():
             WorkStore(stage).rebase()
 
-    app.include_router(backup_router(directory, version="1.8.2", validate_staged=validate_restored))
+    app.include_router(backup_router(directory, version=VERSION, validate_staged=validate_restored,
+                                     automatic_error=automatic_error))
     app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
     app.mount("/", StaticFiles(directory=ROOT / "app/static", html=True), name="home")
     return app
