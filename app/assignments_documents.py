@@ -2,7 +2,7 @@
 
 Both supplied layouts are supported: labelled paragraphs and label/value table
 rows. Five sample fields and an explicitly selected issuing person are editable.
-Page counts in headers/footers become live Word fields; unrelated parts stay intact.
+Single-section A4 forms use compact page layout and live Word page fields.
 """
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ from xml.parsers import expat
 from xml.sax.saxutils import escape
 from zipfile import BadZipFile, ZipFile
 
+from lxml import etree
+
 from .documents import MISSING_VALUE, TemplateError, _Paragraph, _Text, _replace_range, _tag_end, _text_offsets
-from .word_pagination import pagination_updates
+from .word_pagination import NS, Q, pagination_updates
 
 FIELD_LABELS = {
     "sample_number": "Реєстраційний/ідентифікаційний номер зразка",
@@ -290,6 +292,56 @@ def _set_paragraph(para: _Para, value: str, values: dict[int, str], insertions: 
         insertions[id(para)] = value
 
 
+def _compact_page(xml: bytes) -> bytes:
+    """Give single-section A4 forms room for the filled fields and signature."""
+    root = etree.fromstring(xml, etree.XMLParser(resolve_entities=False, no_network=True))
+    body = root.find('w:body', NS)
+    sections = root.findall('.//w:sectPr', NS)
+    if body is None or len(sections) != 1 or not len(body) or sections[0] is not body[-1]:
+        return xml
+    size = sections[0].find('w:pgSz', NS)
+    margins = sections[0].find('w:pgMar', NS)
+    if size is None or margins is None or {size.get(Q('w')), size.get(Q('h'))} not in (
+        {'11906', '16838'}, {'11907', '16838'},
+    ):
+        return xml
+    # Use 12.7 mm for the body and leave 8 mm for headers and footers.
+    for edge, maximum in (('top', 720), ('bottom', 720), ('header', 454), ('footer', 454)):
+        value = margins.get(Q(edge), '')
+        if value.isdecimal() and int(value) > maximum:
+            margins.set(Q(edge), str(maximum))
+    def is_spacer(paragraph):
+        return paragraph.tag == Q('p') and not paragraph.xpath(
+            './/w:t[normalize-space()] | .//w:pBdr | .//w:drawing | .//w:pict | .//w:object'
+            ' | .//w:br | .//w:pageBreakBefore | .//w:fldChar | .//w:fldSimple | .//w:sym'
+            ' | .//w:bookmarkStart | .//w:bookmarkEnd | .//w:sdt | .//w:footnoteReference | .//w:endnoteReference',
+            namespaces=NS,
+        )
+
+    # Empty lines after the date can create a page containing only a footer.
+    for paragraph in reversed(list(body)[:-1]):
+        if not is_spacer(paragraph):
+            break
+        body.remove(paragraph)
+
+    # The longest landscape forms need a smaller type size and tighter leading
+    # to keep their full methods table and the signature block on the sheet.
+    if size.get(Q('orient')) == 'landscape' and len(body.findall('.//w:tbl//w:p', NS)) >= 25:
+        for font_size in body.xpath('.//w:sz | .//w:szCs', namespaces=NS):
+            value = font_size.get(Q('val'), '')
+            if value.isdecimal() and int(value) > 22:
+                font_size.set(Q('val'), '22')
+        for paragraph in body.findall('.//w:p', NS):
+            spacing = paragraph.find('w:pPr/w:spacing', NS)
+            if spacing is not None and spacing.get(Q('lineRule')) == 'auto':
+                if is_spacer(paragraph):
+                    spacing.set(Q('lineRule'), 'exact')
+                    spacing.set(Q('line'), '100')
+                elif spacing.get(Q('line')) == '240':
+                    spacing.set(Q('line'), '216')
+    return etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+
 def render_assignment(data: bytes, fields: dict[str, str]) -> bytes:
     """Fill sample identity, weight, ND and date; retain tests and signatures."""
     doc = _load(data)
@@ -367,7 +419,7 @@ def render_assignment(data: bytes, fields: dict[str, str]) -> bytes:
         target.comment = original.comment
         parts = {member.filename: original.read(member) for member in original.infolist()}
         updates = pagination_updates(parts)
-        updates['word/document.xml'] = xml
+        updates['word/document.xml'] = _compact_page(xml)
         for member in original.infolist():
             target.writestr(member, updates.get(member.filename, parts[member.filename]))
     return output.getvalue()

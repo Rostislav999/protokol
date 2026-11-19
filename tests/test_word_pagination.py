@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from zipfile import ZipFile
 
 from lxml import etree as E
@@ -31,6 +32,10 @@ def character_styles(root):
     return result
 
 
+def visible_character_styles(root):
+    return [(char, style) for char, style in character_styles(root) if not char.isspace()]
+
+
 @pytest.mark.parametrize('content', [
     run('Видання 04 від 23.09.2026 Сторінка 1 з 1'),
     run('Видання 04 Стор') + run('інка 1') + run('2 з ') + run('24'),
@@ -40,7 +45,9 @@ def test_live_fields_keep_all_text_and_character_formatting(content):
     original = footer(content)
     updated = pagination_updates({'word/footer1.xml': original})['word/footer1.xml']
     before, after = E.fromstring(original), E.fromstring(updated)
-    assert character_styles(after) == character_styles(before)
+    assert visible_character_styles(after) == visible_character_styles(before)
+    text = ''.join(after.xpath('.//w:t/text()', namespaces=NS))
+    assert re.search(r'(?:Сторінка|Page)\xa0\d+\xa0(?:з|of)\xa0\d+$', text)
     assert structural(after.find('w:p/w:pPr', NS)) == structural(before.find('w:p/w:pPr', NS))
     fields = after.findall('.//w:fldSimple', NS)
     assert [field.get(Q('instr')) for field in fields] == ['PAGE', 'NUMPAGES']
@@ -55,7 +62,16 @@ def test_every_bundled_footer_keeps_its_text_and_styles(sample):
     with ZipFile(sample) as archive:
         source = archive.read('word/footer1.xml')
     updated = pagination_updates({'word/footer1.xml': source})['word/footer1.xml']
-    assert character_styles(E.fromstring(source)) == character_styles(E.fromstring(updated))
+    assert visible_character_styles(E.fromstring(source)) == visible_character_styles(E.fromstring(updated))
+
+
+def test_wrapping_gaps_are_shortened_even_when_page_fields_already_exist():
+    fields = '<w:fldSimple w:instr="PAGE">' + run('1') + '</w:fldSimple>'
+    fields += run(' из ') + '<w:fldSimple w:instr="NUMPAGES">' + run('2') + '</w:fldSimple>'
+    source = footer(run('Видання 04' + ' ' * 40) + run(' ' * 20 + 'Страница ') + fields)
+    result = E.fromstring(pagination_updates({'word/footer1.xml': source})['word/footer1.xml'])
+    assert ''.join(result.xpath('.//w:t/text()', namespaces=NS)) == 'Видання 04   Страница\xa01\xa0из\xa02'
+    assert result.xpath('.//w:fldSimple/@w:instr', namespaces=NS) == ['PAGE', 'NUMPAGES']
 
 
 def test_all_footer_variants_update_while_other_parts_are_untouched_and_repeatable():

@@ -1,4 +1,4 @@
-"""Turn printed page counts into Word fields without changing footer styling."""
+"""Use live Word page fields and keep the page count together."""
 from copy import deepcopy
 import re
 
@@ -81,6 +81,29 @@ def _replace_number(paragraph, start, end, instruction):
     return True
 
 
+def _keep_page_count_together(paragraph):
+    nodes = paragraph.findall('.//w:t', NS)
+    text = ''.join(node.text or '' for node in nodes)
+    replacements = {}
+    for match in PAGE_COUNT.finditer(text):
+        # Stretching the footer with typed spaces leaves too little room for
+        # the counter, especially when Word substitutes a wider font.
+        for gap in re.finditer(r' {4,}', text[:match.start()]):
+            replacements.update(dict.fromkeys(range(gap.start() + 3, gap.end()), ''))
+        replacements.update({index: '\u00a0' for index in range(match.start(), match.end())
+                             if text[index] == ' '})
+    changed = False
+    offset = 0
+    for node in nodes:
+        value = node.text or ''
+        updated = ''.join(replacements.get(offset + index, char) for index, char in enumerate(value))
+        if updated != value:
+            node.text = updated
+            changed = True
+        offset += len(value)
+    return changed
+
+
 def pagination_updates(parts):
     """Return only changed header/footer/settings parts; other bytes stay intact."""
     updates = {}
@@ -91,6 +114,7 @@ def pagination_updates(parts):
         root = _xml(data)
         changed = False
         for paragraph in root.findall('.//w:p', NS):
+            changed |= _keep_page_count_together(paragraph)
             codes = ' '.join(paragraph.xpath('.//w:instrText/text() | .//w:fldSimple/@w:instr', namespaces=NS))
             if re.search(r'\bPAGE\b', codes, re.I) and re.search(r'\bNUMPAGES\b', codes, re.I):
                 numbered = True

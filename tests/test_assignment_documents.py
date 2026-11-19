@@ -1,17 +1,21 @@
 from io import BytesIO
 from pathlib import Path
+import shutil
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
+import fitz
 import pytest
 
 from app.assignments_documents import (
     FIELD_LABELS,
+    _compact_page,
     _load,
     inspect_assignment_template,
     render_assignment,
 )
 from app.documents import MISSING_VALUE, TemplateError
+from app.word_tools import process_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = sorted((ROOT / "assets/assignments").rglob("*.docx"))
@@ -43,11 +47,11 @@ def placeholders(extra=""):
 
 
 def static_structure(data):
-    """Compare every original style, run, method and signature outside fields."""
+    """Compare the methods, signatures and structure after ignoring page layout."""
     loaded = _load(data)
     editable = {id(p) for target in loaded.targets for p in target.paragraphs}
     indexes = {i for i, para in enumerate(loaded.paragraphs) if id(para) in editable}
-    root = ET.fromstring(xml(data))
+    root = ET.fromstring(_compact_page(loaded.xml))
     for i, paragraph in enumerate(root.findall(".//w:p", NS)):
         if i in indexes:
             for node in paragraph.findall(".//w:t", NS):
@@ -60,8 +64,27 @@ def test_all_sixty_supplied_assignment_forms_are_bundled():
     assert len(SAMPLES) == 60
 
 
+@pytest.mark.skipif(not shutil.which('soffice'), reason='Requires local LibreOffice')
+def test_dense_assignments_fit_on_one_page_with_an_unbroken_footer():
+    documents = []
+    for name in ('5993b46a2cee92c5.docx', '6b2e3114f3889e89.docx'):
+        source = (ROOT / 'assets/assignments' / name).read_bytes()
+        fields = inspect_assignment_template(source)['fields']
+        fields.update(sample_number='123456', issue_date='2026-11-19',
+                      product_name=fields['product_name'] + ' — партія за актом відбору',
+                      issuer_name='Іван ПЕТРЕНКО', issuer_position='Старший лейтенант')
+        documents.append((name, render_assignment(source, fields)))
+    for result in process_documents(documents, pdf=True):
+        assert not result['error'], result
+        with fitz.open(stream=result['pdf'], filetype='pdf') as rendered:
+            assert result['pages'] == len(rendered) == 1
+            lines = rendered[0].get_text().splitlines()
+            assert any('Сторінка 1 з 1' in ' '.join(line.split()) for line in lines)
+            assert any('Дата видачі завдання: 19.11.2026' in line for line in lines)
+
+
 @pytest.mark.parametrize("sample", SAMPLES, ids=lambda path: str(path.relative_to(ROOT / "assets/assignments")))
-def test_every_original_fills_both_form_layouts_without_changing_methods_or_styles(sample):
+def test_every_original_fills_both_form_layouts_without_changing_methods_or_signatures(sample):
     source = sample.read_bytes()
     info = inspect_assignment_template(source)
     assert info["department"] in {"vet", "bacteriology", "chemistry"}
@@ -76,7 +99,7 @@ def test_every_original_fills_both_form_layouts_without_changing_methods_or_styl
         for name in old.namelist():
             if name == 'word/footer1.xml':
                 before, after = ET.fromstring(old.read(name)), ET.fromstring(new.read(name))
-                assert ''.join(before.itertext()) == ''.join(after.itertext())
+                assert ' '.join(''.join(before.itertext()).split()) == ' '.join(''.join(after.itertext()).split())
                 assert [f.get('{'+NS['w']+'}instr') for f in after.findall('.//w:fldSimple', NS)] == ['PAGE', 'NUMPAGES']
             elif name == 'word/settings.xml':
                 before, after = ET.fromstring(old.read(name)), ET.fromstring(new.read(name))

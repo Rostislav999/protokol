@@ -50,10 +50,11 @@ def test_corrupt_bundled_model_cannot_replace_existing_model(runtime_root, tmp_p
     assert not list(directory.rglob("*.tmp"))
 
 
-def test_private_runtime_requires_bundled_binary_instead_of_system_install(runtime_root):
+def test_private_runtime_requires_bundled_binary_instead_of_system_install(runtime_root, tmp_path):
     (runtime_root / "tesseract/tesseract.exe").unlink()
+    environment = {"LOCALAPPDATA": str(tmp_path / "AppData/Local"), "PATH": "/usr/bin"}
     with pytest.raises(RuntimeError, match="комплектний Tesseract"):
-        desktop.prepare_runtime(runtime_root, {"PATH": "/usr/bin"})
+        desktop.prepare_runtime(runtime_root, environment)
 
 
 @pytest.mark.parametrize("url,allowed", [

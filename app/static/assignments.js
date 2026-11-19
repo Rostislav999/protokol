@@ -437,8 +437,8 @@
     renderNumbering();
     renderItems();
     changed();
-    for (const item of state.items) {
-      if (item.product_name.trim() && item.standard.trim()) await findMatches(item, false);
+    for (const item of [...state.items]) {
+      if (state.items.includes(item) && item.product_name.trim() && item.standard.trim()) await findMatches(item, false);
     }
     renderItems();
   }
@@ -550,7 +550,7 @@
       <div class="item-heading"><div class="item-label"><span class="item-number">${index + 1}</span><div><h3 class="item-title">${esc(item.product_name || 'Новий зразок')}</h3><p class="item-subtitle">Номер зразка: <strong class="assignment-number-preview">${esc(previewNumber(index))}</strong> · той самий для всіх відділень</p></div></div><button type="button" class="icon-button danger assignment-remove" aria-label="Видалити зразок ${index + 1}">${icon('trash')}</button></div>
       <div class="form-grid"><label class="field"><span>Номер зразка</span><input type="number" min="1" max="2147483647" step="1" data-assignment-number value="${esc(item.assigned_number||item.sample_number||'')}" placeholder="${esc(previewNumber(index))}" ${item.assigned_number?'readonly':''}><small>${item.assigned_number?'Уже присвоєний номер зберігається.':'Порожнє поле — автоматична нумерація. Можна вказати номер окремо для цього зразка.'}</small></label></div><label class="confirmation notice warning" data-number-reuse-label ${item.number_conflict&&!item.assigned_number?'':'hidden'}><input type="checkbox" data-number-reuse ${item.allow_number_reuse?'checked':''}><span><span data-number-conflict>Номер ${esc(item.number_conflict)} раніше використаний.</span> Підтверджую повторне використання.</span></label>
       <div class="form-grid"><label class="field wide"><span>Назва зразка *</span><input data-assignment-field="product_name" value="${esc(item.product_name)}" placeholder="Повне найменування з акта" required>${sourceHint(item,'product_name')}</label><label class="field"><span>НД на відповідність *</span><input data-assignment-field="standard" value="${esc(item.standard)}" placeholder="Наприклад, ДСТУ 4450:2005" required>${sourceHint(item,'standard')}</label><label class="field"><span>Спільна вага та кількість (за потреби)</span><input data-assignment-field="sample_weight" value="${esc(item.sample_weight)}" placeholder="Залиште порожнім для ваги з шаблонів"><small>Замінює вагу з шаблонів для відділень без ручних змін.</small>${sourceHint(item,'sample_weight')}</label></div>
-      <div class="assignment-match-toolbar"><button type="button" class="text-button assignment-find">Підібрати за назвою та НД</button><small>Дата видачі: ${esc(displayDate(state.today))}</small></div>
+      <div class="assignment-match-toolbar"><div class="assignment-item-actions"><button type="button" class="text-button assignment-find">Підібрати за назвою та НД</button>${index ? '<button type="button" class="button secondary assignment-copy-previous">Як у попередньому зразку</button>' : ''}</div><small>Дата видачі: ${esc(displayDate(state.today))}</small></div>
       <div class="assignment-departments">${DEPTS.map(d => renderDepartment(item,d)).join('')}</div>
     </article>`).join('');
     updateNumberWarnings();updateReadiness();
@@ -661,6 +661,20 @@
     if (!card) return;
     const item = state.items.find(v => v.id === card.dataset.assignmentItem);
     if (!item) return;
+    if (event.target.closest('.assignment-copy-previous')) {
+      const index = state.items.indexOf(item);
+      if (!index || state.busy) return;
+      const {product_name, standard, sample_weight, departments, matches, reviewMatches, matched} = clone(state.items[index - 1]);
+      const sources = Object.fromEntries(['product_name', 'standard', 'sample_weight'].map(key =>
+        [key, {kind:'manual', label:`Скопійовано зі зразка ${index}`}]));
+      const updated = {...item, product_name, standard, sample_weight, departments, matches, reviewMatches, matched, sources};
+      state.items[index] = updated;
+      invalidate();
+      renderItems();
+      $(`${itemSelector(updated)} .assignment-copy-previous`).focus();
+      notice(`Дані зразка ${index} скопійовано до зразка ${index + 1}.`);
+      return;
+    }
     const weightReset = event.target.closest('[data-dept-weight-reset]');
     if (weightReset) {
       const departmentId = weightReset.dataset.deptWeightReset;
